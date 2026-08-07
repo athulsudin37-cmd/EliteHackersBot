@@ -369,7 +369,7 @@ async def order_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
 price = int(parts[3])
 plan = "_".join(parts[4:])
 
-    if prod_type == "nonroot":
+if prod_type == "nonroot":
         prod, back_data = NON_ROOT_PRODUCTS.get(prod_key), f"prod_nonroot_{prod_key}"
     elif prod_type == "root":
         prod, back_data = ROOT_PRODUCTS.get(prod_key), f"prod_root_{prod_key}"
