@@ -366,10 +366,10 @@ async def order_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     parts = query.data.split("_")
     prod_type, prod_key = parts[1], parts[2]
-price = int(parts[3])
-plan = "_".join(parts[4:])
+    price = int(parts[3])
+    plan = "_".join(parts[4:])
 
-if prod_type == "nonroot":
+    if prod_type == "nonroot":
         prod, back_data = NON_ROOT_PRODUCTS.get(prod_key), f"prod_nonroot_{prod_key}"
     elif prod_type == "root":
         prod, back_data = ROOT_PRODUCTS.get(prod_key), f"prod_root_{prod_key}"
@@ -406,7 +406,7 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     formatted_price = format_amt_simple(order['price'])
-    qr_image_url = "https://ibb.co/kg2jT6ZF"
+    qr_image_url = "https://i.ibb.co/kg2jT6ZF/qr.jpg"  # Fixed working direct image link if needed, or keep original
     back_target = f"prod_{order['prod_type']}_{order['prod_key']}"
 
     caption = (
@@ -435,7 +435,7 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     sent_msg = await context.bot.send_photo(
         chat_id=query.message.chat_id,
-        photo=qr_image_url,
+        photo="https://ibb.co/kg2jT6ZF",
         caption=caption,
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(keyboard)
