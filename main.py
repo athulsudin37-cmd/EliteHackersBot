@@ -356,7 +356,7 @@ async def show_product_prices(update: Update, context: ContextTypes.DEFAULT_TYPE
     for plan, price in prod["prices"]:
         formatted_price = format_amt_simple(price)
         lines.append(f"• {plan} — ₹{formatted_price}.00")
-        keyboard.append([InlineKeyboardButton(f"{plan} — ₹{formatted_price}.00", callback_data=f"plan_{prod_type}_{prod_key}_{plan}_{price}")])
+        keyboard.append([InlineKeyboardButton(f"{plan} — ₹{formatted_price}.00", callback_data=f"plan_{prod_type}_{prod_key}_{price}_{plan}")])
 
     keyboard.append([InlineKeyboardButton("🔙 Back", callback_data=back_target)])
     await query.message.edit_text("\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -365,7 +365,9 @@ async def order_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     parts = query.data.split("_")
-    prod_type, prod_key, plan, price = parts[1], parts[2], parts[3], int(parts[4])
+    prod_type, prod_key = parts[1], parts[2]
+price = int(parts[3])
+plan = "_".join(parts[4:])
 
     if prod_type == "nonroot":
         prod, back_data = NON_ROOT_PRODUCTS.get(prod_key), f"prod_nonroot_{prod_key}"
