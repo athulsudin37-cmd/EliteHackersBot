@@ -45,6 +45,9 @@ def keep_alive():
 BOT_TOKEN = "8892856619:AAGZhdOv389_AaKvbcbInlJAiDMOwQxOeHc"  # Enter your Telegram Bot Token here
 ADMIN_ID = 7616127905  # Enter Admin's Telegram User ID here
 
+# 🖼️ നിങ്ങളുടെ ക്യുആർ ഇമേജ് ലിങ്ക് ഇവിടെ മാറ്റാം (Direct Image Link നൽകുക)
+QR_IMAGE_URL = "https://i.ibb.co/kg2jT6ZF/qr.jpg"
+
 USED_UTRS = set()
 ACTIVE_ORDERS = {}       # admin_msg_id -> order_data
 USER_PROFILES = {}       # user_id -> {'joined_date': str, 'total_orders': int}
@@ -356,6 +359,7 @@ async def show_product_prices(update: Update, context: ContextTypes.DEFAULT_TYPE
     for plan, price in prod["prices"]:
         formatted_price = format_amt_simple(price)
         lines.append(f"• {plan} — ₹{formatted_price}.00")
+        # Fixed callback format: plan_{type}_{key}_{price}_{plan}
         keyboard.append([InlineKeyboardButton(f"{plan} — ₹{formatted_price}.00", callback_data=f"plan_{prod_type}_{prod_key}_{price}_{plan}")])
 
     keyboard.append([InlineKeyboardButton("🔙 Back", callback_data=back_target)])
@@ -364,8 +368,11 @@ async def show_product_prices(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def order_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    
+    # Correctly parsing fixed-position parts from callback_data
     parts = query.data.split("_")
-    prod_type, prod_key = parts[1], parts[2]
+    prod_type = parts[1]
+    prod_key = parts[2]
     price = int(parts[3])
     plan = "_".join(parts[4:])
 
@@ -432,10 +439,9 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
-    # Direct image link fixed here so QR code loads properly
     sent_msg = await context.bot.send_photo(
         chat_id=query.message.chat_id,
-        photo="https://i.ibb.co/kg2jT6ZF/qr.jpg",
+        photo=QR_IMAGE_URL,
         caption=caption,
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(keyboard)
