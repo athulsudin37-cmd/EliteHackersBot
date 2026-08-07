@@ -245,9 +245,10 @@ async def order_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    parts = query.data.split("_")
-    prod_key = parts[1]
-    price_idx = int(parts[2])
+    # സുരക്ഷിതമായി സ്പ്ലിറ്റ് ചെയ്ത് ഇൻഡക്സും പ്രൊഡക്റ്റ് കീയും എടുക്കുന്നു
+    data_parts = query.data.split("_")
+    price_idx = int(data_parts[-1])
+    prod_key = "_".join(data_parts[1:-1])
     
     prod = ALL_PRODUCTS.get(prod_key)
     plan, price = prod["prices"][price_idx]
