@@ -406,7 +406,6 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     formatted_price = format_amt_simple(order['price'])
-    qr_image_url = "https://i.ibb.co/kg2jT6ZF/qr.jpg"  # Fixed working direct image link if needed, or keep original
     back_target = f"prod_{order['prod_type']}_{order['prod_key']}"
 
     caption = (
@@ -433,9 +432,10 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
+    # Direct image link fixed here so QR code loads properly
     sent_msg = await context.bot.send_photo(
         chat_id=query.message.chat_id,
-        photo="https://ibb.co/kg2jT6ZF",
+        photo="https://i.ibb.co/kg2jT6ZF/qr.jpg",
         caption=caption,
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(keyboard)
@@ -627,3 +627,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
