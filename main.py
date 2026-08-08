@@ -45,7 +45,7 @@ def keep_alive():
 # ==========================================
 BOT_TOKEN = "8892856619:AAGZhdOv389_AaKvbcbInlJAiDMOwQxOeHc"
 ADMIN_ID = 7616127905
-MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://username:password@cluster.mongodb.net/?retryWrites=true&w=majority")
+MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://sunthladinesh95_db_user:EfbXersus6u1LKy@cluster0.j2siked.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
 
 # Initialize MongoDB Client
 db_client = AsyncIOMotorClient(MONGO_URI)
