@@ -14,7 +14,6 @@ from telegram.ext import (
     ContextTypes,
     filters
 )
-from motor.motor_asyncio import AsyncIOMotorClient
 
 # Enable logging
 logging.basicConfig(
@@ -41,18 +40,10 @@ def keep_alive():
     t.start()
 
 # ==========================================
-# ⚙️ BOT CONFIGURATION & MONGODB DATABASE
+# ⚙️ BOT CONFIGURATION
 # ==========================================
 BOT_TOKEN = "8892856619:AAGZhdOv389_AaKvbcbInlJAiDMOwQxOeHc"
 ADMIN_ID = 7616127905
-MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://sunthladinesh95_db_user:EfbXersus6u1LKy@cluster0.j2siked.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0&tlsAllowInvalidCertificates=true")
-
-# Initialize MongoDB Client
-db_client = AsyncIOMotorClient(MONGO_URI)
-db = db_client["ff_services_shop"]
-users_collection = db["users"]
-orders_collection = db["orders"]
-utrs_collection = db["utrs"]
 
 ACTIVE_ORDERS = {}       # admin_msg_id -> order_data
 
@@ -153,23 +144,12 @@ def format_amt_simple(amount):
         return f"{amount:,}"
     return str(amount)
 
-# COMMAND: /start (Protected against spam/crash)
+# COMMAND: /start
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user = update.effective_user
         if not user:
             return
-
-        # Check and insert user in DB
-        existing_user = await users_collection.find_one({"user_id": user.id})
-        if not existing_user:
-            await users_collection.insert_one({
-                "user_id": user.id,
-                "joined_date": datetime.now().strftime("%d %b %Y"),
-                "total_orders": 0,
-                "full_name": user.full_name,
-                "username": user.username or "N/A"
-            })
 
         welcome_text = "<b>WELCOME TO FF SERVICES SHOP! 🛒</b>\n\nPlease select an option from below to continue:"
         keyboard = [
@@ -197,10 +177,6 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     user = update.effective_user
     
-    profile_data = await users_collection.find_one({"user_id": user.id})
-    if not profile_data:
-        profile_data = {'joined_date': datetime.now().strftime("%d %b %Y"), 'total_orders': 0}
-
     text = (
         "___________________________\n\n"
         "<b>👤 YOUR PROFILE</b>\n"
@@ -208,9 +184,9 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🛡️ <b>Name:</b> {user.full_name}\n"
         f"🔗 <b>Username:</b> @{user.username if user.username else 'N/A'}\n"
         f"🆔 <b>User ID:</b> {user.id}\n"
-        f"📅 <b>Member Since:</b> {profile_data.get('joined_date', datetime.now().strftime('%d %b %Y'))}\n"
+        f"📅 <b>Member Since:</b> {datetime.now().strftime('%d %b %Y')}\n"
         f"🪪 <b>Account Type:</b> 🟢 Regular\n"
-        f"🛒 <b>Total Orders:</b> {profile_data.get('total_orders', 0)}\n"
+        f"🛒 <b>Total Orders:</b> 0\n"
         "___________________________"
     )
     keyboard = [
@@ -223,39 +199,18 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def my_orders_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    user_id = update.effective_user.id
     
-    cursor = orders_collection.find({"user_id": user_id}).sort("_id", -1).limit(5)
-    history = await cursor.to_list(length=5)
-
-    if not history:
-        text = (
-            "___________________________\n\n"
-            "<b>🔑 MY ORDERS (Last 5)</b>\n"
-            "___________________________\n\n"
-            "No purchase history found yet!\n"
-            "___________________________"
-        )
-        keyboard = [
-            [InlineKeyboardButton("🛒 Shop Now", callback_data="shop_now")],
-            [InlineKeyboardButton("↩️ Back to Menu", callback_data="main_menu")]
-        ]
-    else:
-        lines = ["___________________________\n", "<b>🔑 MY ORDERS (Last 5)</b>\n", "___________________________\n"]
-        for idx, item in enumerate(reversed(history), start=1):
-            lines.append(
-                f"<b>{idx}. ⚙️ {item['prod_name']}</b>\n"
-                f"   ⏲️ <b>Duration:</b> {item['plan']}\n"
-                f"   📅 <b>Date:</b> {item['date']}\n"
-                f"   🔑 <b>Key:</b> <code>{item['key']}</code>\n"
-            )
-        lines.append("___________________________")
-        text = "\n".join(lines)
-        keyboard = [
-            [InlineKeyboardButton("🛒 Shop Again", callback_data="shop_now")],
-            [InlineKeyboardButton("↩️ Back to Menu", callback_data="main_menu")]
-        ]
-
+    text = (
+        "___________________________\n\n"
+        "<b>🔑 MY ORDERS (Last 5)</b>\n"
+        "___________________________\n\n"
+        "No purchase history found yet!\n"
+        "___________________________"
+    )
+    keyboard = [
+        [InlineKeyboardButton("🛒 Shop Now", callback_data="shop_now")],
+        [InlineKeyboardButton("↩️ Back to Menu", callback_data="main_menu")]
+    ]
     await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
 # 3️⃣ SUPPORT HANDLER
@@ -291,7 +246,7 @@ async def how_to_use_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     ]
     await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# STORE NAVIGATION (Fast UI Response)
+# STORE NAVIGATION
 async def store_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -425,7 +380,6 @@ async def order_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton("✅ Confirm & Pay", callback_data="confirm_pay")], [InlineKeyboardButton("🔙 Back to Plans", callback_data=back_data)]]
     await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# 3️⃣ & 4️⃣ CONFIRM PAY WITH LIVE COUNTDOWN TIMER & PROPER BUTTON LOGIC
 async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -492,7 +446,6 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 break
         
-        # When timer expires, delete QR and show /start prompt button (Without redirecting automatically)
         if not context.user_data.get('order_cancelled'):
             try:
                 await context.bot.delete_message(chat_id=chat_id, message_id=msg_id)
@@ -530,7 +483,6 @@ async def prompt_utr(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['state'] = 'WAITING_UTR'
     await query.message.reply_text("<b>🔢 Enter your 12-Digit UTR/Transaction ID (Digits only):</b>", parse_mode="HTML")
 
-# 5️⃣ & 6️⃣ MONGODB PERSISTENT STORAGE, 12-DIGIT STRICT UTR VALIDATION & ADMIN NOTIFICATION
 async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = context.user_data.get('state')
     user = update.effective_user
@@ -544,23 +496,6 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             cust_id = order_info['user_id']
             prod_name = order_info['prod_name']
             plan = order_info['plan']
-            curr_date = datetime.now().strftime("%d %b %Y, %I:%M %p")
-
-            # Update DB user profile total orders
-            await users_collection.update_one(
-                {"user_id": cust_id},
-                {"$inc": {"total_orders": 1}},
-                upsert=True
-            )
-
-            # Insert into DB orders history
-            await orders_collection.insert_one({
-                "user_id": cust_id,
-                "prod_name": prod_name,
-                "plan": plan,
-                "date": curr_date,
-                "key": key_text
-            })
 
             cust_text = (
                 "<b>═══════════════════════</b>\n"
@@ -574,7 +509,7 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 "Thank you for shopping with us!"
             )
             await context.bot.send_message(chat_id=cust_id, text=cust_text, parse_mode="HTML")
-            await update.message.reply_text("✅ Key sent and order recorded successfully in database!")
+            await update.message.reply_text("✅ Key sent to customer successfully!")
             context.user_data['admin_state'] = None
             context.user_data['active_admin_msg_id'] = None
         return
@@ -586,15 +521,8 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         utr = update.message.text.strip()
         
-        # Strict 12-Digit UTR Validation (Digits only)
         if not utr.isdigit() or len(utr) != 12:
             await update.message.reply_text("⚠️ <b>Invalid UTR Format!</b> UTR must be exactly <b>12 digits</b> (numbers only). Please enter again:", parse_mode="HTML")
-            return
-
-        # Check if UTR already used in MongoDB
-        existing_utr = await utrs_collection.find_one({"utr": utr})
-        if existing_utr:
-            await update.message.reply_text("⚠️ This UTR has already been used!")
             return
 
         context.user_data['utr'] = utr
@@ -610,9 +538,6 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         photo_id = update.message.photo[-1].file_id
         order = context.user_data.get('pending_order')
         utr = context.user_data.get('utr')
-        
-        # Save UTR to MongoDB to prevent reuse
-        await utrs_collection.insert_one({"utr": utr, "user_id": user.id})
 
         await update.message.reply_text("⏳ <b>Payment Received!</b> Please wait while admin verifies your payment.", parse_mode="HTML")
         formatted_price = format_amt_simple(order['price'])
@@ -679,7 +604,7 @@ async def handle_admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.message.reply_text("❌ Order Rejected notification sent.")
 
 def start_bot():
-    app = Application.builder().token(BOT_TOKEN).concurrent_updates(True).build()
+    app = Application.builder().token(BOT_TOKEN).concurrent_updates(False).build()
 
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CallbackQueryHandler(start_command, pattern="^main_menu$"))
@@ -705,11 +630,8 @@ def start_bot():
     app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_user_message))
 
     print("Bot is running...")
-    app.run_polling()
+    app.run_polling(drop_pending_updates=True)
 
-# ==========================================
-# 🛡️ AUTO-RESTART & CRASH PREVENTION LOOP
-# ==========================================
 def main():
     keep_alive()
 
@@ -722,5 +644,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
