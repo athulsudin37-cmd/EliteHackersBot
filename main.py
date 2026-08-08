@@ -14,6 +14,7 @@ from telegram.ext import (
     ContextTypes,
     filters
 )
+from motor.motor_asyncio import AsyncIOMotorClient
 
 # Enable logging
 logging.basicConfig(
@@ -40,15 +41,20 @@ def keep_alive():
     t.start()
 
 # ==========================================
-# ⚙️ BOT CONFIGURATION & DATABASE
+# ⚙️ BOT CONFIGURATION & MONGODB DATABASE
 # ==========================================
-BOT_TOKEN = "8892856619:AAGZhdOv389_AaKvbcbInlJAiDMOwQxOeHc"  # Enter your Telegram Bot Token here
-ADMIN_ID = 7616127905  # Enter Admin's Telegram User ID here
+BOT_TOKEN = "8892856619:AAGZhdOv389_AaKvbcbInlJAiDMOwQxOeHc"
+ADMIN_ID = 7616127905
+MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://username:password@cluster.mongodb.net/?retryWrites=true&w=majority")
 
-USED_UTRS = set()
+# Initialize MongoDB Client
+db_client = AsyncIOMotorClient(MONGO_URI)
+db = db_client["ff_services_shop"]
+users_collection = db["users"]
+orders_collection = db["orders"]
+utrs_collection = db["utrs"]
+
 ACTIVE_ORDERS = {}       # admin_msg_id -> order_data
-USER_PROFILES = {}       # user_id -> {'joined_date': str, 'total_orders': int}
-USER_ORDER_HISTORY = {}  # user_id -> list of order dicts
 
 # Products Data
 NON_ROOT_PRODUCTS = {
@@ -147,37 +153,53 @@ def format_amt_simple(amount):
         return f"{amount:,}"
     return str(amount)
 
-# COMMAND: /start
+# COMMAND: /start (Protected against spam/crash)
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if user.id not in USER_PROFILES:
-        USER_PROFILES[user.id] = {
-            'joined_date': datetime.now().strftime("%d %b %Y"),
-            'total_orders': 0
-        }
+    try:
+        user = update.effective_user
+        if not user:
+            return
 
-    welcome_text = "<b>WELCOME TO FF SERVICES SHOP! 🛒</b>\n\nPlease select an option from below to continue:"
-    keyboard = [
-        [InlineKeyboardButton("🛒 Shop Now", callback_data="shop_now")],
-        [InlineKeyboardButton("📦 My Orders", callback_data="my_orders"), InlineKeyboardButton("👤 Profile", callback_data="profile")],
-        [
-            InlineKeyboardButton("💳 Pay Proof", url="https://t.me/+fJrFACSrntgwNjll"),
-            InlineKeyboardButton("💬 Support", callback_data="support")
-        ],
-        [InlineKeyboardButton("ℹ️ How to Use", callback_data="how_to_use")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    if update.message:
-        await update.message.reply_text(welcome_text, parse_mode="HTML", reply_markup=reply_markup)
-    elif update.callback_query:
-        await update.callback_query.message.edit_text(welcome_text, parse_mode="HTML", reply_markup=reply_markup)
+        # Check and insert user in DB
+        existing_user = await users_collection.find_one({"user_id": user.id})
+        if not existing_user:
+            await users_collection.insert_one({
+                "user_id": user.id,
+                "joined_date": datetime.now().strftime("%d %b %Y"),
+                "total_orders": 0,
+                "full_name": user.full_name,
+                "username": user.username or "N/A"
+            })
+
+        welcome_text = "<b>WELCOME TO FF SERVICES SHOP! 🛒</b>\n\nPlease select an option from below to continue:"
+        keyboard = [
+            [InlineKeyboardButton("🛒 Shop Now", callback_data="shop_now")],
+            [InlineKeyboardButton("📦 My Orders", callback_data="my_orders"), InlineKeyboardButton("👤 Profile", callback_data="profile")],
+            [
+                InlineKeyboardButton("💳 Pay Proof", url="https://t.me/+fJrFACSrntgwNjll"),
+                InlineKeyboardButton("💬 Support", callback_data="support")
+            ],
+            [InlineKeyboardButton("ℹ️ How to Use", callback_data="how_to_use")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if update.message:
+            await update.message.reply_text(welcome_text, parse_mode="HTML", reply_markup=reply_markup)
+        elif update.callback_query:
+            await update.callback_query.answer()
+            await update.callback_query.message.edit_text(welcome_text, parse_mode="HTML", reply_markup=reply_markup)
+    except Exception as e:
+        logger.error(f"Error in start_command: {e}")
 
 # 1️⃣ PROFILE HANDLER
 async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user = update.effective_user
-    profile_data = USER_PROFILES.get(user.id, {'joined_date': datetime.now().strftime("%d %b %Y"), 'total_orders': 0})
+    
+    profile_data = await users_collection.find_one({"user_id": user.id})
+    if not profile_data:
+        profile_data = {'joined_date': datetime.now().strftime("%d %b %Y"), 'total_orders': 0}
 
     text = (
         "___________________________\n\n"
@@ -186,9 +208,9 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🛡️ <b>Name:</b> {user.full_name}\n"
         f"🔗 <b>Username:</b> @{user.username if user.username else 'N/A'}\n"
         f"🆔 <b>User ID:</b> {user.id}\n"
-        f"📅 <b>Member Since:</b> {profile_data['joined_date']}\n"
+        f"📅 <b>Member Since:</b> {profile_data.get('joined_date', datetime.now().strftime('%d %b %Y'))}\n"
         f"🪪 <b>Account Type:</b> 🟢 Regular\n"
-        f"🛒 <b>Total Orders:</b> {profile_data['total_orders']}\n"
+        f"🛒 <b>Total Orders:</b> {profile_data.get('total_orders', 0)}\n"
         "___________________________"
     )
     keyboard = [
@@ -202,7 +224,9 @@ async def my_orders_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = update.effective_user.id
-    history = USER_ORDER_HISTORY.get(user_id, [])
+    
+    cursor = orders_collection.find({"user_id": user_id}).sort("_id", -1).limit(5)
+    history = await cursor.to_list(length=5)
 
     if not history:
         text = (
@@ -218,7 +242,7 @@ async def my_orders_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
     else:
         lines = ["___________________________\n", "<b>🔑 MY ORDERS (Last 5)</b>\n", "___________________________\n"]
-        for idx, item in enumerate(reversed(history[-5:]), start=1):
+        for idx, item in enumerate(reversed(history), start=1):
             lines.append(
                 f"<b>{idx}. ⚙️ {item['prod_name']}</b>\n"
                 f"   ⏲️ <b>Duration:</b> {item['plan']}\n"
@@ -267,7 +291,7 @@ async def how_to_use_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     ]
     await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# STORE NAVIGATION
+# STORE NAVIGATION (Fast UI Response)
 async def store_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -365,7 +389,6 @@ async def order_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    # സുരക്ഷിതമായി ഡാറ്റ വേർതിരിക്കുന്നു (പ്രശ്നം പരിഹരിച്ച ഭാഗം)
     data_str = query.data.replace("plan_", "")
     parts = data_str.split("_")
     prod_type = parts[0]
@@ -402,6 +425,7 @@ async def order_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton("✅ Confirm & Pay", callback_data="confirm_pay")], [InlineKeyboardButton("🔙 Back to Plans", callback_data=back_data)]]
     await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
+# 3️⃣ & 4️⃣ CONFIRM PAY WITH LIVE COUNTDOWN TIMER & PROPER BUTTON LOGIC
 async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -413,23 +437,28 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     qr_image_url = "https://i.ibb.co/kg2jT6ZF/qr.jpg"
     back_target = f"prod_{order['prod_type']}_{order['prod_key']}"
 
-    caption = (
-        "<b>═══════════════════════</b>\n"
-        "<b>💼 ORDER CREATED</b>\n"
-        "<b>═══════════════════════</b>\n\n"
-        f"🔮 <b>Product:</b> {order['prod_name']}\n"
-        f"⏲️ <b>Duration:</b> {order['plan']}\n"
-        f"💰 <b>Amount:</b> ₹{formatted_price}.00\n\n"
-        "📲 <b>Scan the QR above to pay</b>\n"
-        f"⚠️ <b>Pay EXACTLY ₹{formatted_price}.00</b>\n"
-        "⏲️ <b>Expires in 5 minutes</b>\n"
-        "<b>═══════════════════════</b>"
-    )
+    context.user_data['timer_seconds'] = 300
+    context.user_data['order_cancelled'] = False
+
+    def get_caption(seconds):
+        m, s = divmod(max(0, seconds), 60)
+        return (
+            "<b>═══════════════════════</b>\n"
+            "<b>💼 ORDER CREATED</b>\n"
+            "<b>═══════════════════════</b>\n\n"
+            f"🔮 <b>Product:</b> {order['prod_name']}\n"
+            f"⏲️ <b>Duration:</b> {order['plan']}\n"
+            f"💰 <b>Amount:</b> ₹{formatted_price}.00\n\n"
+            "📲 <b>Scan the QR above to pay</b>\n"
+            f"⚠️ <b>Pay EXACTLY ₹{formatted_price}.00</b>\n"
+            f"⏳ <b>Expires in: {m:02d}:{s:02d} minutes</b>\n"
+            "<b>═══════════════════════</b>"
+        )
 
     keyboard = [
         [InlineKeyboardButton("⚙️ I Have Paid", callback_data="i_have_paid")],
         [InlineKeyboardButton("❌ Cancel", callback_data="cancel_order")],
-        [InlineKeyboardButton("↩️ Back to Shop", callback_data=back_target)]
+        [InlineKeyboardButton("🔙 Back to Shop", callback_data=back_target)]
     ]
 
     try:
@@ -440,19 +469,54 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sent_msg = await context.bot.send_photo(
         chat_id=query.message.chat_id,
         photo=qr_image_url,
-        caption=caption,
+        caption=get_caption(300),
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-    async def auto_delete():
-        await asyncio.sleep(300)
-        try:
-            await context.bot.delete_message(chat_id=sent_msg.chat_id, message_id=sent_msg.message_id)
-        except Exception:
-            pass
+    async def timer_loop():
+        msg_id = sent_msg.message_id
+        chat_id = sent_msg.chat_id
+        for remaining in range(300, 0, -20):
+            await asyncio.sleep(20)
+            if context.user_data.get('order_cancelled'):
+                break
+            try:
+                await context.bot.edit_message_caption(
+                    chat_id=chat_id,
+                    message_id=msg_id,
+                    caption=get_caption(remaining - 20),
+                    parse_mode="HTML",
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+            except Exception:
+                break
+        
+        # When timer expires, delete QR and show /start prompt button (Without redirecting automatically)
+        if not context.user_data.get('order_cancelled'):
+            try:
+                await context.bot.delete_message(chat_id=chat_id, message_id=msg_id)
+                start_btn = [[InlineKeyboardButton("🔄 Click /start to Restart", callback_data="main_menu")]]
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text="❌ <b>Order Session Expired!</b>\n\nPlease click the button below to restart the bot.",
+                    parse_mode="HTML",
+                    reply_markup=InlineKeyboardMarkup(start_btn)
+                )
+            except Exception:
+                pass
 
-    asyncio.create_task(auto_delete())
+    asyncio.create_task(timer_loop())
+
+async def cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data['order_cancelled'] = True
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+    await start_command(update, context)
 
 async def i_have_paid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -464,8 +528,9 @@ async def prompt_utr(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     context.user_data['state'] = 'WAITING_UTR'
-    await query.message.reply_text("<b>🔢 Enter your 12-Digit UTR/Transaction ID:</b>", parse_mode="HTML")
+    await query.message.reply_text("<b>🔢 Enter your 12-Digit UTR/Transaction ID (Digits only):</b>", parse_mode="HTML")
 
+# 5️⃣ & 6️⃣ MONGODB PERSISTENT STORAGE, 12-DIGIT STRICT UTR VALIDATION & ADMIN NOTIFICATION
 async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = context.user_data.get('state')
     user = update.effective_user
@@ -481,15 +546,21 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             plan = order_info['plan']
             curr_date = datetime.now().strftime("%d %b %Y, %I:%M %p")
 
-            if cust_id in USER_PROFILES:
-                USER_PROFILES[cust_id]['total_orders'] += 1
-            else:
-                USER_PROFILES[cust_id] = {'joined_date': datetime.now().strftime("%d %b %Y"), 'total_orders': 1}
+            # Update DB user profile total orders
+            await users_collection.update_one(
+                {"user_id": cust_id},
+                {"$inc": {"total_orders": 1}},
+                upsert=True
+            )
 
-            if cust_id not in USER_ORDER_HISTORY:
-                USER_ORDER_HISTORY[cust_id] = []
-
-            USER_ORDER_HISTORY[cust_id].append({'prod_name': prod_name, 'plan': plan, 'date': curr_date, 'key': key_text})
+            # Insert into DB orders history
+            await orders_collection.insert_one({
+                "user_id": cust_id,
+                "prod_name": prod_name,
+                "plan": plan,
+                "date": curr_date,
+                "key": key_text
+            })
 
             cust_text = (
                 "<b>═══════════════════════</b>\n"
@@ -503,7 +574,7 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 "Thank you for shopping with us!"
             )
             await context.bot.send_message(chat_id=cust_id, text=cust_text, parse_mode="HTML")
-            await update.message.reply_text("✅ Key sent and order recorded successfully!")
+            await update.message.reply_text("✅ Key sent and order recorded successfully in database!")
             context.user_data['admin_state'] = None
             context.user_data['active_admin_msg_id'] = None
         return
@@ -514,7 +585,15 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             return
 
         utr = update.message.text.strip()
-        if utr in USED_UTRS:
+        
+        # Strict 12-Digit UTR Validation (Digits only)
+        if not utr.isdigit() or len(utr) != 12:
+            await update.message.reply_text("⚠️ <b>Invalid UTR Format!</b> UTR must be exactly <b>12 digits</b> (numbers only). Please enter again:", parse_mode="HTML")
+            return
+
+        # Check if UTR already used in MongoDB
+        existing_utr = await utrs_collection.find_one({"utr": utr})
+        if existing_utr:
             await update.message.reply_text("⚠️ This UTR has already been used!")
             return
 
@@ -531,7 +610,9 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         photo_id = update.message.photo[-1].file_id
         order = context.user_data.get('pending_order')
         utr = context.user_data.get('utr')
-        USED_UTRS.add(utr)
+        
+        # Save UTR to MongoDB to prevent reuse
+        await utrs_collection.insert_one({"utr": utr, "user_id": user.id})
 
         await update.message.reply_text("⏳ <b>Payment Received!</b> Please wait while admin verifies your payment.", parse_mode="HTML")
         formatted_price = format_amt_simple(order['price'])
@@ -550,9 +631,26 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
 
         admin_keyboard = [[InlineKeyboardButton("✅ Approve", callback_data="admin_approve"), InlineKeyboardButton("❌ Reject", callback_data="admin_reject")]]
-        admin_msg = await context.bot.send_photo(chat_id=ADMIN_ID, photo=photo_id, caption=admin_text, parse_mode="HTML", reply_markup=admin_keyboard)
+        
+        try:
+            admin_msg = await context.bot.send_photo(
+                chat_id=ADMIN_ID,
+                photo=photo_id,
+                caption=admin_text,
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(admin_keyboard)
+            )
+            ACTIVE_ORDERS[admin_msg.message_id] = {
+                'user_id': user.id,
+                'prod_name': order['prod_name'],
+                'plan': order['plan'],
+                'price': order['price'],
+                'utr': utr
+            }
+        except Exception as e:
+            logger.error(f"Failed to send order to admin DM: {e}")
+            await update.message.reply_text("⚠️ Error sending order to admin. Please make sure the admin has started the bot.")
 
-        ACTIVE_ORDERS[admin_msg.message_id] = {'user_id': user.id, 'prod_name': order['prod_name'], 'plan': order['plan'], 'price': order['price'], 'utr': utr}
         context.user_data['state'] = None
         return
 
@@ -580,14 +678,8 @@ async def handle_admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE
         await context.bot.send_message(chat_id=cust_id, text="❌ <b>Your Order Has Been Rejected.</b>", parse_mode="HTML")
         await query.message.reply_text("❌ Order Rejected notification sent.")
 
-async def cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await query.message.reply_text("❌ Order cancelled.")
-    await start_command(update, context)
-
 def start_bot():
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).concurrent_updates(True).build()
 
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CallbackQueryHandler(start_command, pattern="^main_menu$"))
@@ -619,7 +711,6 @@ def start_bot():
 # 🛡️ AUTO-RESTART & CRASH PREVENTION LOOP
 # ==========================================
 def main():
-    # 🚀 Start Flask Keep-Alive Server
     keep_alive()
 
     while True:
@@ -631,4 +722,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
