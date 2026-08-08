@@ -15,13 +15,17 @@ from telegram.ext import (
     filters
 )
 
-logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
+# Enable logging
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
 # ==========================================
-# 🌐 FLASK KEEP-ALIVE SERVER
+# 🌐 FLASK KEEP-ALIVE SERVER (FOR UPTIMEROBOT)
 # ==========================================
 flask_app = Flask('')
+
 @flask_app.route('/')
 def home():
     return "Bot is alive and running 24/7!"
@@ -38,47 +42,105 @@ def keep_alive():
 # ==========================================
 # ⚙️ BOT CONFIGURATION & DATABASE
 # ==========================================
-BOT_TOKEN = "8892856619:AAGZhdOv389_AaKvbcbInlJAiDMOwQxOeHc"
-ADMIN_ID = 7616127905
-QR_IMAGE_URL = "https://i.ibb.co/kg2jT6ZF/qr.jpg"
+BOT_TOKEN = "8892856619:AAGZhdOv389_AaKvbcbInlJAiDMOwQxOeHc"  # Enter your Telegram Bot Token here
+ADMIN_ID = 7616127905  # Enter Admin's Telegram User ID here
 
 USED_UTRS = set()
-ACTIVE_ORDERS = {}       
-USER_PROFILES = {}       
-USER_ORDER_HISTORY = {}  
+ACTIVE_ORDERS = {}       # admin_msg_id -> order_data
+USER_PROFILES = {}       # user_id -> {'joined_date': str, 'total_orders': int}
+USER_ORDER_HISTORY = {}  # user_id -> list of order dicts
 
 # Products Data
 NON_ROOT_PRODUCTS = {
-    "bala_mod": {"name": "BALA MOD NON ROOT", "prices": [("1 Hour", 45), ("2 Hour", 85), ("4 Hour", 150), ("6 Hour", 220), ("12 Hour", 300), ("1 Day", 420), ("3 Day", 1050)]},
-    "tm_pannel": {"name": "TM PANNEL NON ROOT", "prices": [("1 Day", 70), ("7 Day", 210), ("15 Day", 310), ("31 Day", 450), ("Lifetime Permanent", 1100)]},
-    "drip_client": {"name": "DRIP CLIENT APK MOD", "prices": [("1 Day", 80), ("3 Day", 140), ("7 Day", 250), ("15 Day", 360), ("31 Day", 500)]},
-    "prime_hook": {"name": "PRIME HOOK APK MOD", "prices": [("1 Day", 80), ("3 Day", 170), ("7 Day", 320), ("10 Day", 420)]},
-    "hg_cheat": {"name": "HG CHEAT APK MOD", "prices": [("1 Day", 100), ("7 Day", 230), ("10 Day", 330), ("30 Day", 690)]},
-    "silent_cheat": {"name": "SILENT CHEAT SAFE", "prices": [("1 Day", 90), ("3 Day", 190), ("7 Day", 320), ("15 Day", 550), ("30 Day", 830)]},
-    "drip_proxy": {"name": "DRIP CLIENT PROXY", "prices": [("1 Day", 65), ("3 Day", 140), ("7 Day", 260), ("31 Day", 650)]}
-}
-ROOT_PRODUCTS = {
-    "rapid_core": {"name": "RAPID CORE INJECTOR", "prices": [("1 Day", 90), ("7 Day", 310), ("15 Day", 470), ("30 Day", 690)]},
-    "neo_strike": {"name": "NEO STRIKE BRUTAL", "prices": [("1 Day", 90), ("3 Day", 180), ("7 Day", 310), ("14 Day", 590), ("28 Day", 899)]},
-    "haxx_cker": {"name": "HAXX-CKER PRO", "prices": [("10 Day", 550)]},
-    "xytron_pro": {"name": "XYTRON PRO", "prices": [("1 Day", 100), ("7 Day", 310), ("15 Day", 550), ("31 Day", 830)]},
-    "br_mod": {"name": "BR MOD INJECTOR", "prices": [("1 Day", 90), ("7 Day", 250), ("15 Day", 420), ("31 Day", 570)]},
-    "angry_mod": {"name": "ANGRY MOD", "prices": [("1 Day", 70), ("7 Day", 130), ("15 Day", 170), ("31 Day", 290)]},
-    "xyz_cheats": {"name": "XYZ CHEATS", "prices": [("1 Day", 80), ("3 Day", 160), ("7 Day", 310), ("15 Day", 520), ("30 Day", 880)]}
-}
-IOS_PRODUCTS = {
-    "migul_pro": {"name": "MIGUL PRO IOS", "prices": [("1 Day", 200), ("7 Day", 480), ("31 Day", 900)]},
-    "flourite_ios": {"name": "FLOURITE IOS", "prices": [("1 Day", 270), ("7 Day", 780), ("31 Day", 1600)]}
-}
-PC_PRODUCTS = {
-    "br_mod_pc": {"name": "BR MOD PC", "prices": [("1 Day", 150), ("10 Day", 550), ("31 Day", 900)]},
-    "internal_pc": {"name": "INTERNAL PC", "prices": [("1 Day", 99), ("3 Day", 199), ("7 Day", 370), ("15 Day", 650), ("30 Day", 900), ("Lifetime Permanent", 2100)]}
-}
-LIKE_PRODUCTS = {
-    "auto_like_everyday": {"name": "AUTO LIKE EVERY DAY", "prices": [("7 DAYS (220+ Likes/day)", 90), ("15 DAYS (220+ Likes/day)", 160), ("30 DAYS (220+ Likes/day)", 275), ("90 DAYS (220+ Likes/day)", 730)]}
+    "bala_mod": {
+        "name": "BALA MOD NON ROOT",
+        "prices": [("1 Hour", 45), ("2 Hour", 85), ("4 Hour", 150), ("6 Hour", 220), ("12 Hour", 300), ("1 Day", 420), ("3 Day", 1050)]
+    },
+    "tm_pannel": {
+        "name": "TM PANNEL NON ROOT",
+        "prices": [("1 Day", 70), ("7 Day", 210), ("15 Day", 310), ("31 Day", 450), ("Lifetime Permanent", 1100)]
+    },
+    "drip_client": {
+        "name": "DRIP CLIENT APK MOD",
+        "prices": [("1 Day", 80), ("3 Day", 140), ("7 Day", 250), ("15 Day", 360), ("31 Day", 500)]
+    },
+    "prime_hook": {
+        "name": "PRIME HOOK APK MOD",
+        "prices": [("1 Day", 80), ("3 Day", 170), ("7 Day", 320), ("10 Day", 420)]
+    },
+    "hg_cheat": {
+        "name": "HG CHEAT APK MOD",
+        "prices": [("1 Day", 100), ("7 Day", 230), ("10 Day", 330), ("30 Day", 690)]
+    },
+    "silent_cheat": {
+        "name": "SILENT CHEAT SAFE",
+        "prices": [("1 Day", 90), ("3 Day", 190), ("7 Day", 320), ("15 Day", 550), ("30 Day", 830)]
+    },
+    "drip_proxy": {
+        "name": "DRIP CLIENT PROXY",
+        "prices": [("1 Day", 65), ("3 Day", 140), ("7 Day", 260), ("31 Day", 650)]
+    }
 }
 
-ALL_PRODUCTS = {**NON_ROOT_PRODUCTS, **ROOT_PRODUCTS, **IOS_PRODUCTS, **PC_PRODUCTS, **LIKE_PRODUCTS}
+ROOT_PRODUCTS = {
+    "rapid_core": {
+        "name": "RAPID CORE INJECTOR",
+        "prices": [("1 Day", 90), ("7 Day", 310), ("15 Day", 470), ("30 Day", 690)]
+    },
+    "neo_strike": {
+        "name": "NEO STRIKE BRUTAL",
+        "prices": [("1 Day", 90), ("3 Day", 180), ("7 Day", 310), ("14 Day", 590), ("28 Day", 899)]
+    },
+    "haxx_cker": {
+        "name": "HAXX-CKER PRO",
+        "prices": [("10 Day", 550)]
+    },
+    "xytron_pro": {
+        "name": "XYTRON PRO",
+        "prices": [("1 Day", 100), ("7 Day", 310), ("15 Day", 550), ("31 Day", 830)]
+    },
+    "br_mod": {
+        "name": "BR MOD INJECTOR",
+        "prices": [("1 Day", 90), ("7 Day", 250), ("15 Day", 420), ("31 Day", 570)]
+    },
+    "angry_mod": {
+        "name": "ANGRY MOD",
+        "prices": [("1 Day", 70), ("7 Day", 130), ("15 Day", 170), ("31 Day", 290)]
+    },
+    "xyz_cheats": {
+        "name": "XYZ CHEATS",
+        "prices": [("1 Day", 80), ("3 Day", 160), ("7 Day", 310), ("15 Day", 520), ("30 Day", 880)]
+    }
+}
+
+IOS_PRODUCTS = {
+    "migul_pro": {
+        "name": "MIGUL PRO IOS",
+        "prices": [("1 Day", 200), ("7 Day", 480), ("31 Day", 900)]
+    },
+    "flourite_ios": {
+        "name": "FLOURITE IOS",
+        "prices": [("1 Day", 270), ("7 Day", 780), ("31 Day", 1600)]
+    }
+}
+
+PC_PRODUCTS = {
+    "br_mod_pc": {
+        "name": "BR MOD PC",
+        "prices": [("1 Day", 150), ("10 Day", 550), ("31 Day", 900)]
+    },
+    "internal_pc": {
+        "name": "INTERNAL PC",
+        "prices": [("1 Day", 99), ("3 Day", 199), ("7 Day", 370), ("15 Day", 650), ("30 Day", 900), ("Lifetime Permanent", 2100)]
+    }
+}
+
+LIKE_PRODUCTS = {
+    "auto_like_everyday": {
+        "name": "AUTO LIKE EVERY DAY",
+        "prices": [("7 DAYS (220+ Likes/day)", 90), ("15 DAYS (220+ Likes/day)", 160), ("30 DAYS (220+ Likes/day)", 275), ("90 DAYS (220+ Likes/day)", 730)]
+    }
+}
 
 def format_amt_simple(amount):
     if amount >= 1000:
@@ -89,13 +151,19 @@ def format_amt_simple(amount):
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if user.id not in USER_PROFILES:
-        USER_PROFILES[user.id] = {'joined_date': datetime.now().strftime("%d %b %Y"), 'total_orders': 0}
+        USER_PROFILES[user.id] = {
+            'joined_date': datetime.now().strftime("%d %b %Y"),
+            'total_orders': 0
+        }
 
     welcome_text = "<b>WELCOME TO FF SERVICES SHOP! 🛒</b>\n\nPlease select an option from below to continue:"
     keyboard = [
         [InlineKeyboardButton("🛒 Shop Now", callback_data="shop_now")],
         [InlineKeyboardButton("📦 My Orders", callback_data="my_orders"), InlineKeyboardButton("👤 Profile", callback_data="profile")],
-        [InlineKeyboardButton("💳 Pay Proof", url="https://t.me/+fJrFACSrntgwNjll"), InlineKeyboardButton("💬 Support", callback_data="support")],
+        [
+            InlineKeyboardButton("💳 Pay Proof", url="https://t.me/+fJrFACSrntgwNjll"),
+            InlineKeyboardButton("💬 Support", callback_data="support")
+        ],
         [InlineKeyboardButton("ℹ️ How to Use", callback_data="how_to_use")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -104,7 +172,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif update.callback_query:
         await update.callback_query.message.edit_text(welcome_text, parse_mode="HTML", reply_markup=reply_markup)
 
-# PROFILE HANDLER
+# 1️⃣ PROFILE HANDLER
 async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -129,7 +197,7 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# MY ORDERS HANDLER
+# 2️⃣ MY ORDERS HANDLER
 async def my_orders_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -137,18 +205,36 @@ async def my_orders_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     history = USER_ORDER_HISTORY.get(user_id, [])
 
     if not history:
-        text = "___________________________\n\n<b>🔑 MY ORDERS (Last 5)</b>\n___________________________\n\nNo purchase history found yet!\n___________________________"
-        keyboard = [[InlineKeyboardButton("🛒 Shop Now", callback_data="shop_now")], [InlineKeyboardButton("↩️ Back to Menu", callback_data="main_menu")]]
+        text = (
+            "___________________________\n\n"
+            "<b>🔑 MY ORDERS (Last 5)</b>\n"
+            "___________________________\n\n"
+            "No purchase history found yet!\n"
+            "___________________________"
+        )
+        keyboard = [
+            [InlineKeyboardButton("🛒 Shop Now", callback_data="shop_now")],
+            [InlineKeyboardButton("↩️ Back to Menu", callback_data="main_menu")]
+        ]
     else:
         lines = ["___________________________\n", "<b>🔑 MY ORDERS (Last 5)</b>\n", "___________________________\n"]
         for idx, item in enumerate(reversed(history[-5:]), start=1):
-            lines.append(f"<b>{idx}. ⚙️ {item['prod_name']}</b>\n   ⏲️ <b>Duration:</b> {item['plan']}\n   📅 <b>Date:</b> {item['date']}\n   🔑 <b>Key:</b> <code>{item['key']}</code>\n")
+            lines.append(
+                f"<b>{idx}. ⚙️ {item['prod_name']}</b>\n"
+                f"   ⏲️ <b>Duration:</b> {item['plan']}\n"
+                f"   📅 <b>Date:</b> {item['date']}\n"
+                f"   🔑 <b>Key:</b> <code>{item['key']}</code>\n"
+            )
         lines.append("___________________________")
         text = "\n".join(lines)
-        keyboard = [[InlineKeyboardButton("🛒 Shop Again", callback_data="shop_now")], [InlineKeyboardButton("↩️ Back to Menu", callback_data="main_menu")]]
+        keyboard = [
+            [InlineKeyboardButton("🛒 Shop Again", callback_data="shop_now")],
+            [InlineKeyboardButton("↩️ Back to Menu", callback_data="main_menu")]
+        ]
 
     await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
+# 3️⃣ SUPPORT HANDLER
 async def support_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -156,11 +242,29 @@ async def support_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="main_menu")]]
     await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
+# 5️⃣ HOW TO USE HANDLER
 async def how_to_use_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    text = "📖 <b>HOW TO USE:</b>\n1. Select Product\n2. Pay via QR\n3. Send UTR & Screenshot."
-    keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="main_menu")]]
+    text = (
+        "═══════════════════════\n"
+        "📖 <b>HOW TO USE — FF SERVICES SHOP</b>\n"
+        "═══════════════════════\n\n"
+        "Here is how you can purchase from our bot:\n\n"
+        "1️⃣ Tap <b>🛒 Shop Now</b> to view the store.\n"
+        "2️⃣ Choose your product category.\n"
+        "3️⃣ Pick your desired product and duration.\n"
+        "4️⃣ Scan the UPI QR provided or copy details.\n"
+        "5️⃣ Pay the <b>exact amount</b> shown.\n"
+        "6️⃣ Tap <b>⚙️ I Have Paid</b> and submit 12-digit UTR.\n"
+        "7️⃣ Send payment screenshot as final step.\n\n"
+        "Your payment will be verified by admin and key will be delivered instantly! 🚀\n\n"
+        "🎬 <b>Watch full tutorial video below:</b>"
+    )
+    keyboard = [
+        [InlineKeyboardButton("🎬 Watch Tutorial Video", url="https://t.me/chatelitehackers")],
+        [InlineKeyboardButton("🔙 Back", callback_data="main_menu")]
+    ]
     await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
 # STORE NAVIGATION
@@ -191,85 +295,111 @@ async def category_selection(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def likes_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    keyboard = [[InlineKeyboardButton(f"👍 {data['name']}", callback_data=f"p_{key}")] for key, data in LIKE_PRODUCTS.items()]
+    text = "<b>💎 FREE FIRE LIKE SERVICES:</b>"
+    keyboard = [[InlineKeyboardButton(f"👍 {data['name']}", callback_data=f"prod_likes_{key}")] for key, data in LIKE_PRODUCTS.items()]
     keyboard.append([InlineKeyboardButton("🔙 Back to Shop", callback_data="shop_now")])
-    await query.message.edit_text("<b>💎 FREE FIRE LIKE SERVICES:</b>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def non_root_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    keyboard = [[InlineKeyboardButton(f"⚙️ {data['name']}", callback_data=f"p_{key}")] for key, data in NON_ROOT_PRODUCTS.items()]
+    text = "<b>📱 NON-ROOT PANELS:</b>"
+    keyboard = [[InlineKeyboardButton(f"⚙️ {data['name']}", callback_data=f"prod_nonroot_{key}")] for key, data in NON_ROOT_PRODUCTS.items()]
     keyboard.append([InlineKeyboardButton("🔙 Back to Categories", callback_data="cat_panels")])
-    await query.message.edit_text("<b>📱 NON-ROOT PANELS:</b>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def root_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    keyboard = [[InlineKeyboardButton(f"⚡ {data['name']}", callback_data=f"p_{key}")] for key, data in ROOT_PRODUCTS.items()]
+    text = "<b>⚡ ROOT PANELS:</b>"
+    keyboard = [[InlineKeyboardButton(f"⚡ {data['name']}", callback_data=f"prod_root_{key}")] for key, data in ROOT_PRODUCTS.items()]
     keyboard.append([InlineKeyboardButton("🔙 Back to Categories", callback_data="cat_panels")])
-    await query.message.edit_text("<b>⚡ ROOT PANELS:</b>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def ios_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    keyboard = [[InlineKeyboardButton(f"🍏 {data['name']}", callback_data=f"p_{key}")] for key, data in IOS_PRODUCTS.items()]
+    text = "<b>🍏 IOS PANELS:</b>"
+    keyboard = [[InlineKeyboardButton(f"🍏 {data['name']}", callback_data=f"prod_ios_{key}")] for key, data in IOS_PRODUCTS.items()]
     keyboard.append([InlineKeyboardButton("🔙 Back to Categories", callback_data="cat_panels")])
-    await query.message.edit_text("<b>🍏 IOS PANELS:</b>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def pc_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    keyboard = [[InlineKeyboardButton(f"💻 {data['name']}", callback_data=f"p_{key}")] for key, data in PC_PRODUCTS.items()]
+    text = "<b>💻 PC PANELS:</b>"
+    keyboard = [[InlineKeyboardButton(f"💻 {data['name']}", callback_data=f"prod_pc_{key}")] for key, data in PC_PRODUCTS.items()]
     keyboard.append([InlineKeyboardButton("🔙 Back to Categories", callback_data="cat_panels")])
-    await query.message.edit_text("<b>💻 PC PANELS:</b>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def show_product_prices(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    prod_key = query.data.replace("p_", "")
-    prod = ALL_PRODUCTS.get(prod_key)
+    cb_data = query.data
+
+    if cb_data.startswith("prod_nonroot_"):
+        prod_type, prod_key, prod, back_target = "nonroot", cb_data.replace("prod_nonroot_", ""), NON_ROOT_PRODUCTS.get(cb_data.replace("prod_nonroot_", "")), "non_root_list"
+    elif cb_data.startswith("prod_root_"):
+        prod_type, prod_key, prod, back_target = "root", cb_data.replace("prod_root_", ""), ROOT_PRODUCTS.get(cb_data.replace("prod_root_", "")), "root_list"
+    elif cb_data.startswith("prod_ios_"):
+        prod_type, prod_key, prod, back_target = "ios", cb_data.replace("prod_ios_", ""), IOS_PRODUCTS.get(cb_data.replace("prod_ios_", "")), "ios_list"
+    elif cb_data.startswith("prod_pc_"):
+        prod_type, prod_key, prod, back_target = "pc", cb_data.replace("prod_pc_", ""), PC_PRODUCTS.get(cb_data.replace("prod_pc_", "")), "pc_list"
+    else:
+        prod_type, prod_key, prod, back_target = "likes", cb_data.replace("prod_likes_", ""), LIKE_PRODUCTS.get(cb_data.replace("prod_likes_", "")), "cat_likes"
+
     if not prod:
         return
-    
+
     lines = ["<b>═══════════════════════</b>", f"<b>🛒 {prod['name']}</b>", "<b>═══════════════════════</b>\n", "🔥 <b>Choose a plan:</b>\n"]
     keyboard = []
-    for idx, (plan, price) in enumerate(prod["prices"]):
+    for plan, price in prod["prices"]:
         formatted_price = format_amt_simple(price)
         lines.append(f"• {plan} — ₹{formatted_price}.00")
-        keyboard.append([InlineKeyboardButton(f"{plan} — ₹{formatted_price}.00", callback_data=f"price_{prod_key}_{idx}")])
+        keyboard.append([InlineKeyboardButton(f"{plan} — ₹{formatted_price}.00", callback_data=f"plan_{prod_type}_{prod_key}_{plan}_{price}")])
 
-    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="shop_now")])
+    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data=back_target)])
     await query.message.edit_text("\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def order_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    # സുരക്ഷിതമായി സ്പ്ലിറ്റ് ചെയ്ത് ഇൻഡക്സും പ്രൊഡക്റ്റ് കീയും എടുക്കുന്നു
-    data_parts = query.data.split("_")
-    price_idx = int(data_parts[-1])
-    prod_key = "_".join(data_parts[1:-1])
-    
-    prod = ALL_PRODUCTS.get(prod_key)
-    plan, price = prod["prices"][price_idx]
+    # സുരക്ഷിതമായി ഡാറ്റ വേർതിരിക്കുന്നു (പ്രശ്നം പരിഹരിച്ച ഭാഗം)
+    data_str = query.data.replace("plan_", "")
+    parts = data_str.split("_")
+    prod_type = parts[0]
+    prod_key = parts[1]
+    price = int(parts[-1])
+    plan = "_".join(parts[2:-1])
+
+    if prod_type == "nonroot":
+        prod, back_data = NON_ROOT_PRODUCTS.get(prod_key), f"prod_nonroot_{prod_key}"
+    elif prod_type == "root":
+        prod, back_data = ROOT_PRODUCTS.get(prod_key), f"prod_root_{prod_key}"
+    elif prod_type == "ios":
+        prod, back_data = IOS_PRODUCTS.get(prod_key), f"prod_ios_{prod_key}"
+    elif prod_type == "pc":
+        prod, back_data = PC_PRODUCTS.get(prod_key), f"prod_pc_{prod_key}"
+    else:
+        prod, back_data = LIKE_PRODUCTS.get(prod_key), f"prod_likes_{prod_key}"
+
+    prod_name = prod['name'] if prod else "Service"
     formatted_price = format_amt_simple(price)
 
     text = (
         "<b>═══════════════════════</b>\n"
         "<b>📋 ORDER SUMMARY</b>\n"
         "<b>═══════════════════════</b>\n\n"
-        f"🔑 <b>Product:</b> {prod['name']}\n"
+        f"🔑 <b>Product:</b> {prod_name}\n"
         f"📄 <b>Plan:</b> {plan}\n"
         f"💵 <b>Price:</b> ₹{formatted_price}.00\n"
         "_______________________\n\n"
         f"💰 <b>Final Total:</b> ₹{formatted_price}.00"
     )
 
-    context.user_data['pending_order'] = {'prod_key': prod_key, 'prod_name': prod['name'], 'plan': plan, 'price': price}
-    keyboard = [
-        [InlineKeyboardButton("✅ Confirm & Pay", callback_data="confirm_pay")],
-        [InlineKeyboardButton("🔙 Back to Plans", callback_data=f"p_{prod_key}")]
-    ]
+    context.user_data['pending_order'] = {'prod_type': prod_type, 'prod_key': prod_key, 'prod_name': prod_name, 'plan': plan, 'price': price}
+    keyboard = [[InlineKeyboardButton("✅ Confirm & Pay", callback_data="confirm_pay")], [InlineKeyboardButton("🔙 Back to Plans", callback_data=back_data)]]
     await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -280,6 +410,9 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     formatted_price = format_amt_simple(order['price'])
+    qr_image_url = "https://i.ibb.co/kg2jT6ZF/qr.jpg"
+    back_target = f"prod_{order['prod_type']}_{order['prod_key']}"
+
     caption = (
         "<b>═══════════════════════</b>\n"
         "<b>💼 ORDER CREATED</b>\n"
@@ -289,12 +422,14 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💰 <b>Amount:</b> ₹{formatted_price}.00\n\n"
         "📲 <b>Scan the QR above to pay</b>\n"
         f"⚠️ <b>Pay EXACTLY ₹{formatted_price}.00</b>\n"
+        "⏲️ <b>Expires in 5 minutes</b>\n"
         "<b>═══════════════════════</b>"
     )
 
     keyboard = [
         [InlineKeyboardButton("⚙️ I Have Paid", callback_data="i_have_paid")],
-        [InlineKeyboardButton("❌ Cancel", callback_data="cancel_order")]
+        [InlineKeyboardButton("❌ Cancel", callback_data="cancel_order")],
+        [InlineKeyboardButton("↩️ Back to Shop", callback_data=back_target)]
     ]
 
     try:
@@ -304,7 +439,7 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     sent_msg = await context.bot.send_photo(
         chat_id=query.message.chat_id,
-        photo=QR_IMAGE_URL,
+        photo=qr_image_url,
         caption=caption,
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(keyboard)
@@ -322,14 +457,14 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def i_have_paid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    context.user_data['state'] = 'WAITING_UTR'
-    await query.message.reply_text("<b>🔢 Enter your 12-digit UTR/Transaction Number:</b>", parse_mode="HTML")
+    keyboard = [[InlineKeyboardButton("🔢 Enter UTR Number", callback_data="prompt_utr")]]
+    await query.message.reply_text("<b>Please click below to enter your 12-digit UTR/Transaction Number:</b>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
-async def cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def prompt_utr(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    await query.message.reply_text("❌ Order cancelled.")
-    await start_command(update, context)
+    context.user_data['state'] = 'WAITING_UTR'
+    await query.message.reply_text("<b>🔢 Enter your 12-Digit UTR/Transaction ID:</b>", parse_mode="HTML")
 
 async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = context.user_data.get('state')
@@ -362,12 +497,13 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 "<b>═══════════════════════</b>\n\n"
                 f"🔮 <b>Product:</b> {prod_name}\n"
                 f"⏲️ <b>Duration:</b> {plan}\n\n"
-                "🔑 <b>Key:</b>\n"
+                "🔑 <b>Key (Tap on Key to Copy):</b>\n"
                 f"<code>{key_text}</code>\n"
-                "<b>═══════════════════════</b>"
+                "<b>═══════════════════════</b>\n"
+                "Thank you for shopping with us!"
             )
             await context.bot.send_message(chat_id=cust_id, text=cust_text, parse_mode="HTML")
-            await update.message.reply_text("✅ Key sent successfully!")
+            await update.message.reply_text("✅ Key sent and order recorded successfully!")
             context.user_data['admin_state'] = None
             context.user_data['active_admin_msg_id'] = None
         return
@@ -389,7 +525,7 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if state == 'WAITING_SCREENSHOT':
         if not update.message.photo:
-            await update.message.reply_text("⚠️ Please send a valid payment screenshot image.")
+            await update.message.reply_text("⚠️ Invalid input! Please send a valid payment screenshot image.")
             return
 
         photo_id = update.message.photo[-1].file_id
@@ -397,20 +533,24 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         utr = context.user_data.get('utr')
         USED_UTRS.add(utr)
 
-        await update.message.reply_text("⏳ <b>Payment Received!</b> Please wait while admin verifies.", parse_mode="HTML")
+        await update.message.reply_text("⏳ <b>Payment Received!</b> Please wait while admin verifies your payment.", parse_mode="HTML")
         formatted_price = format_amt_simple(order['price'])
 
         admin_text = (
             "🚨 <b>NEW ORDER RECEIVED</b> 🚨\n\n"
-            f"• User: {user.first_name} ({user.id})\n"
+            "<b>👤 User Details:</b>\n"
+            f"• Name: {user.first_name}\n"
+            f"• Username: @{user.username if user.username else 'N/A'}\n"
+            f"• Telegram ID: {user.id}\n\n"
+            "<b>🛒 Order Details:</b>\n"
             f"• Product: {order['prod_name']}\n"
-            f"• Plan: {order['plan']}\n"
+            f"• Duration: {order['plan']}\n"
             f"• Price: ₹{formatted_price}.00\n"
-            f"• UTR: {utr}"
+            f"• UTR Number: {utr}"
         )
 
         admin_keyboard = [[InlineKeyboardButton("✅ Approve", callback_data="admin_approve"), InlineKeyboardButton("❌ Reject", callback_data="admin_reject")]]
-        admin_msg = await context.bot.send_photo(chat_id=ADMIN_ID, photo=photo_id, caption=admin_text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(admin_keyboard))
+        admin_msg = await context.bot.send_photo(chat_id=ADMIN_ID, photo=photo_id, caption=admin_text, parse_mode="HTML", reply_markup=admin_keyboard)
 
         ACTIVE_ORDERS[admin_msg.message_id] = {'user_id': user.id, 'prod_name': order['prod_name'], 'plan': order['plan'], 'price': order['price'], 'utr': utr}
         context.user_data['state'] = None
@@ -434,11 +574,17 @@ async def handle_admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE
         await context.bot.send_message(chat_id=cust_id, text="⚙️ <b>Order Approved!</b> Generating key...", parse_mode="HTML")
         context.user_data['admin_state'] = 'AWAITING_KEY'
         context.user_data['active_admin_msg_id'] = admin_msg_id
-        await query.message.reply_text(f"🔑 Send the <b>KEY</b> for {order_info['prod_name']} ({order_info['plan']}):", parse_mode="HTML")
+        await query.message.reply_text(f"🔑 <b>Order Approved!</b> Send the <b>KEY</b> for {order_info['prod_name']} ({order_info['plan']}):", parse_mode="HTML")
 
     elif query.data == "admin_reject":
         await context.bot.send_message(chat_id=cust_id, text="❌ <b>Your Order Has Been Rejected.</b>", parse_mode="HTML")
-        await query.message.reply_text("❌ Order Rejected.")
+        await query.message.reply_text("❌ Order Rejected notification sent.")
+
+async def cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.message.reply_text("❌ Order cancelled.")
+    await start_command(update, context)
 
 def start_bot():
     app = Application.builder().token(BOT_TOKEN).build()
@@ -456,26 +602,33 @@ def start_bot():
     app.add_handler(CallbackQueryHandler(root_list, pattern="^root_list$"))
     app.add_handler(CallbackQueryHandler(ios_list, pattern="^ios_list$"))
     app.add_handler(CallbackQueryHandler(pc_list, pattern="^pc_list$"))
-    app.add_handler(CallbackQueryHandler(show_product_prices, pattern="^p_"))
-    app.add_handler(CallbackQueryHandler(order_summary, pattern="^price_"))
+    app.add_handler(CallbackQueryHandler(show_product_prices, pattern="^prod_"))
+    app.add_handler(CallbackQueryHandler(order_summary, pattern="^plan_"))
     app.add_handler(CallbackQueryHandler(confirm_pay, pattern="^confirm_pay$"))
     app.add_handler(CallbackQueryHandler(i_have_paid, pattern="^i_have_paid$"))
-    app.add_handler(CallbackQueryHandler(cancel_order, pattern="^cancel_order$"))
+    app.add_handler(CallbackQueryHandler(prompt_utr, pattern="^prompt_utr$"))
     app.add_handler(CallbackQueryHandler(handle_admin_action, pattern="^admin_"))
+    app.add_handler(CallbackQueryHandler(cancel_order, pattern="^cancel_order$"))
 
     app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_user_message))
 
     print("Bot is running...")
     app.run_polling()
 
+# ==========================================
+# 🛡️ AUTO-RESTART & CRASH PREVENTION LOOP
+# ==========================================
 def main():
+    # 🚀 Start Flask Keep-Alive Server
     keep_alive()
+
     while True:
         try:
             start_bot()
         except Exception as e:
-            print(f"Crash prevented: {e}. Auto-restarting...")
+            print(f"Crash prevented: {e}. Auto-restarting in 1 second...")
             time.sleep(1)
 
 if __name__ == "__main__":
     main()
+
