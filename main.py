@@ -175,39 +175,65 @@ def generate_dynamic_qr_url(upi_id, amount, note="FF Service"):
     upi_uri = f"upi://pay?pa={upi_id}&pn=ELITE_HACKERS&am={amount}&cu=INR&tn={urllib.parse.quote(note)}"
     return f"https://api.qrserver.com/v1/create-qr-code/?size=500x500&data={urllib.parse.quote(upi_uri)}"
 
-def verify_fampay_gmail_payment(utr, expected_amount):
-    try:
-        mail = imaplib.IMAP4_SSL("imap.gmail.com")
-        mail.login(GMAIL_USER, GMAIL_APP_PASS)
-        mail.select("inbox")
+# Clean HTML tags helper
+def clean_html_text(text):
+    clean = re.sub(r'<[^>]+>', ' ', text)
+    return ' '.join(clean.split())
 
-        status, messages = mail.search(None, "UNSEEN")
-        if status != "OK" or not messages[0]:
+# Asynchronous non-blocking IMAP verification with smart retry and HTML clean matching
+async def check_email_once(utr, expected_amount):
+    def _imap_check():
+        try:
+            mail = imaplib.IMAP4_SSL("imap.gmail.com")
+            mail.login(GMAIL_USER, GMAIL_APP_PASS)
+            mail.select("inbox")
+
             status, messages = mail.search(None, "ALL")
+            if status != "OK" or not messages[0]:
+                mail.logout()
+                return False
 
-        msg_ids = messages[0].split()[-20:] # Check last 20 emails
-        for msg_id in reversed(msg_ids):
-            res, msg_data = mail.fetch(msg_id, "(RFC822)")
-            for response_part in msg_data:
-                if isinstance(response_part, tuple):
-                    msg = email.message_from_bytes(response_part[1])
-                    body = ""
-                    if msg.is_multipart():
-                        for part in msg.walk():
-                            if part.get_content_type() == "text/plain":
-                                body += part.get_payload(decode=True).decode('utf-8', errors='ignore')
-                    else:
-                        body = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
+            msg_ids = messages[0].split()[-25:] # Fetch latest 25 emails
+            for msg_id in reversed(msg_ids):
+                res, msg_data = mail.fetch(msg_id, "(RFC822)")
+                for response_part in msg_data:
+                    if isinstance(response_part, tuple):
+                        msg = email.message_from_bytes(response_part[1])
+                        body = ""
+                        if msg.is_multipart():
+                            for part in msg.walk():
+                                c_type = part.get_content_type()
+                                if c_type in ["text/plain", "text/html"]:
+                                    part_str = part.get_payload(decode=True).decode('utf-8', errors='ignore')
+                                    body += " " + clean_html_text(part_str)
+                        else:
+                            part_str = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
+                            body = clean_html_text(part_str)
 
-                    if utr in body:
-                        amounts = re.findall(r'₹\s*(\d+(?:\.\d{1,2})?)', body) or re.findall(r'Rs\.?\s*(\d+(?:\.\d{1,2})?)', body)
-                        for amt in amounts:
-                            if float(amt) == float(expected_amount):
-                                mail.logout()
-                                return True
-        mail.logout()
-    except Exception as e:
-        logger.error(f"Gmail Verification Error: {e}")
+                        # Match UTR/Ref No/Txn ID/12-digit pattern flexible search
+                        if utr in body:
+                            amounts = re.findall(r'(?:₹|Rs\.?|INR)\s*(\d+(?:\.\d{1,2})?)', body, re.IGNORECASE) or re.findall(r'(\d+(?:\.\d{1,2})?)', body)
+                            for amt in amounts:
+                                try:
+                                    if float(amt) == float(expected_amount):
+                                        mail.logout()
+                                        return True
+                                except ValueError:
+                                    continue
+            mail.logout()
+        except Exception as e:
+            logger.error(f"Gmail Verification Error: {e}")
+        return False
+
+    return await asyncio.to_thread(_imap_check)
+
+async def verify_fampay_gmail_payment(utr, expected_amount, retries=3, delay=6):
+    for attempt in range(retries):
+        found = await check_email_once(utr, expected_amount)
+        if found:
+            return True
+        if attempt < retries - 1:
+            await asyncio.sleep(delay)
     return False
 
 # ==========================================
@@ -475,8 +501,6 @@ async def show_product_prices(update: Update, context: ContextTypes.DEFAULT_TYPE
     lines = ["<b>═══════════════════════</b>", f"<b>🛒 {prod['name']}</b>", "<b>═══════════════════════</b>\n", "🔥 <b>Choose a plan:</b>\n"]
     keyboard = []
     
-    # 🎯 Never block with 'Out of Stock'! All plans stay purchasable.
-    # If stock exists -> auto-delivery. If stock empty -> goes to Admin DM for approval.
     for plan, price in prod["prices"]:
         formatted_price = format_amt_simple(price)
         btn_text = f"{plan} — ₹{formatted_price}.00"
@@ -623,13 +647,20 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     state = context.user_data.get('state')
     user = update.effective_user
 
+    # Admin Broadcast with Photo + Text
+    if user.id == ADMIN_ID and update.message and (update.message.caption or update.message.text):
+        msg_text = update.message.caption or update.message.text
+        if msg_text.startswith("/broadcast"):
+            await cmd_broadcast(update, context)
+            return
+
     # Admin Manual Key Entry
     if user.id == ADMIN_ID and context.user_data.get('admin_state') == 'AWAITING_KEY':
-        key_text = update.message.text.strip()
+        key_text = update.message.text.strip() if update.message.text else ""
         target_msg_id = context.user_data.get('active_admin_msg_id')
         order_info = ACTIVE_ORDERS.get(target_msg_id)
 
-        if order_info:
+        if order_info and key_text:
             cust_id = order_info['user_id']
             prod_name = order_info['prod_name']
             plan = order_info['plan']
@@ -674,9 +705,9 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             await update.message.reply_text("⚠️ <b>Invalid UTR Format!</b> UTR must be exactly <b>12 digits</b> (numbers only). Please try again:", parse_mode="HTML")
             return
 
-        # Double Spending Lock Check
+        # Double Spending Permanent Check
         if utr in USED_UTRS:
-            await update.message.reply_text("❌ <b>This UTR has already been used!</b> Double spending is prohibited.", parse_mode="HTML")
+            await update.message.reply_text("❌ <b>This UTR has already been used!</b> Double spending is strictly prohibited.", parse_mode="HTML")
             return
 
         order = context.user_data.get('pending_order')
@@ -686,10 +717,10 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         verifying_msg = await update.message.reply_text("🔄 <b>Verifying your payment automatically with bank...</b>", parse_mode="HTML")
 
-        is_verified = verify_fampay_gmail_payment(utr, order['price'])
+        is_verified = await verify_fampay_gmail_payment(utr, order['price'])
 
         if is_verified:
-            USED_UTRS.add(utr) # Permanent Lock
+            USED_UTRS.add(utr) # Lock UTR permanently
             context.user_data['payment_complete'] = True
             
             try:
@@ -706,7 +737,6 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             plan = order['plan']
             keys_list = KEYS_STOCK.get((prod_key, plan), [])
 
-            # Instant Delivery OR Fallback to Admin Approval DM
             if keys_list:
                 delivered_key = keys_list.pop(0)
                 KEYS_STOCK[(prod_key, plan)] = keys_list
@@ -783,12 +813,15 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         context.user_data['state'] = None
         return
 
-    # 🛑 UNKNOWN MESSAGES & COMMANDS HANDLER
-    await update.message.reply_text(
-        "❌ <b>Unknown Command or Message!</b>\n\n"
-        "Please restart the bot by clicking 👉 /start",
-        parse_mode="HTML"
-    )
+    # Customer fallback message
+    if user.id != ADMIN_ID:
+        restart_btn = [[InlineKeyboardButton("🔄 Click /start to Restart", callback_data="main_menu")]]
+        await update.message.reply_text(
+            "❌ <b>Unknown Command or Message!</b>\n\n"
+            "Please restart the bot by clicking 👉 /start",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(restart_btn)
+        )
 
 async def start_command_for_user(bot, user_id):
     welcome_text = "<b>Tap any button below to continue shopping:</b>"
@@ -822,8 +855,28 @@ async def handle_admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.message.reply_text(f"🔑 <b>Order Approved!</b> Send the <b>KEY</b> for {order_info['prod_name']} ({order_info['plan']}):", parse_mode="HTML")
 
 # ==========================================
-# 🛠️ ADMIN CONTROLS (COMMANDS)
+# 🛠️ ADMIN CONTROLS (COMMANDS & HELP)
 # ==========================================
+async def cmd_admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    help_text = (
+        "<b>👑 ADMIN CONTROL COMMANDS MENU</b>\n\n"
+        "🔑 <b>Stock Management:</b>\n"
+        "• `/addkey <prod_key> <plan_name> <key1, key2...>`\n"
+        "• `/delkey <prod_key> <plan_name> <key_text>`\n"
+        "• `/viewkeys <prod_key> <plan_name>`\n"
+        "• `/clearstock <prod_key> <plan_name>`\n\n"
+        "📦 <b>Products & Prices:</b>\n"
+        "• `/addproduct <non_root/root/ios/pc> <prod_key> <prod_name>`\n"
+        "• `/addplan <prod_key> <plan_name> <price>`\n"
+        "• `/setprice <prod_key> <plan_name> <new_price>`\n\n"
+        "🛠️ <b>Maintenance & Broadcast:</b>\n"
+        "• `/maintain <prod_key> <on/off>`\n"
+        "• `/broadcast <your_message_or_photo>`"
+    )
+    await update.message.reply_text(help_text, parse_mode="HTML")
+
 async def cmd_addkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -972,15 +1025,23 @@ async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     success = 0
     await update.message.reply_text(f"📢 <b>Broadcast started for {len(users)} users...</b>", parse_mode="HTML")
 
+    # If Admin sent Photo with Caption
     if update.message.photo:
         photo_id = update.message.photo[-1].file_id
-        caption = update.message.caption.replace("/broadcast", "").strip() if update.message.caption else ""
+        raw_caption = update.message.caption or ""
+        caption = raw_caption.replace("/broadcast", "").strip()
+        
         for u_id in users:
             try:
-                await context.bot.send_photo(chat_id=u_id, photo=photo_id, caption=caption, parse_mode="HTML")
+                await context.bot.send_photo(
+                    chat_id=u_id,
+                    photo=photo_id,
+                    caption=caption if caption else None,
+                    parse_mode="HTML"
+                )
                 success += 1
-            except Exception:
-                pass
+            except Exception as e:
+                logger.error(f"Failed photo broadcast to {u_id}: {e}")
     else:
         msg_text = " ".join(context.args)
         if not msg_text:
@@ -990,8 +1051,8 @@ async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 await context.bot.send_message(chat_id=u_id, text=msg_text, parse_mode="HTML")
                 success += 1
-            except Exception:
-                pass
+            except Exception as e:
+                logger.error(f"Failed text broadcast to {u_id}: {e}")
 
     await update.message.reply_text(f"✅ <b>Broadcast completed!</b>\n📊 Successfully sent to <b>{success}/{len(users)}</b> users.", parse_mode="HTML")
 
@@ -1003,6 +1064,7 @@ def start_bot():
 
     # Base Handlers
     app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("help", cmd_admin_help))
     app.add_handler(CallbackQueryHandler(start_command, pattern="^main_menu$"))
     app.add_handler(CallbackQueryHandler(profile_handler, pattern="^profile$"))
     app.add_handler(CallbackQueryHandler(my_orders_handler, pattern="^my_orders$"))
