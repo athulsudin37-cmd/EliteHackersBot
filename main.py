@@ -3,6 +3,10 @@ import asyncio
 import os
 import time
 import json
+import imaplib
+import email
+import re
+import urllib.parse
 from threading import Thread
 from datetime import datetime
 import pytz
@@ -46,12 +50,17 @@ def keep_alive():
 # ==========================================
 BOT_TOKEN = "8892856619:AAGZhdOv389_AaKvbcbInlJAiDMOwQxOeHc"
 ADMIN_ID = 7616127905
-NEW_QR_URL = "https://ibb.co/jdffT3p"
+RECEIVER_UPI_ID = "9544113089@fam"
+GMAIL_USER = "athulsudin37@gmail.com"  # 👈 Replace with your FamPay linked Gmail ID
+GMAIL_APP_PASS = "rxks jltg unqu gche"             # Gmail App Password
 
 ACTIVE_ORDERS = {}       # admin_msg_id -> order_data
 USERS_DATA = {}          # user_id -> {'name': ..., 'username': ..., 'joined': ..., 'orders_count': ..., 'history': []}
 MAINTENANCE_MODE = {}    # prod_key -> True/False
-SOLD_OUT_PLANS = set()   # (prod_key, plan_name)
+
+# Key Management & Security Data Storage
+KEYS_STOCK = {}          # (prod_key, plan_name) -> list of key strings
+USED_UTRS = set()        # Used UTR list for double-spending protection
 
 # Products Data
 NON_ROOT_PRODUCTS = {
@@ -162,6 +171,45 @@ def get_ist_time():
     ist = pytz.timezone('Asia/Kolkata')
     return datetime.now(ist).strftime("%d %b %Y, %I:%M %p (IST)")
 
+def generate_dynamic_qr_url(upi_id, amount, note="FF Service"):
+    upi_uri = f"upi://pay?pa={upi_id}&pn=ELITE_HACKERS&am={amount}&cu=INR&tn={urllib.parse.quote(note)}"
+    return f"https://api.qrserver.com/v1/create-qr-code/?size=500x500&data={urllib.parse.quote(upi_uri)}"
+
+def verify_fampay_gmail_payment(utr, expected_amount):
+    try:
+        mail = imaplib.IMAP4_SSL("imap.gmail.com")
+        mail.login(GMAIL_USER, GMAIL_APP_PASS)
+        mail.select("inbox")
+
+        status, messages = mail.search(None, "UNSEEN")
+        if status != "OK" or not messages[0]:
+            status, messages = mail.search(None, "ALL")
+
+        msg_ids = messages[0].split()[-20:] # Check last 20 emails
+        for msg_id in reversed(msg_ids):
+            res, msg_data = mail.fetch(msg_id, "(RFC822)")
+            for response_part in msg_data:
+                if isinstance(response_part, tuple):
+                    msg = email.message_from_bytes(response_part[1])
+                    body = ""
+                    if msg.is_multipart():
+                        for part in msg.walk():
+                            if part.get_content_type() == "text/plain":
+                                body += part.get_payload(decode=True).decode('utf-8', errors='ignore')
+                    else:
+                        body = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
+
+                    if utr in body:
+                        amounts = re.findall(r'₹\s*(\d+(?:\.\d{1,2})?)', body) or re.findall(r'Rs\.?\s*(\d+(?:\.\d{1,2})?)', body)
+                        for amt in amounts:
+                            if float(amt) == float(expected_amount):
+                                mail.logout()
+                                return True
+        mail.logout()
+    except Exception as e:
+        logger.error(f"Gmail Verification Error: {e}")
+    return False
+
 # ==========================================
 # 🚀 START & WELCOME MESSAGE
 # ==========================================
@@ -171,7 +219,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not user:
             return
 
-        # Feature 6: Register User & Send New User Alert
         if user.id not in USERS_DATA:
             USERS_DATA[user.id] = {
                 'name': user.full_name,
@@ -193,7 +240,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception as e:
                     logger.error(f"Failed to alert admin: {e}")
 
-        # Feature 1: Customized Welcome Message
         welcome_text = (
             "🚀 <b>Welcome to ELITE HACKERS</b> 🌟\n\n"
             "🥃 Hey! Thanks for reaching out.\n"
@@ -234,7 +280,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in start_command: {e}")
 
 # ==========================================
-# 👤 PROFILE & ORDERS HANDLERS (Feature 2)
+# 👤 PROFILE & ORDERS HANDLERS
 # ==========================================
 async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -312,11 +358,10 @@ async def how_to_use_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "1️⃣ Tap <b>🛒 Shop Now</b> to view the store.\n"
         "2️⃣ Choose your product category.\n"
         "3️⃣ Pick your desired product and duration.\n"
-        "4️⃣ Scan the UPI QR provided or copy details.\n"
-        "5️⃣ Pay the <b>exact amount</b> shown.\n"
-        "6️⃣ Tap <b>⚙️ I Have Paid</b> and submit 12-digit UTR.\n"
-        "7️⃣ Send payment screenshot as final step.\n\n"
-        "Your payment will be verified by admin and key will be delivered instantly! 🚀\n\n"
+        "4️⃣ Scan the Automatic Dynamic UPI QR provided.\n"
+        "5️⃣ Amount will automatically pre-fill in your payment app!\n"
+        "6️⃣ Pay the amount and type your 12-digit UTR in chat.\n"
+        "7️⃣ Payment will auto-verify and key is delivered instantly! 🚀\n\n"
         "🎬 <b>Watch full tutorial video below:</b>"
     )
     keyboard = [
@@ -393,7 +438,7 @@ async def pc_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
 # ==========================================
-# 🏷️ PRODUCTS & PRICES (Feature 7 Maintenance & Stock)
+# 🏷️ PRODUCTS & PRICES
 # ==========================================
 async def show_product_prices(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -415,7 +460,6 @@ async def show_product_prices(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not prod:
         return
 
-    # Feature 7: Check Panel Maintenance
     if MAINTENANCE_MODE.get(prod_key, False):
         m_text = (
             "<b>═══════════════════════</b>\n"
@@ -431,14 +475,12 @@ async def show_product_prices(update: Update, context: ContextTypes.DEFAULT_TYPE
     lines = ["<b>═══════════════════════</b>", f"<b>🛒 {prod['name']}</b>", "<b>═══════════════════════</b>\n", "🔥 <b>Choose a plan:</b>\n"]
     keyboard = []
     
+    # 🎯 Never block with 'Out of Stock'! All plans stay purchasable.
+    # If stock exists -> auto-delivery. If stock empty -> goes to Admin DM for approval.
     for plan, price in prod["prices"]:
         formatted_price = format_amt_simple(price)
-        if (prod_key, plan) in SOLD_OUT_PLANS:
-            btn_text = f"{plan} — Sold Out ❌"
-            cb = f"soldout_alert_{prod_type}_{prod_key}"
-        else:
-            btn_text = f"{plan} — ₹{formatted_price}.00"
-            cb = f"plan_{prod_type}_{prod_key}_{plan}_{price}"
+        btn_text = f"{plan} — ₹{formatted_price}.00"
+        cb = f"plan_{prod_type}_{prod_key}_{plan}_{price}"
         
         lines.append(f"• {btn_text}")
         keyboard.append([InlineKeyboardButton(btn_text, callback_data=cb)])
@@ -446,12 +488,8 @@ async def show_product_prices(update: Update, context: ContextTypes.DEFAULT_TYPE
     keyboard.append([InlineKeyboardButton("🔙 Back", callback_data=back_target)])
     await query.message.edit_text("\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
-async def handle_soldout_alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer("⚠️ This plan is currently Out of Stock! Please try another plan.", show_alert=True)
-
 # ==========================================
-# 📋 ORDER SUMMARY & PAYMENT (Feature 4 & 5 Fixes)
+# 📋 ORDER SUMMARY & DYNAMIC QR PAYMENT
 # ==========================================
 async def order_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -465,19 +503,17 @@ async def order_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     plan = "_".join(parts[2:-1])
 
     prod = get_product_by_key(prod_key)
-    prod_name = prod['name'] if prod else "Service"
-    formatted_price = format_amt_simple(price)
+    prod_name = prod['name'] if prod else prod_key
 
-    # Feature 5: Exact Product Name Fix
     text = (
         "<b>═══════════════════════</b>\n"
         "<b>📋 ORDER SUMMARY</b>\n"
         "<b>═══════════════════════</b>\n\n"
         f"🔑 <b>Product:</b> {prod_name}\n"
         f"📄 <b>Plan:</b> {plan}\n"
-        f"💵 <b>Price:</b> ₹{formatted_price}.00\n"
+        f"💵 <b>Price:</b> ₹{format_amt_simple(price)}.00\n"
         "_______________________\n\n"
-        f"💰 <b>Final Total:</b> ₹{formatted_price}.00"
+        f"💰 <b>Final Total:</b> ₹{format_amt_simple(price)}.00"
     )
 
     context.user_data['pending_order'] = {'prod_type': prod_type, 'prod_key': prod_key, 'prod_name': prod_name, 'plan': plan, 'price': price}
@@ -495,12 +531,12 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     formatted_price = format_amt_simple(order['price'])
-    # Feature 4: New QR Image Link Updated
-    qr_image_url = NEW_QR_URL
+    qr_image_url = generate_dynamic_qr_url(RECEIVER_UPI_ID, order['price'], f"Order_{order['prod_key']}")
     back_target = f"prod_{order['prod_type']}_{order['prod_key']}"
 
     context.user_data['timer_seconds'] = 300
     context.user_data['order_cancelled'] = False
+    context.user_data['state'] = 'WAITING_UTR'
 
     def get_caption(seconds):
         m, s = divmod(max(0, seconds), 60)
@@ -511,15 +547,15 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🔮 <b>Product:</b> {order['prod_name']}\n"
             f"⏲️ <b>Duration:</b> {order['plan']}\n"
             f"💰 <b>Amount:</b> ₹{formatted_price}.00\n\n"
-            "📲 <b>Scan the QR above to pay</b>\n"
-            f"⚠️ <b>Pay EXACTLY ₹{formatted_price}.00</b>\n"
+            f"📲 <b>Scan Dynamic QR Code above to pay!</b>\n"
+            f"<i>(Amount is automatically pre-filled in app)</i>\n\n"
+            f"👇 <b>PLEASE TYPE YOUR 12-DIGIT UTR NUMBER BELOW AFTER PAYMENT:</b>\n\n"
             f"⏳ <b>Expires in: {m:02d}:{s:02d} minutes</b>\n"
             "<b>═══════════════════════</b>"
         )
 
     keyboard = [
-        [InlineKeyboardButton("⚙️ I Have Paid", callback_data="i_have_paid")],
-        [InlineKeyboardButton("❌ Cancel", callback_data="cancel_order")],
+        [InlineKeyboardButton("❌ Cancel Order", callback_data="cancel_order")],
         [InlineKeyboardButton("🔙 Back to Shop", callback_data=back_target)]
     ]
 
@@ -535,13 +571,14 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
+    context.user_data['qr_msg_id'] = sent_msg.message_id
 
     async def timer_loop():
         msg_id = sent_msg.message_id
         chat_id = sent_msg.chat_id
         for remaining in range(300, 0, -20):
             await asyncio.sleep(20)
-            if context.user_data.get('order_cancelled'):
+            if context.user_data.get('order_cancelled') or context.user_data.get('payment_complete'):
                 break
             try:
                 await context.bot.edit_message_caption(
@@ -554,7 +591,7 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 break
         
-        if not context.user_data.get('order_cancelled'):
+        if not context.user_data.get('order_cancelled') and not context.user_data.get('payment_complete'):
             try:
                 await context.bot.delete_message(chat_id=chat_id, message_id=msg_id)
                 start_btn = [[InlineKeyboardButton("🔄 Click /start to Restart", callback_data="main_menu")]]
@@ -579,26 +616,14 @@ async def cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
     await start_command(update, context)
 
-async def i_have_paid(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    keyboard = [[InlineKeyboardButton("🔢 Enter UTR Number", callback_data="prompt_utr")]]
-    await query.message.reply_text("<b>Please click below to enter your 12-digit UTR/Transaction Number:</b>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def prompt_utr(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    context.user_data['state'] = 'WAITING_UTR'
-    await query.message.reply_text("<b>🔢 Enter your 12-Digit UTR/Transaction ID (Digits only):</b>", parse_mode="HTML")
-
 # ==========================================
-# 📩 MESSAGES & ADMIN KEY DELIVERY HANDLERS
+# 📩 MESSAGES & AUTOMATIC PAYMENT VERIFICATION
 # ==========================================
 async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = context.user_data.get('state')
     user = update.effective_user
 
-    # Admin Delivering Key
+    # Admin Manual Key Entry
     if user.id == ADMIN_ID and context.user_data.get('admin_state') == 'AWAITING_KEY':
         key_text = update.message.text.strip()
         target_msg_id = context.user_data.get('active_admin_msg_id')
@@ -610,7 +635,6 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             plan = order_info['plan']
             time_now = get_ist_time()
 
-            # Feature 2: Save to User Orders Count & History
             if cust_id in USERS_DATA:
                 USERS_DATA[cust_id]['orders_count'] += 1
                 USERS_DATA[cust_id]['history'].append({
@@ -633,83 +657,141 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 "We hope to see you again soon."
             )
             await context.bot.send_message(chat_id=cust_id, text=cust_text, parse_mode="HTML")
-            
-            # Feature 6: Send Auto Restart Card to Customer
             await start_command_for_user(context.bot, cust_id)
-
             await update.message.reply_text("✅ Key sent to customer successfully!")
             context.user_data['admin_state'] = None
             context.user_data['active_admin_msg_id'] = None
         return
 
+    # UTR Check
     if state == 'WAITING_UTR':
         if not update.message.text:
-            await update.message.reply_text("⚠️ Please send a valid UTR text number!")
+            await update.message.reply_text("⚠️ Please send a valid 12-digit UTR text number!")
             return
 
         utr = update.message.text.strip()
         if not utr.isdigit() or len(utr) != 12:
-            await update.message.reply_text("⚠️ <b>Invalid UTR Format!</b> UTR must be exactly <b>12 digits</b> (numbers only). Please enter again:", parse_mode="HTML")
+            await update.message.reply_text("⚠️ <b>Invalid UTR Format!</b> UTR must be exactly <b>12 digits</b> (numbers only). Please try again:", parse_mode="HTML")
             return
 
-        context.user_data['utr'] = utr
-        context.user_data['state'] = 'WAITING_SCREENSHOT'
-        await update.message.reply_text("<b>📸 Now please send your Payment Screenshot image:</b>", parse_mode="HTML")
-        return
-
-    if state == 'WAITING_SCREENSHOT':
-        if not update.message.photo:
-            await update.message.reply_text("⚠️ Invalid input! Please send a valid payment screenshot image.")
+        # Double Spending Lock Check
+        if utr in USED_UTRS:
+            await update.message.reply_text("❌ <b>This UTR has already been used!</b> Double spending is prohibited.", parse_mode="HTML")
             return
 
-        photo_id = update.message.photo[-1].file_id
         order = context.user_data.get('pending_order')
-        utr = context.user_data.get('utr')
+        if not order:
+            await update.message.reply_text("⚠️ No active order session found. Please start again.")
+            return
 
-        await update.message.reply_text("⏳ <b>Payment Received!</b> Please wait while admin verifies your payment.", parse_mode="HTML")
-        formatted_price = format_amt_simple(order['price'])
+        verifying_msg = await update.message.reply_text("🔄 <b>Verifying your payment automatically with bank...</b>", parse_mode="HTML")
 
-        admin_text = (
-            "🚨 <b>NEW ORDER RECEIVED</b> 🚨\n\n"
-            "<b>👤 User Details:</b>\n"
-            f"• Name: {user.first_name}\n"
-            f"• Username: @{user.username if user.username else 'N/A'}\n"
-            f"• Telegram ID: <code>{user.id}</code>\n\n"
-            "<b>🛒 Order Details:</b>\n"
-            f"• Product: {order['prod_name']}\n"
-            f"• Duration: {order['plan']}\n"
-            f"• Price: ₹{formatted_price}.00\n"
-            f"• UTR Number: <code>{utr}</code>"
-        )
+        is_verified = verify_fampay_gmail_payment(utr, order['price'])
 
-        admin_keyboard = [[InlineKeyboardButton("✅ Approve", callback_data="admin_approve"), InlineKeyboardButton("❌ Reject", callback_data="admin_reject")]]
-        
-        try:
-            admin_msg = await context.bot.send_photo(
-                chat_id=ADMIN_ID,
-                photo=photo_id,
-                caption=admin_text,
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup(admin_keyboard)
-            )
-            ACTIVE_ORDERS[admin_msg.message_id] = {
-                'user_id': user.id,
-                'prod_name': order['prod_name'],
-                'plan': order['plan'],
-                'price': order['price'],
-                'utr': utr
-            }
-        except Exception as e:
-            logger.error(f"Failed to send order to admin DM: {e}")
-            await update.message.reply_text("⚠️ Error sending order to admin. Please make sure admin has started the bot.")
+        if is_verified:
+            USED_UTRS.add(utr) # Permanent Lock
+            context.user_data['payment_complete'] = True
+            
+            try:
+                await verifying_msg.edit_text("✅ <b>Payment Received & Verified Successfully!</b>", parse_mode="HTML")
+                await asyncio.sleep(2)
+                await verifying_msg.delete()
+                qr_msg_id = context.user_data.get('qr_msg_id')
+                if qr_msg_id:
+                    await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=qr_msg_id)
+            except Exception:
+                pass
+
+            prod_key = order['prod_key']
+            plan = order['plan']
+            keys_list = KEYS_STOCK.get((prod_key, plan), [])
+
+            # Instant Delivery OR Fallback to Admin Approval DM
+            if keys_list:
+                delivered_key = keys_list.pop(0)
+                KEYS_STOCK[(prod_key, plan)] = keys_list
+                time_now = get_ist_time()
+
+                if user.id in USERS_DATA:
+                    USERS_DATA[user.id]['orders_count'] += 1
+                    USERS_DATA[user.id]['history'].append({
+                        'prod_name': order['prod_name'],
+                        'plan': plan,
+                        'key': delivered_key,
+                        'time': time_now
+                    })
+
+                cust_text = (
+                    "<b>═══════════════════════</b>\n"
+                    "<b>🎉 YOUR ORDER IS READY!</b>\n"
+                    "<b>═══════════════════════</b>\n\n"
+                    f"🔮 <b>Product:</b> {order['prod_name']}\n"
+                    f"⏱️ <b>Duration:</b> {plan}\n\n"
+                    "🔑 <b>Key (Tap on Key to Copy):</b>\n"
+                    f"<code>{delivered_key}</code>\n"
+                    "<b>═══════════════════════</b>\n"
+                    "Thank you for shopping with us! 🛍️"
+                )
+                await context.bot.send_message(chat_id=user.id, text=cust_text, parse_mode="HTML")
+                await start_command_for_user(context.bot, user.id)
+
+                admin_text = (
+                    "🟢 <b>PAYMENT AUTO-VERIFIED & DELIVERED</b>\n\n"
+                    f"👤 <b>Customer:</b> {user.first_name} (@{user.username if user.username else 'N/A'})\n"
+                    f"🆔 <b>User ID:</b> <code>{user.id}</code>\n"
+                    f"🔮 <b>Product:</b> {order['prod_name']}\n"
+                    f"⏱️ <b>Plan:</b> {plan}\n"
+                    f"💰 <b>Amount:</b> ₹{order['price']}.00\n"
+                    f"🔢 <b>UTR:</b> <code>{utr}</code>\n"
+                    f"🔑 <b>Delivered Key:</b> <code>{delivered_key}</code>"
+                )
+                await context.bot.send_message(chat_id=ADMIN_ID, text=admin_text, parse_mode="HTML")
+            else:
+                admin_text = (
+                    "🚨 <b>PAYMENT AUTO-VERIFIED (MANUAL APPROVAL REQUIRED)</b> 🚨\n\n"
+                    f"👤 <b>Customer:</b> {user.first_name} (@{user.username if user.username else 'N/A'})\n"
+                    f"🆔 <b>User ID:</b> <code>{user.id}</code>\n"
+                    f"🔮 <b>Product:</b> {order['prod_name']}\n"
+                    f"⏱️ <b>Plan:</b> {plan}\n"
+                    f"💰 <b>Amount:</b> ₹{order['price']}.00\n"
+                    f"🔢 <b>UTR:</b> <code>{utr}</code>\n\n"
+                    "⚠️ Tap Approve below to type and send key to customer."
+                )
+                admin_keyboard = [[InlineKeyboardButton("✅ Approve & Send Key", callback_data="admin_approve")]]
+                admin_msg = await context.bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=admin_text,
+                    parse_mode="HTML",
+                    reply_markup=InlineKeyboardMarkup(admin_keyboard)
+                )
+                ACTIVE_ORDERS[admin_msg.message_id] = {
+                    'user_id': user.id,
+                    'prod_name': order['prod_name'],
+                    'plan': plan,
+                    'price': order['price'],
+                    'utr': utr
+                }
+                await update.message.reply_text("✅ <b>Payment verified!</b> Your order is being processed by admin, please wait...", parse_mode="HTML")
+
+        else:
+            try:
+                await verifying_msg.delete()
+            except Exception:
+                pass
+            await update.message.reply_text("❌ <b>Payment Verification Failed!</b> UTR or Amount mismatch in bank statement. Please try again or contact support.", parse_mode="HTML")
 
         context.user_data['state'] = None
         return
 
-async def start_command_for_user(bot, user_id):
-    welcome_text = (
-        "<b> Tap any button below to continue shopping:</b>"
+    # 🛑 UNKNOWN MESSAGES & COMMANDS HANDLER
+    await update.message.reply_text(
+        "❌ <b>Unknown Command or Message!</b>\n\n"
+        "Please restart the bot by clicking 👉 /start",
+        parse_mode="HTML"
     )
+
+async def start_command_for_user(bot, user_id):
+    welcome_text = "<b>Tap any button below to continue shopping:</b>"
     keyboard = [
         [InlineKeyboardButton("🛒 Shop Now", callback_data="shop_now")],
         [InlineKeyboardButton("📦 My Orders", callback_data="my_orders"), InlineKeyboardButton("👤 Profile", callback_data="profile")]
@@ -739,36 +821,109 @@ async def handle_admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE
         context.user_data['active_admin_msg_id'] = admin_msg_id
         await query.message.reply_text(f"🔑 <b>Order Approved!</b> Send the <b>KEY</b> for {order_info['prod_name']} ({order_info['plan']}):", parse_mode="HTML")
 
-    elif query.data == "admin_reject":
-        await context.bot.send_message(chat_id=cust_id, text="❌ <b>Your Order Has Been Rejected.</b>", parse_mode="HTML")
-        await query.message.reply_text("❌ Order Rejected notification sent.")
-
 # ==========================================
-# 🛠️ FEATURE 7: ADMIN CONTROLS (COMMANDS)
+# 🛠️ ADMIN CONTROLS (COMMANDS)
 # ==========================================
-async def cmd_stockout(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_addkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
     try:
         args = context.args
         prod_key = args[0]
-        plan = " ".join(args[1:])
-        SOLD_OUT_PLANS.add((prod_key, plan))
-        await update.message.reply_text(f"✅ Marked <b>{prod_key}</b> ({plan}) as <b>Sold Out</b>!", parse_mode="HTML")
+        plan = args[1]
+        keys = [k.strip() for k in " ".join(args[2:]).split(",")]
+        
+        target_tuple = (prod_key, plan)
+        if target_tuple not in KEYS_STOCK:
+            KEYS_STOCK[target_tuple] = []
+        KEYS_STOCK[target_tuple].extend(keys)
+        
+        await update.message.reply_text(f"✅ Added <b>{len(keys)} keys</b> to <b>{prod_key}</b> ({plan})!", parse_mode="HTML")
     except Exception:
-        await update.message.reply_text("<b>Usage:</b> `/stockout <prod_key> <plan_name>`", parse_mode="HTML")
+        await update.message.reply_text("<b>Usage:</b> `/addkey <prod_key> <plan_name> <key1, key2...>`", parse_mode="HTML")
 
-async def cmd_stockin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_delkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
     try:
         args = context.args
         prod_key = args[0]
-        plan = " ".join(args[1:])
-        SOLD_OUT_PLANS.discard((prod_key, plan))
-        await update.message.reply_text(f"✅ Marked <b>{prod_key}</b> ({plan}) as <b>In Stock</b>!", parse_mode="HTML")
+        plan = args[1]
+        key_to_del = args[2]
+        
+        target_tuple = (prod_key, plan)
+        if target_tuple in KEYS_STOCK and key_to_del in KEYS_STOCK[target_tuple]:
+            KEYS_STOCK[target_tuple].remove(key_to_del)
+            await update.message.reply_text(f"✅ Key <code>{key_to_del}</code> deleted successfully!", parse_mode="HTML")
+        else:
+            await update.message.reply_text("⚠️ Key not found in stock!")
     except Exception:
-        await update.message.reply_text("<b>Usage:</b> `/stockin <prod_key> <plan_name>`", parse_mode="HTML")
+        await update.message.reply_text("<b>Usage:</b> `/delkey <prod_key> <plan_name> <key_text>`", parse_mode="HTML")
+
+async def cmd_clearstock(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    try:
+        prod_key = context.args[0]
+        plan = context.args[1]
+        KEYS_STOCK[(prod_key, plan)] = []
+        await update.message.reply_text(f"✅ Cleared stock for <b>{prod_key}</b> ({plan})!", parse_mode="HTML")
+    except Exception:
+        await update.message.reply_text("<b>Usage:</b> `/clearstock <prod_key> <plan_name>`", parse_mode="HTML")
+
+async def cmd_viewkeys(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    try:
+        prod_key = context.args[0]
+        plan = context.args[1]
+        keys = KEYS_STOCK.get((prod_key, plan), [])
+        if not keys:
+            await update.message.reply_text("⚠️ No keys available in stock!")
+        else:
+            keys_text = "\n".join([f"• <code>{k}</code>" for k in keys])
+            await update.message.reply_text(f"🔑 <b>Available Keys ({prod_key} - {plan}):</b>\n\n{keys_text}", parse_mode="HTML")
+    except Exception:
+        await update.message.reply_text("<b>Usage:</b> `/viewkeys <prod_key> <plan_name>`", parse_mode="HTML")
+
+async def cmd_addproduct(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    try:
+        category_type = context.args[0].lower() # non_root / root / ios / pc
+        prod_key = context.args[1]
+        prod_name = " ".join(context.args[2:])
+
+        new_prod_data = {"name": prod_name, "prices": []}
+        if category_type == "non_root":
+            NON_ROOT_PRODUCTS[prod_key] = new_prod_data
+        elif category_type == "root":
+            ROOT_PRODUCTS[prod_key] = new_prod_data
+        elif category_type == "ios":
+            IOS_PRODUCTS[prod_key] = new_prod_data
+        elif category_type == "pc":
+            PC_PRODUCTS[prod_key] = new_prod_data
+
+        await update.message.reply_text(f"✅ Added new product <b>{prod_name}</b> (`{prod_key}`)!", parse_mode="HTML")
+    except Exception:
+        await update.message.reply_text("<b>Usage:</b> `/addproduct <non_root/root/ios/pc> <prod_key> <prod_name>`", parse_mode="HTML")
+
+async def cmd_addplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    try:
+        prod_key = context.args[0]
+        price = int(context.args[-1])
+        plan_name = " ".join(context.args[1:-1])
+
+        prod = get_product_by_key(prod_key)
+        if prod:
+            prod["prices"].append((plan_name, price))
+            await update.message.reply_text(f"✅ Plan <b>{plan_name}</b> (₹{price}) added to <b>{prod_key}</b>!", parse_mode="HTML")
+        else:
+            await update.message.reply_text("⚠️ Product key not found!")
+    except Exception:
+        await update.message.reply_text("<b>Usage:</b> `/addplan <prod_key> <plan_name> <price>`", parse_mode="HTML")
 
 async def cmd_setprice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -829,7 +984,7 @@ async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         msg_text = " ".join(context.args)
         if not msg_text:
-            await update.message.reply_text("⚠️ Please enter a text message to broadcast!")
+            await update.message.reply_text("⚠️ Please enter text or send a photo with `/broadcast` caption!", parse_mode="HTML")
             return
         for u_id in users:
             try:
@@ -861,21 +1016,27 @@ def start_bot():
     app.add_handler(CallbackQueryHandler(ios_list, pattern="^ios_list$"))
     app.add_handler(CallbackQueryHandler(pc_list, pattern="^pc_list$"))
     app.add_handler(CallbackQueryHandler(show_product_prices, pattern="^prod_"))
-    app.add_handler(CallbackQueryHandler(handle_soldout_alert, pattern="^soldout_alert_"))
     app.add_handler(CallbackQueryHandler(order_summary, pattern="^plan_"))
     app.add_handler(CallbackQueryHandler(confirm_pay, pattern="^confirm_pay$"))
-    app.add_handler(CallbackQueryHandler(i_have_paid, pattern="^i_have_paid$"))
-    app.add_handler(CallbackQueryHandler(prompt_utr, pattern="^prompt_utr$"))
     app.add_handler(CallbackQueryHandler(handle_admin_action, pattern="^admin_"))
     app.add_handler(CallbackQueryHandler(cancel_order, pattern="^cancel_order$"))
 
-    # Feature 7: Admin Commands
-    app.add_handler(CommandHandler("stockout", cmd_stockout))
-    app.add_handler(CommandHandler("stockin", cmd_stockin))
+    # Admin Key & Stock Commands
+    app.add_handler(CommandHandler("addkey", cmd_addkey))
+    app.add_handler(CommandHandler("delkey", cmd_delkey))
+    app.add_handler(CommandHandler("clearstock", cmd_clearstock))
+    app.add_handler(CommandHandler("viewkeys", cmd_viewkeys))
+
+    # Admin Product Addition Commands
+    app.add_handler(CommandHandler("addproduct", cmd_addproduct))
+    app.add_handler(CommandHandler("addplan", cmd_addplan))
+
+    # Admin Controls
     app.add_handler(CommandHandler("setprice", cmd_setprice))
     app.add_handler(CommandHandler("maintain", cmd_maintain))
     app.add_handler(CommandHandler("broadcast", cmd_broadcast))
 
+    # Messages and Fallback
     app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_user_message))
 
     print("Bot is running...")
@@ -893,5 +1054,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
