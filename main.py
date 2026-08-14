@@ -51,12 +51,13 @@ def keep_alive():
 BOT_TOKEN = "8892856619:AAGZhdOv389_AaKvbcbInlJAiDMOwQxOeHc"
 ADMIN_ID = 7616127905
 RECEIVER_UPI_ID = "9544113089@fam"
-GMAIL_USER = "athulsudin37@gmail.com"  # 👈 Replace with your FamPay linked Gmail ID
-GMAIL_APP_PASS = "rxks jltg unqu gche"             # Gmail App Password
+GMAIL_USER = "athulsudin37@gmail.com"  
+GMAIL_APP_PASS = "rxks jltg unqu gche"             
 
 ACTIVE_ORDERS = {}       # admin_msg_id -> order_data
 USERS_DATA = {}          # user_id -> {'name': ..., 'username': ..., 'joined': ..., 'orders_count': ..., 'history': []}
 MAINTENANCE_MODE = {}    # prod_key -> True/False
+PRODUCT_LINKS = {}       # prod_key -> download_url_string
 
 # Key Management & Security Data Storage
 KEYS_STOCK = {}          # (prod_key, plan_name) -> list of key strings
@@ -175,12 +176,10 @@ def generate_dynamic_qr_url(upi_id, amount, note="FF Service"):
     upi_uri = f"upi://pay?pa={upi_id}&pn=ELITE_HACKERS&am={amount}&cu=INR&tn={urllib.parse.quote(note)}"
     return f"https://api.qrserver.com/v1/create-qr-code/?size=500x500&data={urllib.parse.quote(upi_uri)}"
 
-# Clean HTML tags helper
 def clean_html_text(text):
     clean = re.sub(r'<[^>]+>', ' ', text)
     return ' '.join(clean.split())
 
-# Asynchronous non-blocking IMAP verification with smart retry and HTML clean matching
 async def check_email_once(utr, expected_amount):
     def _imap_check():
         try:
@@ -193,7 +192,7 @@ async def check_email_once(utr, expected_amount):
                 mail.logout()
                 return False
 
-            msg_ids = messages[0].split()[-25:] # Fetch latest 25 emails
+            msg_ids = messages[0].split()[-25:]
             for msg_id in reversed(msg_ids):
                 res, msg_data = mail.fetch(msg_id, "(RFC822)")
                 for response_part in msg_data:
@@ -210,7 +209,6 @@ async def check_email_once(utr, expected_amount):
                             part_str = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
                             body = clean_html_text(part_str)
 
-                        # Match UTR/Ref No/Txn ID/12-digit pattern flexible search
                         if utr in body:
                             amounts = re.findall(r'(?:₹|Rs\.?|INR)\s*(\d+(?:\.\d{1,2})?)', body, re.IGNORECASE) or re.findall(r'(\d+(?:\.\d{1,2})?)', body)
                             for amt in amounts:
@@ -363,9 +361,6 @@ async def my_orders_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# ==========================================
-# 💬 SUPPORT & HOW TO USE
-# ==========================================
 async def support_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -508,6 +503,9 @@ async def show_product_prices(update: Update, context: ContextTypes.DEFAULT_TYPE
         
         lines.append(f"• {btn_text}")
         keyboard.append([InlineKeyboardButton(btn_text, callback_data=cb)])
+
+    if prod_key in PRODUCT_LINKS:
+        keyboard.append([InlineKeyboardButton("📥 Download File/Apk", url=PRODUCT_LINKS[prod_key])])
 
     keyboard.append([InlineKeyboardButton("🔙 Back", callback_data=back_target)])
     await query.message.edit_text("\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -861,19 +859,24 @@ async def cmd_admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
     help_text = (
-        "<b>👑 ADMIN CONTROL COMMANDS MENU</b>\n\n"
-        "🔑 <b>Stock Management:</b>\n"
-        "• `/addkey <prod_key> <plan_name> <key1, key2...>`\n"
-        "• `/delkey <prod_key> <plan_name> <key_text>`\n"
-        "• `/viewkeys <prod_key> <plan_name>`\n"
-        "• `/clearstock <prod_key> <plan_name>`\n\n"
-        "📦 <b>Products & Prices:</b>\n"
-        "• `/addproduct <non_root/root/ios/pc> <prod_key> <prod_name>`\n"
-        "• `/addplan <prod_key> <plan_name> <price>`\n"
-        "• `/setprice <prod_key> <plan_name> <new_price>`\n\n"
-        "🛠️ <b>Maintenance & Broadcast:</b>\n"
+        "<b>👑 ADMIN CONTROL COMMANDS MENU & TUTORIAL</b>\n\n"
+        "🛠️ <b>1. MAINTENANCE MODE (മെയിന്റനൻസ് മാറ്റാൻ)</b>\n"
         "• `/maintain <prod_key> <on/off>`\n"
-        "• `/broadcast <your_message_or_photo>`"
+        "👉 <i>Ex: `/maintain bala_mod on`</i> (Disable for users)\n\n"
+        "📦 <b>2. STOCK OUT / ADD KEYS (സ്റ്റോക്ക് കൂട്ടാനും കളയാനും)</b>\n"
+        "• Add: `/addkey <prod_key> <plan_name> <key1, key2...>`\n"
+        "👉 <i>Ex: `/addkey bala_mod 1_Day KEY1, KEY2`</i>\n"
+        "• Clear (Stock Out): `/clearstock <prod_key> <plan_name>`\n"
+        "👉 <i>Ex: `/clearstock bala_mod 1_Day`</i>\n\n"
+        "💵 <b>3. SET PRICE (വില ക്രമീകരിക്കാൻ)</b>\n"
+        "• `/setprice <prod_key> <plan_name> <new_price>`\n"
+        "👉 <i>Ex: `/setprice bala_mod 1 Day 450`</i>\n\n"
+        "🔗 <b>4. ADD DOWNLOAD LINK (ഡൗൺലോഡ് ലിങ്ക് കൊടുക്കാൻ)</b>\n"
+        "• `/addlink <prod_key> <url>`\n"
+        "👉 <i>Ex: `/addlink bala_mod https://example.com/apk`</i>\n\n"
+        "📢 <b>5. BROADCAST MESSAGE (എല്ലാവർക്കും മെസ്സേജ് അയക്കാൻ)</b>\n"
+        "• `/broadcast <your_message_or_photo>`\n\n"
+        "🔍 <b>View Keys:</b> `/viewkeys <prod_key> <plan_name>`"
     )
     await update.message.reply_text(help_text, parse_mode="HTML")
 
@@ -920,7 +923,7 @@ async def cmd_clearstock(update: Update, context: ContextTypes.DEFAULT_TYPE):
         prod_key = context.args[0]
         plan = context.args[1]
         KEYS_STOCK[(prod_key, plan)] = []
-        await update.message.reply_text(f"✅ Cleared stock for <b>{prod_key}</b> ({plan})!", parse_mode="HTML")
+        await update.message.reply_text(f"✅ Cleared stock for <b>{prod_key}</b> ({plan})! Status is now <b>OUT OF STOCK</b>.", parse_mode="HTML")
     except Exception:
         await update.message.reply_text("<b>Usage:</b> `/clearstock <prod_key> <plan_name>`", parse_mode="HTML")
 
@@ -1013,6 +1016,17 @@ async def cmd_maintain(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         await update.message.reply_text("<b>Usage:</b> `/maintain <prod_key> <on/off>`", parse_mode="HTML")
 
+async def cmd_addlink(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    try:
+        prod_key = context.args[0]
+        link_url = context.args[1]
+        PRODUCT_LINKS[prod_key] = link_url
+        await update.message.reply_text(f"✅ Download Link added for <b>{prod_key}</b>:\n{link_url}", parse_mode="HTML")
+    except Exception:
+        await update.message.reply_text("<b>Usage:</b> `/addlink <prod_key> <url>`", parse_mode="HTML")
+
 async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -1025,7 +1039,6 @@ async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     success = 0
     await update.message.reply_text(f"📢 <b>Broadcast started for {len(users)} users...</b>", parse_mode="HTML")
 
-    # If Admin sent Photo with Caption
     if update.message.photo:
         photo_id = update.message.photo[-1].file_id
         raw_caption = update.message.caption or ""
@@ -1064,7 +1077,9 @@ def start_bot():
 
     # Base Handlers
     app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("adminhelp", cmd_admin_help))
     app.add_handler(CommandHandler("help", cmd_admin_help))
+    
     app.add_handler(CallbackQueryHandler(start_command, pattern="^main_menu$"))
     app.add_handler(CallbackQueryHandler(profile_handler, pattern="^profile$"))
     app.add_handler(CallbackQueryHandler(my_orders_handler, pattern="^my_orders$"))
@@ -1089,9 +1104,10 @@ def start_bot():
     app.add_handler(CommandHandler("clearstock", cmd_clearstock))
     app.add_handler(CommandHandler("viewkeys", cmd_viewkeys))
 
-    # Admin Product Addition Commands
+    # Admin Product & Links Commands
     app.add_handler(CommandHandler("addproduct", cmd_addproduct))
     app.add_handler(CommandHandler("addplan", cmd_addplan))
+    app.add_handler(CommandHandler("addlink", cmd_addlink))
 
     # Admin Controls
     app.add_handler(CommandHandler("setprice", cmd_setprice))
