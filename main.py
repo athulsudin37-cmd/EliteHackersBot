@@ -6,6 +6,7 @@ import json
 import imaplib
 import email
 import re
+import random
 import urllib.parse
 from threading import Thread
 from datetime import datetime
@@ -164,16 +165,15 @@ def get_product_by_key(prod_key):
     return None
 
 def format_amt_simple(amount):
-    if amount >= 1000:
-        return f"{amount:,}"
-    return str(amount)
+    return f"{amount:,.2f}"
 
 def get_ist_time():
     ist = pytz.timezone('Asia/Kolkata')
     return datetime.now(ist).strftime("%d %b %Y, %I:%M %p (IST)")
 
 def generate_dynamic_qr_url(upi_id, amount, note="FF Service"):
-    upi_uri = f"upi://pay?pa={upi_id}&pn=ELITE_HACKERS&am={amount}&cu=INR&tn={urllib.parse.quote(note)}"
+    formatted_amt = f"{amount:.2f}"
+    upi_uri = f"upi://pay?pa={upi_id}&pn=ELITE_HACKERS&am={formatted_amt}&cu=INR&tn={urllib.parse.quote(note)}"
     return f"https://api.qrserver.com/v1/create-qr-code/?size=500x500&data={urllib.parse.quote(upi_uri)}"
 
 def clean_html_text(text):
@@ -192,7 +192,7 @@ async def check_email_once(utr, expected_amount):
                 mail.logout()
                 return False
 
-            msg_ids = messages[0].split()[-25:]
+            msg_ids = messages[0].split()[-35:]
             for msg_id in reversed(msg_ids):
                 res, msg_data = mail.fetch(msg_id, "(RFC822)")
                 for response_part in msg_data:
@@ -213,7 +213,7 @@ async def check_email_once(utr, expected_amount):
                             amounts = re.findall(r'(?:₹|Rs\.?|INR)\s*(\d+(?:\.\d{1,2})?)', body, re.IGNORECASE) or re.findall(r'(\d+(?:\.\d{1,2})?)', body)
                             for amt in amounts:
                                 try:
-                                    if float(amt) == float(expected_amount):
+                                    if abs(float(amt) - float(expected_amount)) < 0.05:
                                         mail.logout()
                                         return True
                                 except ValueError:
@@ -225,7 +225,7 @@ async def check_email_once(utr, expected_amount):
 
     return await asyncio.to_thread(_imap_check)
 
-async def verify_fampay_gmail_payment(utr, expected_amount, retries=3, delay=6):
+async def verify_fampay_gmail_payment(utr, expected_amount, retries=6, delay=5):
     for attempt in range(retries):
         found = await check_email_once(utr, expected_amount)
         if found:
@@ -380,8 +380,8 @@ async def how_to_use_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "2️⃣ Choose your product category.\n"
         "3️⃣ Pick your desired product and duration.\n"
         "4️⃣ Scan the Automatic Dynamic UPI QR provided.\n"
-        "5️⃣ Amount will automatically pre-fill in your payment app!\n"
-        "6️⃣ Pay the amount and type your 12-digit UTR in chat.\n"
+        "5️⃣ Amount will automatically pre-fill with unique decimal paisa!\n"
+        "6️⃣ Pay the exact amount and type your 12-digit UTR in chat.\n"
         "7️⃣ Payment will auto-verify and key is delivered instantly! 🚀\n\n"
         "🎬 <b>Watch full tutorial video below:</b>"
     )
@@ -497,8 +497,7 @@ async def show_product_prices(update: Update, context: ContextTypes.DEFAULT_TYPE
     keyboard = []
     
     for plan, price in prod["prices"]:
-        formatted_price = format_amt_simple(price)
-        btn_text = f"{plan} — ₹{formatted_price}.00"
+        btn_text = f"{plan} — ₹{price}"
         cb = f"plan_{prod_type}_{prod_key}_{plan}_{price}"
         
         lines.append(f"• {btn_text}")
@@ -521,8 +520,12 @@ async def order_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts = data_str.split("_")
     prod_type = parts[0]
     prod_key = parts[1]
-    price = int(parts[-1])
+    base_price = float(parts[-1])
     plan = "_".join(parts[2:-1])
+
+    # Dynamic decimal amount addition (Feature #2)
+    random_paisa = round(random.randint(1, 99) / 100.0, 2)
+    final_price = round(base_price + random_paisa, 2)
 
     prod = get_product_by_key(prod_key)
     prod_name = prod['name'] if prod else prod_key
@@ -533,12 +536,19 @@ async def order_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "<b>═══════════════════════</b>\n\n"
         f"🔑 <b>Product:</b> {prod_name}\n"
         f"📄 <b>Plan:</b> {plan}\n"
-        f"💵 <b>Price:</b> ₹{format_amt_simple(price)}.00\n"
+        f"💵 <b>Base Price:</b> ₹{base_price:.2f}\n"
         "_______________________\n\n"
-        f"💰 <b>Final Total:</b> ₹{format_amt_simple(price)}.00"
+        f"💰 <b>Final Dynamic Total:</b> ₹{final_price:.2f}\n"
+        "<i>(Unique paisa added for instant automatic verification)</i>"
     )
 
-    context.user_data['pending_order'] = {'prod_type': prod_type, 'prod_key': prod_key, 'prod_name': prod_name, 'plan': plan, 'price': price}
+    context.user_data['pending_order'] = {
+        'prod_type': prod_type, 
+        'prod_key': prod_key, 
+        'prod_name': prod_name, 
+        'plan': plan, 
+        'price': final_price
+    }
     keyboard = [
         [InlineKeyboardButton("✅ Confirm & Pay", callback_data="confirm_pay")],
         [InlineKeyboardButton("🔙 Back to Plans", callback_data=f"prod_{prod_type}_{prod_key}")]
@@ -568,15 +578,16 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "<b>═══════════════════════</b>\n\n"
             f"🔮 <b>Product:</b> {order['prod_name']}\n"
             f"⏲️ <b>Duration:</b> {order['plan']}\n"
-            f"💰 <b>Amount:</b> ₹{formatted_price}.00\n\n"
+            f"💰 <b>Amount:</b> ₹{formatted_price}\n\n"
             f"📲 <b>Scan Dynamic QR Code above to pay!</b>\n"
-            f"<i>(Amount is automatically pre-filled in app)</i>\n\n"
+            f"<i>(Please pay the EXACT amount with paisa!)</i>\n\n"
             f"👇 <b>PLEASE TYPE YOUR 12-DIGIT UTR NUMBER BELOW AFTER PAYMENT:</b>\n\n"
             f"⏳ <b>Expires in: {m:02d}:{s:02d} minutes</b>\n"
             "<b>═══════════════════════</b>"
         )
 
     keyboard = [
+        [InlineKeyboardButton("🔄 Retry / Enter UTR Again", callback_data="retry_utr")], # Feature #3
         [InlineKeyboardButton("❌ Cancel Order", callback_data="cancel_order")],
         [InlineKeyboardButton("🔙 Back to Shop", callback_data=back_target)]
     ]
@@ -627,6 +638,12 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
 
     asyncio.create_task(timer_loop())
+
+async def retry_utr_handler(update: Update, context: ContextTypes.DEFAULT_TYPE): # Feature #3 Implementation
+    query = update.callback_query
+    await query.answer()
+    context.user_data['state'] = 'WAITING_UTR'
+    await query.message.reply_text("✍️ <b>Please type your 12-digit UTR number again below:</b>", parse_mode="HTML")
 
 async def cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -700,7 +717,12 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         utr = update.message.text.strip()
         if not utr.isdigit() or len(utr) != 12:
-            await update.message.reply_text("⚠️ <b>Invalid UTR Format!</b> UTR must be exactly <b>12 digits</b> (numbers only). Please try again:", parse_mode="HTML")
+            retry_btn = [[InlineKeyboardButton("🔄 Retry / Enter UTR Again", callback_data="retry_utr")]]
+            await update.message.reply_text(
+                "⚠️ <b>Invalid UTR Format!</b> UTR must be exactly <b>12 digits</b> (numbers only). Please try again:", 
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(retry_btn)
+            )
             return
 
         # Double Spending Permanent Check
@@ -769,7 +791,7 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                     f"🆔 <b>User ID:</b> <code>{user.id}</code>\n"
                     f"🔮 <b>Product:</b> {order['prod_name']}\n"
                     f"⏱️ <b>Plan:</b> {plan}\n"
-                    f"💰 <b>Amount:</b> ₹{order['price']}.00\n"
+                    f"💰 <b>Amount:</b> ₹{order['price']:.2f}\n"
                     f"🔢 <b>UTR:</b> <code>{utr}</code>\n"
                     f"🔑 <b>Delivered Key:</b> <code>{delivered_key}</code>"
                 )
@@ -781,7 +803,7 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                     f"🆔 <b>User ID:</b> <code>{user.id}</code>\n"
                     f"🔮 <b>Product:</b> {order['prod_name']}\n"
                     f"⏱️ <b>Plan:</b> {plan}\n"
-                    f"💰 <b>Amount:</b> ₹{order['price']}.00\n"
+                    f"💰 <b>Amount:</b> ₹{order['price']:.2f}\n"
                     f"🔢 <b>UTR:</b> <code>{utr}</code>\n\n"
                     "⚠️ Tap Approve below to type and send key to customer."
                 )
@@ -806,7 +828,15 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 await verifying_msg.delete()
             except Exception:
                 pass
-            await update.message.reply_text("❌ <b>Payment Verification Failed!</b> UTR or Amount mismatch in bank statement. Please try again or contact support.", parse_mode="HTML")
+            retry_keyboard = [
+                [InlineKeyboardButton("🔄 Retry / Enter UTR Again", callback_data="retry_utr")],
+                [InlineKeyboardButton("💬 Contact Support", callback_data="support")]
+            ]
+            await update.message.reply_text(
+                "❌ <b>Payment Verification Failed!</b> UTR or Amount mismatch in bank statement. Please try again or tap retry button below.",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(retry_keyboard)
+            )
 
         context.user_data['state'] = None
         return
@@ -860,21 +890,21 @@ async def cmd_admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     help_text = (
         "<b>👑 ADMIN CONTROL COMMANDS MENU & TUTORIAL</b>\n\n"
-        "🛠️ <b>1. MAINTENANCE MODE (മെയിന്റനൻസ് മാറ്റാൻ)</b>\n"
+        "🛠️ <b>1. MAINTENANCE MODE</b>\n"
         "• `/maintain <prod_key> <on/off>`\n"
         "👉 <i>Ex: `/maintain bala_mod on`</i> (Disable for users)\n\n"
-        "📦 <b>2. STOCK OUT / ADD KEYS (സ്റ്റോക്ക് കൂട്ടാനും കളയാനും)</b>\n"
+        "📦 <b>2. STOCK OUT / ADD KEYS</b>\n"
         "• Add: `/addkey <prod_key> <plan_name> <key1, key2...>`\n"
         "👉 <i>Ex: `/addkey bala_mod 1_Day KEY1, KEY2`</i>\n"
         "• Clear (Stock Out): `/clearstock <prod_key> <plan_name>`\n"
         "👉 <i>Ex: `/clearstock bala_mod 1_Day`</i>\n\n"
-        "💵 <b>3. SET PRICE (വില ക്രമീകരിക്കാൻ)</b>\n"
+        "💵 <b>3. SET PRICE</b>\n"
         "• `/setprice <prod_key> <plan_name> <new_price>`\n"
         "👉 <i>Ex: `/setprice bala_mod 1 Day 450`</i>\n\n"
-        "🔗 <b>4. ADD DOWNLOAD LINK (ഡൗൺലോഡ് ലിങ്ക് കൊടുക്കാൻ)</b>\n"
+        "🔗 <b>4. ADD DOWNLOAD LINK</b>\n"
         "• `/addlink <prod_key> <url>`\n"
         "👉 <i>Ex: `/addlink bala_mod https://example.com/apk`</i>\n\n"
-        "📢 <b>5. BROADCAST MESSAGE (എല്ലാവർക്കും മെസ്സേജ് അയക്കാൻ)</b>\n"
+        "📢 <b>5. BROADCAST MESSAGE</b>\n"
         "• `/broadcast <your_message_or_photo>`\n\n"
         "🔍 <b>View Keys:</b> `/viewkeys <prod_key> <plan_name>`"
     )
@@ -946,7 +976,7 @@ async def cmd_addproduct(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
     try:
-        category_type = context.args[0].lower() # non_root / root / ios / pc
+        category_type = context.args[0].lower()
         prod_key = context.args[1]
         prod_name = " ".join(context.args[2:])
 
@@ -1095,6 +1125,7 @@ def start_bot():
     app.add_handler(CallbackQueryHandler(show_product_prices, pattern="^prod_"))
     app.add_handler(CallbackQueryHandler(order_summary, pattern="^plan_"))
     app.add_handler(CallbackQueryHandler(confirm_pay, pattern="^confirm_pay$"))
+    app.add_handler(CallbackQueryHandler(retry_utr_handler, pattern="^retry_utr$"))
     app.add_handler(CallbackQueryHandler(handle_admin_action, pattern="^admin_"))
     app.add_handler(CallbackQueryHandler(cancel_order, pattern="^cancel_order$"))
 
@@ -1132,4 +1163,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
