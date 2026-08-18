@@ -52,8 +52,8 @@ def keep_alive():
 BOT_TOKEN = "8892856619:AAGZhdOv389_AaKvbcbInlJAiDMOwQxOeHc"
 ADMIN_ID = 7616127905
 RECEIVER_UPI_ID = "9544113089@fam"
-GMAIL_USER = "athulsudin37@gmail.com"  
-GMAIL_APP_PASS = "rxks jltg unqu gche"             
+GMAIL_USER = os.environ.get("GMAIL_USER", "athulsudin37@gmail.com")
+GMAIL_APP_PASS = os.environ.get("GMAIL_APP_PASS", "")         
 
 ACTIVE_ORDERS = {}       # admin_msg_id -> order_data
 USERS_DATA = {}          # user_id -> {'name': ..., 'username': ..., 'joined': ..., 'orders_count': ..., 'history': []}
