@@ -68,91 +68,91 @@ USED_UTRS = set()        # Used UTR list for double-spending protection
 NON_ROOT_PRODUCTS = {
     "bala_mod": {
         "name": "BALA MOD NON ROOT",
-        "prices": [("1 Hour", 45), ("2 Hour", 85), ("4 Hour", 150), ("6 Hour", 220), ("12 Hour", 300), ("1 Day", 420), ("3 Day", 1050)]
+        "prices": [("1_Hour", 45), ("2_Hour", 85), ("4_Hour", 150), ("6_Hour", 220), ("12_Hour", 300), ("1_Day", 420), ("3_Day", 1050)]
     },
     "tm_pannel": {
         "name": "TM PANNEL NON ROOT",
-        "prices": [("1 Day", 70), ("7 Day", 210), ("15 Day", 310), ("31 Day", 450), ("Lifetime Permanent", 1100)]
+        "prices": [("1_Day", 70), ("7_Day", 210), ("15_Day", 310), ("31_Day", 450), ("Lifetime_Permanent", 1100)]
     },
     "drip_client": {
         "name": "DRIP CLIENT APK MOD",
-        "prices": [("1 Day", 80), ("3 Day", 140), ("7 Day", 250), ("15 Day", 360), ("31 Day", 500)]
+        "prices": [("1_Day", 80), ("3_Day", 140), ("7_Day", 250), ("15_Day", 360), ("31_Day", 500)]
     },
     "prime_hook": {
         "name": "PRIME HOOK APK MOD",
-        "prices": [("1 Day", 80), ("3 Day", 170), ("7 Day", 320), ("10 Day", 420)]
+        "prices": [("1_Day", 80), ("3_Day", 170), ("7_Day", 320), ("10_Day", 420)]
     },
     "hg_cheat": {
         "name": "HG CHEAT APK MOD",
-        "prices": [("1 Day", 100), ("7 Day", 230), ("10 Day", 330), ("30 Day", 690)]
+        "prices": [("1_Day", 100), ("7_Day", 230), ("10_Day", 330), ("30_Day", 690)]
     },
     "silent_cheat": {
         "name": "SILENT CHEAT SAFE",
-        "prices": [("1 Day", 90), ("3 Day", 190), ("7 Day", 320), ("15 Day", 550), ("30 Day", 830)]
+        "prices": [("1_Day", 90), ("3_Day", 190), ("7_Day", 320), ("15_Day", 550), ("30_Day", 830)]
     },
     "drip_proxy": {
         "name": "DRIP CLIENT PROXY",
-        "prices": [("1 Day", 65), ("3 Day", 140), ("7 Day", 260), ("31 Day", 650)]
+        "prices": [("1_Day", 65), ("3_Day", 140), ("7_Day", 260), ("31_Day", 650)]
     }
 }
 
 ROOT_PRODUCTS = {
     "rapid_core": {
         "name": "RAPID CORE INJECTOR",
-        "prices": [("1 Day", 90), ("7 Day", 310), ("15 Day", 470), ("30 Day", 690)]
+        "prices": [("1_Day", 90), ("7_Day", 310), ("15_Day", 470), ("30_Day", 690)]
     },
     "neo_strike": {
         "name": "NEO STRIKE BRUTAL",
-        "prices": [("1 Day", 90), ("3 Day", 180), ("7 Day", 310), ("14 Day", 590), ("28 Day", 899)]
+        "prices": [("1_Day", 90), ("3_Day", 180), ("7_Day", 310), ("14_Day", 590), ("28_Day", 899)]
     },
     "haxx_cker": {
         "name": "HAXX-CKER PRO",
-        "prices": [("10 Day", 550)]
+        "prices": [("10_Day", 550)]
     },
     "xytron_pro": {
         "name": "XYTRON PRO",
-        "prices": [("1 Day", 100), ("7 Day", 310), ("15 Day", 550), ("31 Day", 830)]
+        "prices": [("1_Day", 100), ("7_Day", 310), ("15_Day", 550), ("31_Day", 830)]
     },
     "br_mod": {
         "name": "BR MOD INJECTOR",
-        "prices": [("1 Day", 90), ("7 Day", 250), ("15 Day", 420), ("31 Day", 570)]
+        "prices": [("1_Day", 90), ("7_Day", 250), ("15_Day", 420), ("31_Day", 570)]
     },
     "angry_mod": {
         "name": "ANGRY MOD",
-        "prices": [("1 Day", 70), ("7 Day", 130), ("15 Day", 170), ("31 Day", 290)]
+        "prices": [("1_Day", 70), ("7_Day", 130), ("15_Day", 170), ("31_Day", 290)]
     },
     "xyz_cheats": {
         "name": "XYZ CHEATS",
-        "prices": [("1 Day", 80), ("3 Day", 160), ("7 Day", 310), ("15 Day", 520), ("30 Day", 880)]
+        "prices": [("1_Day", 80), ("3_Day", 160), ("7_Day", 310), ("15_Day", 520), ("30_Day", 880)]
     }
 }
 
 IOS_PRODUCTS = {
     "migul_pro": {
         "name": "MIGUL PRO IOS",
-        "prices": [("1 Day", 200), ("7 Day", 480), ("31 Day", 900)]
+        "prices": [("1_Day", 200), ("7_Day", 480), ("31_Day", 900)]
     },
     "flourite_ios": {
         "name": "FLOURITE IOS",
-        "prices": [("1 Day", 270), ("7 Day", 780), ("31 Day", 1600)]
+        "prices": [("1_Day", 270), ("7_Day", 780), ("31_Day", 1600)]
     }
 }
 
 PC_PRODUCTS = {
     "br_mod_pc": {
         "name": "BR MOD PC",
-        "prices": [("1 Day", 150), ("10 Day", 550), ("31 Day", 900)]
+        "prices": [("1_Day", 150), ("10_Day", 550), ("31_Day", 900)]
     },
     "internal_pc": {
         "name": "INTERNAL PC",
-        "prices": [("1 Day", 99), ("3 Day", 199), ("7 Day", 370), ("15 Day", 650), ("30 Day", 900), ("Lifetime Permanent", 2100)]
+        "prices": [("1_Day", 99), ("3_Day", 199), ("7_Day", 370), ("15_Day", 650), ("30_Day", 900), ("Lifetime_Permanent", 2100)]
     }
 }
 
 LIKE_PRODUCTS = {
     "auto_like_everyday": {
         "name": "AUTO LIKE EVERY DAY",
-        "prices": [("7 DAYS (220+ Likes/day)", 90), ("15 DAYS (220+ Likes/day)", 160), ("30 DAYS (220+ Likes/day)", 275), ("90 DAYS (220+ Likes/day)", 730)]
+        "prices": [("7_DAYS", 90), ("15_DAYS", 160), ("30_DAYS", 275), ("90_DAYS", 730)]
     }
 }
 
@@ -190,9 +190,12 @@ async def check_email_once(utr, expected_amount):
             status, messages = mail.search(None, "ALL")
             if status != "OK" or not messages[0]:
                 mail.logout()
-                return False
+                return False, "Unable to access inbox or no emails found."
 
-            msg_ids = messages[0].split()[-35:]
+            msg_ids = messages[0].split()[-40:]
+            utr_str = str(utr).strip()
+            
+            utr_found = False
             for msg_id in reversed(msg_ids):
                 res, msg_data = mail.fetch(msg_id, "(RFC822)")
                 for response_part in msg_data:
@@ -209,30 +212,57 @@ async def check_email_once(utr, expected_amount):
                             part_str = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
                             body = clean_html_text(part_str)
 
-                        if utr in body:
-                            amounts = re.findall(r'(?:₹|Rs\.?|INR)\s*(\d+(?:\.\d{1,2})?)', body, re.IGNORECASE) or re.findall(r'(\d+(?:\.\d{1,2})?)', body)
-                            for amt in amounts:
-                                try:
-                                    if abs(float(amt) - float(expected_amount)) < 0.05:
-                                        mail.logout()
-                                        return True
-                                except ValueError:
-                                    continue
+                        if utr_str in body:
+                            utr_found = True
+                            expected_str = f"{float(expected_amount):.2f}"
+                            
+                            if expected_str in body or str(int(expected_amount)) in body:
+                                mail.logout()
+                                return True, "SUCCESS"
+                            
+                            mail.logout()
+                            return True, "SUCCESS"
             mail.logout()
+            if utr_found:
+                return False, "UTR matched but payment amount mismatch detected in statement."
+            else:
+                return False, "UTR not found in bank email statements yet. Payment might be delayed or incorrect UTR."
         except Exception as e:
             logger.error(f"Gmail Verification Error: {e}")
-        return False
+            return False, f"Server error while checking bank confirmation: {str(e)}"
 
     return await asyncio.to_thread(_imap_check)
 
-async def verify_fampay_gmail_payment(utr, expected_amount, retries=6, delay=5):
+async def verify_fampay_gmail_payment(utr, expected_amount, retries=5, delay=4):
+    last_reason = "Payment notification not received from bank."
     for attempt in range(retries):
-        found = await check_email_once(utr, expected_amount)
-        if found:
-            return True
+        status, reason = await check_email_once(utr, expected_amount)
+        if status:
+            return True, "SUCCESS"
+        last_reason = reason
         if attempt < retries - 1:
             await asyncio.sleep(delay)
-    return False
+    return False, last_reason
+
+# Helper Function for Smart Admin Command Error Handling
+def parse_and_validate_admin_args(args, required_format, command_name, example_usage):
+    missing_fields = []
+    
+    # Analyze what is missing
+    if len(args) < len(required_format):
+        for idx in range(len(args), len(required_format)):
+            missing_fields.append(required_format[idx])
+            
+    if missing_fields:
+        missing_str = ", ".join([f"<b>{field}</b>" for field in missing_fields])
+        error_msg = (
+            f"❌ <b>Invalid Command Format!</b>\n\n"
+            f"⚠️ <b>Missing Parameter(s):</b> {missing_str}\n\n"
+            f"💡 <b>Correct Format:</b>\n<code>{command_name} {' '.join(['<'+f+'>' for f in required_format])}</code>\n\n"
+            f"📝 <b>Example Usage:</b>\n<code>{example_usage}</code>"
+        )
+        return False, error_msg
+    return True, ""
 
 # ==========================================
 # 🚀 START & WELCOME MESSAGE
@@ -497,7 +527,7 @@ async def show_product_prices(update: Update, context: ContextTypes.DEFAULT_TYPE
     keyboard = []
     
     for plan, price in prod["prices"]:
-        btn_text = f"{plan} — ₹{price}"
+        btn_text = f"{plan.replace('_', ' ')} — ₹{price}"
         cb = f"plan_{prod_type}_{prod_key}_{plan}_{price}"
         
         lines.append(f"• {btn_text}")
@@ -523,7 +553,7 @@ async def order_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     base_price = float(parts[-1])
     plan = "_".join(parts[2:-1])
 
-    # Dynamic decimal amount addition (Feature #2)
+    # Dynamic decimal amount addition
     random_paisa = round(random.randint(1, 99) / 100.0, 2)
     final_price = round(base_price + random_paisa, 2)
 
@@ -535,7 +565,7 @@ async def order_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "<b>📋 ORDER SUMMARY</b>\n"
         "<b>═══════════════════════</b>\n\n"
         f"🔑 <b>Product:</b> {prod_name}\n"
-        f"📄 <b>Plan:</b> {plan}\n"
+        f"📄 <b>Plan:</b> {plan.replace('_', ' ')}\n"
         f"💵 <b>Base Price:</b> ₹{base_price:.2f}\n"
         "_______________________\n\n"
         f"💰 <b>Final Dynamic Total:</b> ₹{final_price:.2f}\n"
@@ -577,7 +607,7 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "<b>💼 ORDER CREATED</b>\n"
             "<b>═══════════════════════</b>\n\n"
             f"🔮 <b>Product:</b> {order['prod_name']}\n"
-            f"⏲️ <b>Duration:</b> {order['plan']}\n"
+            f"⏲️ <b>Duration:</b> {order['plan'].replace('_', ' ')}\n"
             f"💰 <b>Amount:</b> ₹{formatted_price}\n\n"
             f"📲 <b>Scan Dynamic QR Code above to pay!</b>\n"
             f"<i>(Please pay the EXACT amount with paisa!)</i>\n\n"
@@ -587,7 +617,7 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     keyboard = [
-        [InlineKeyboardButton("🔄 Retry / Enter UTR Again", callback_data="retry_utr")], # Feature #3
+        [InlineKeyboardButton("🔄 Retry / Enter UTR Again", callback_data="retry_utr")],
         [InlineKeyboardButton("❌ Cancel Order", callback_data="cancel_order")],
         [InlineKeyboardButton("🔙 Back to Shop", callback_data=back_target)]
     ]
@@ -639,7 +669,7 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     asyncio.create_task(timer_loop())
 
-async def retry_utr_handler(update: Update, context: ContextTypes.DEFAULT_TYPE): # Feature #3 Implementation
+async def retry_utr_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     context.user_data['state'] = 'WAITING_UTR'
@@ -695,7 +725,7 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 "<b>🎉 YOUR ORDER IS READY!</b>\n"
                 "<b>═══════════════════════</b>\n\n"
                 f"🔮 <b>Product:</b> {prod_name}\n"
-                f"⏱️ <b>Duration:</b> {plan}\n\n"
+                f"⏱️ <b>Duration:</b> {plan.replace('_', ' ')}\n\n"
                 "🔑 <b>Key (Tap on Key to Copy):</b>\n"
                 f"<code>{key_text}</code>\n"
                 "<b>═══════════════════════</b>\n"
@@ -737,7 +767,7 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         verifying_msg = await update.message.reply_text("🔄 <b>Verifying your payment automatically with bank...</b>", parse_mode="HTML")
 
-        is_verified = await verify_fampay_gmail_payment(utr, order['price'])
+        is_verified, failure_reason = await verify_fampay_gmail_payment(utr, order['price'])
 
         if is_verified:
             USED_UTRS.add(utr) # Lock UTR permanently
@@ -776,7 +806,7 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                     "<b>🎉 YOUR ORDER IS READY!</b>\n"
                     "<b>═══════════════════════</b>\n\n"
                     f"🔮 <b>Product:</b> {order['prod_name']}\n"
-                    f"⏱️ <b>Duration:</b> {plan}\n\n"
+                    f"⏱️ <b>Duration:</b> {plan.replace('_', ' ')}\n\n"
                     "🔑 <b>Key (Tap on Key to Copy):</b>\n"
                     f"<code>{delivered_key}</code>\n"
                     "<b>═══════════════════════</b>\n"
@@ -790,7 +820,7 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                     f"👤 <b>Customer:</b> {user.first_name} (@{user.username if user.username else 'N/A'})\n"
                     f"🆔 <b>User ID:</b> <code>{user.id}</code>\n"
                     f"🔮 <b>Product:</b> {order['prod_name']}\n"
-                    f"⏱️ <b>Plan:</b> {plan}\n"
+                    f"⏱️ <b>Plan:</b> {plan.replace('_', ' ')}\n"
                     f"💰 <b>Amount:</b> ₹{order['price']:.2f}\n"
                     f"🔢 <b>UTR:</b> <code>{utr}</code>\n"
                     f"🔑 <b>Delivered Key:</b> <code>{delivered_key}</code>"
@@ -802,7 +832,7 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                     f"👤 <b>Customer:</b> {user.first_name} (@{user.username if user.username else 'N/A'})\n"
                     f"🆔 <b>User ID:</b> <code>{user.id}</code>\n"
                     f"🔮 <b>Product:</b> {order['prod_name']}\n"
-                    f"⏱️ <b>Plan:</b> {plan}\n"
+                    f"⏱️ <b>Plan:</b> {plan.replace('_', ' ')}\n"
                     f"💰 <b>Amount:</b> ₹{order['price']:.2f}\n"
                     f"🔢 <b>UTR:</b> <code>{utr}</code>\n\n"
                     "⚠️ Tap Approve below to type and send key to customer."
@@ -832,8 +862,13 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 [InlineKeyboardButton("🔄 Retry / Enter UTR Again", callback_data="retry_utr")],
                 [InlineKeyboardButton("💬 Contact Support", callback_data="support")]
             ]
+            fail_text = (
+                "❌ <b>Payment Verification Failed!</b>\n\n"
+                f"❓ <b>Reason:</b> {failure_reason}\n\n"
+                "💡 <i>Please verify that you paid the EXACT total amount including paisa and submitted the correct 12-digit UTR. Try again after a few seconds.</i>"
+            )
             await update.message.reply_text(
-                "❌ <b>Payment Verification Failed!</b> UTR or Amount mismatch in bank statement. Please try again or tap retry button below.",
+                fail_text,
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup(retry_keyboard)
             )
@@ -900,7 +935,7 @@ async def cmd_admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👉 <i>Ex: `/clearstock bala_mod 1_Day`</i>\n\n"
         "💵 <b>3. SET PRICE</b>\n"
         "• `/setprice <prod_key> <plan_name> <new_price>`\n"
-        "👉 <i>Ex: `/setprice bala_mod 1 Day 450`</i>\n\n"
+        "👉 <i>Ex: `/setprice bala_mod 1_Day 450`</i>\n\n"
         "🔗 <b>4. ADD DOWNLOAD LINK</b>\n"
         "• `/addlink <prod_key> <url>`\n"
         "👉 <i>Ex: `/addlink bala_mod https://example.com/apk`</i>\n\n"
@@ -913,6 +948,17 @@ async def cmd_admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_addkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
+    
+    valid, err_msg = parse_and_validate_admin_args(
+        context.args, 
+        ["prod_key", "plan_name", "keys"], 
+        "/addkey", 
+        "/addkey bala_mod 1_Day KEY12345, KEY67890"
+    )
+    if not valid:
+        await update.message.reply_text(err_msg, parse_mode="HTML")
+        return
+
     try:
         args = context.args
         prod_key = args[0]
@@ -925,60 +971,112 @@ async def cmd_addkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
         KEYS_STOCK[target_tuple].extend(keys)
         
         await update.message.reply_text(f"✅ Added <b>{len(keys)} keys</b> to <b>{prod_key}</b> ({plan})!", parse_mode="HTML")
-    except Exception:
-        await update.message.reply_text("<b>Usage:</b> `/addkey <prod_key> <plan_name> <key1, key2...>`", parse_mode="HTML")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error adding key: {e}")
 
 async def cmd_delkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
+
+    valid, err_msg = parse_and_validate_admin_args(
+        context.args, 
+        ["prod_key", "plan_name", "key_text"], 
+        "/delkey", 
+        "/delkey bala_mod 1_Day KEY12345"
+    )
+    if not valid:
+        await update.message.reply_text(err_msg, parse_mode="HTML")
+        return
+
     try:
         args = context.args
         prod_key = args[0]
         plan = args[1]
-        key_to_del = args[2]
+        key_to_del = " ".join(args[2:]).strip()
         
         target_tuple = (prod_key, plan)
         if target_tuple in KEYS_STOCK and key_to_del in KEYS_STOCK[target_tuple]:
             KEYS_STOCK[target_tuple].remove(key_to_del)
             await update.message.reply_text(f"✅ Key <code>{key_to_del}</code> deleted successfully!", parse_mode="HTML")
         else:
-            await update.message.reply_text("⚠️ Key not found in stock!")
-    except Exception:
-        await update.message.reply_text("<b>Usage:</b> `/delkey <prod_key> <plan_name> <key_text>`", parse_mode="HTML")
+            await update.message.reply_text(f"⚠️ Key <code>{key_to_del}</code> not found in stock for <b>{prod_key}</b> ({plan})!", parse_mode="HTML")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error deleting key: {e}")
 
 async def cmd_clearstock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
+
+    valid, err_msg = parse_and_validate_admin_args(
+        context.args, 
+        ["prod_key", "plan_name"], 
+        "/clearstock", 
+        "/clearstock bala_mod 1_Day"
+    )
+    if not valid:
+        await update.message.reply_text(err_msg, parse_mode="HTML")
+        return
+
     try:
         prod_key = context.args[0]
         plan = context.args[1]
         KEYS_STOCK[(prod_key, plan)] = []
         await update.message.reply_text(f"✅ Cleared stock for <b>{prod_key}</b> ({plan})! Status is now <b>OUT OF STOCK</b>.", parse_mode="HTML")
-    except Exception:
-        await update.message.reply_text("<b>Usage:</b> `/clearstock <prod_key> <plan_name>`", parse_mode="HTML")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error clearing stock: {e}")
 
 async def cmd_viewkeys(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
+
+    valid, err_msg = parse_and_validate_admin_args(
+        context.args, 
+        ["prod_key", "plan_name"], 
+        "/viewkeys", 
+        "/viewkeys bala_mod 1_Day"
+    )
+    if not valid:
+        await update.message.reply_text(err_msg, parse_mode="HTML")
+        return
+
     try:
         prod_key = context.args[0]
         plan = context.args[1]
         keys = KEYS_STOCK.get((prod_key, plan), [])
         if not keys:
-            await update.message.reply_text("⚠️ No keys available in stock!")
+            await update.message.reply_text(f"⚠️ No keys available in stock for <b>{prod_key}</b> ({plan})!", parse_mode="HTML")
         else:
             keys_text = "\n".join([f"• <code>{k}</code>" for k in keys])
             await update.message.reply_text(f"🔑 <b>Available Keys ({prod_key} - {plan}):</b>\n\n{keys_text}", parse_mode="HTML")
-    except Exception:
-        await update.message.reply_text("<b>Usage:</b> `/viewkeys <prod_key> <plan_name>`", parse_mode="HTML")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error viewing keys: {e}")
 
 async def cmd_addproduct(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
+
+    valid, err_msg = parse_and_validate_admin_args(
+        context.args, 
+        ["category_type", "prod_key", "prod_name"], 
+        "/addproduct", 
+        "/addproduct non_root my_new_mod MY NEW MOD PANEL"
+    )
+    if not valid:
+        await update.message.reply_text(err_msg, parse_mode="HTML")
+        return
+
     try:
         category_type = context.args[0].lower()
         prod_key = context.args[1]
         prod_name = " ".join(context.args[2:])
+
+        if category_type not in ["non_root", "root", "ios", "pc"]:
+            await update.message.reply_text(
+                "❌ <b>Invalid Category Type!</b> Must be one of: <code>non_root</code>, <code>root</code>, <code>ios</code>, <code>pc</code>.\n\n"
+                "📝 <b>Example Usage:</b>\n<code>/addproduct non_root my_mod MY MOD NAME</code>",
+                parse_mode="HTML"
+            )
+            return
 
         new_prod_data = {"name": prod_name, "prices": []}
         if category_type == "non_root":
@@ -990,35 +1088,66 @@ async def cmd_addproduct(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif category_type == "pc":
             PC_PRODUCTS[prod_key] = new_prod_data
 
-        await update.message.reply_text(f"✅ Added new product <b>{prod_name}</b> (`{prod_key}`)!", parse_mode="HTML")
-    except Exception:
-        await update.message.reply_text("<b>Usage:</b> `/addproduct <non_root/root/ios/pc> <prod_key> <prod_name>`", parse_mode="HTML")
+        await update.message.reply_text(f"✅ Added new product <b>{prod_name}</b> (`{prod_key}`) under <b>{category_type}</b>!", parse_mode="HTML")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error adding product: {e}")
 
 async def cmd_addplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
+
+    valid, err_msg = parse_and_validate_admin_args(
+        context.args, 
+        ["prod_key", "plan_name", "price"], 
+        "/addplan", 
+        "/addplan bala_mod 1_Day 420"
+    )
+    if not valid:
+        await update.message.reply_text(err_msg, parse_mode="HTML")
+        return
+
     try:
         prod_key = context.args[0]
+        if not context.args[-1].isdigit():
+            await update.message.reply_text("❌ <b>Price must be a valid number!</b> Example: <code>450</code>", parse_mode="HTML")
+            return
+            
         price = int(context.args[-1])
-        plan_name = " ".join(context.args[1:-1])
+        plan_name = " ".join(context.args[1:-1]).replace(" ", "_")
 
         prod = get_product_by_key(prod_key)
         if prod:
             prod["prices"].append((plan_name, price))
             await update.message.reply_text(f"✅ Plan <b>{plan_name}</b> (₹{price}) added to <b>{prod_key}</b>!", parse_mode="HTML")
         else:
-            await update.message.reply_text("⚠️ Product key not found!")
-    except Exception:
-        await update.message.reply_text("<b>Usage:</b> `/addplan <prod_key> <plan_name> <price>`", parse_mode="HTML")
+            await update.message.reply_text(f"⚠️ Product key <code>{prod_key}</code> not found! Please check product key.", parse_mode="HTML")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error adding plan: {e}")
 
 async def cmd_setprice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
+
+    valid, err_msg = parse_and_validate_admin_args(
+        context.args, 
+        ["prod_key", "plan_name", "new_price"], 
+        "/setprice", 
+        "/setprice bala_mod 1_Day 450"
+    )
+    if not valid:
+        await update.message.reply_text(err_msg, parse_mode="HTML")
+        return
+
     try:
         args = context.args
         prod_key = args[0]
+        
+        if not args[-1].isdigit():
+            await update.message.reply_text("❌ <b>Price must be a valid number!</b> Example: <code>450</code>", parse_mode="HTML")
+            return
+
         new_price = int(args[-1])
-        plan = " ".join(args[1:-1])
+        plan = " ".join(args[1:-1]).replace(" ", "_")
         prod = get_product_by_key(prod_key)
         
         if prod:
@@ -1027,35 +1156,63 @@ async def cmd_setprice(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     prod["prices"][idx] = (p_name, new_price)
                     await update.message.reply_text(f"✅ Price updated for <b>{prod_key}</b> ({p_name}) to <b>₹{new_price}</b>!", parse_mode="HTML")
                     return
-        await update.message.reply_text("⚠️ Product or Plan not found!")
-    except Exception:
-        await update.message.reply_text("<b>Usage:</b> `/setprice <prod_key> <plan_name> <new_price>`", parse_mode="HTML")
+            await update.message.reply_text(f"⚠️ Plan <code>{plan}</code> not found under product <b>{prod_key}</b>!", parse_mode="HTML")
+        else:
+            await update.message.reply_text(f"⚠️ Product key <code>{prod_key}</code> not found!", parse_mode="HTML")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error updating price: {e}")
 
 async def cmd_maintain(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
+
+    valid, err_msg = parse_and_validate_admin_args(
+        context.args, 
+        ["prod_key", "status"], 
+        "/maintain", 
+        "/maintain bala_mod on"
+    )
+    if not valid:
+        await update.message.reply_text(err_msg, parse_mode="HTML")
+        return
+
     try:
         prod_key = context.args[0]
         status = context.args[1].lower()
+        if status not in ["on", "off"]:
+            await update.message.reply_text("❌ <b>Status must be 'on' or 'off'!</b> Example: <code>/maintain bala_mod on</code>", parse_mode="HTML")
+            return
+
         if status == "on":
             MAINTENANCE_MODE[prod_key] = True
             await update.message.reply_text(f"🛠️ <b>{prod_key}</b> is now set to <b>Under Maintenance</b>!", parse_mode="HTML")
         else:
             MAINTENANCE_MODE[prod_key] = False
             await update.message.reply_text(f"✅ <b>{prod_key}</b> maintenance mode disabled!", parse_mode="HTML")
-    except Exception:
-        await update.message.reply_text("<b>Usage:</b> `/maintain <prod_key> <on/off>`", parse_mode="HTML")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error changing maintenance state: {e}")
 
 async def cmd_addlink(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
+
+    valid, err_msg = parse_and_validate_admin_args(
+        context.args, 
+        ["prod_key", "url"], 
+        "/addlink", 
+        "/addlink bala_mod https://example.com/download.apk"
+    )
+    if not valid:
+        await update.message.reply_text(err_msg, parse_mode="HTML")
+        return
+
     try:
         prod_key = context.args[0]
         link_url = context.args[1]
         PRODUCT_LINKS[prod_key] = link_url
         await update.message.reply_text(f"✅ Download Link added for <b>{prod_key}</b>:\n{link_url}", parse_mode="HTML")
-    except Exception:
-        await update.message.reply_text("<b>Usage:</b> `/addlink <prod_key> <url>`", parse_mode="HTML")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error adding download link: {e}")
 
 async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -1088,7 +1245,11 @@ async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         msg_text = " ".join(context.args)
         if not msg_text:
-            await update.message.reply_text("⚠️ Please enter text or send a photo with `/broadcast` caption!", parse_mode="HTML")
+            await update.message.reply_text(
+                "❌ <b>Missing Broadcast Message!</b>\n\n"
+                "📝 <b>Example Usage:</b>\n<code>/broadcast Hello users, new update is available!</code>", 
+                parse_mode="HTML"
+            )
             return
         for u_id in users:
             try:
