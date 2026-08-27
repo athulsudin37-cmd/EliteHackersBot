@@ -48,25 +48,25 @@
         <div class="col-md-3">
             <div class="card p-3 text-center">
                 <h5><i class="fa-solid fa-users text-primary"></i> Total Users</h5>
-                <h2>{{ total_users }}</h2>
+                <h2>{{ total_users if total_users is defined else 0 }}</h2>
             </div>
         </div>
         <div class="col-md-3">
             <div class="card p-3 text-center">
                 <h5><i class="fa-solid fa-cart-shopping text-success"></i> Total Orders</h5>
-                <h2>{{ total_orders }}</h2>
+                <h2>{{ total_orders if total_orders is defined else 0 }}</h2>
             </div>
         </div>
         <div class="col-md-3">
             <div class="card p-3 text-center">
                 <h5><i class="fa-solid fa-indian-rupee-sign text-warning"></i> Total Revenue</h5>
-                <h2>₹{{ "%.2f"|format(total_revenue) }}</h2>
+                <h2>₹{{ total_revenue if total_revenue is defined else 0 }}</h2>
             </div>
         </div>
         <div class="col-md-3">
             <div class="card p-3 text-center">
                 <h5><i class="fa-solid fa-key text-danger"></i> Active Products</h5>
-                <h2>{{ products|length }}</h2>
+                <h2>{{ products|length if products is defined else 0 }}</h2>
             </div>
         </div>
     </div>
@@ -96,23 +96,31 @@
                             </tr>
                         </thead>
                         <tbody>
+                            {% if products is defined and products %}
                             {% for p in products %}
                             <tr>
-                                <td><code>{{ p.key }}</code></td>
-                                <td>{{ p.name }}</td>
-                                <td><span class="badge bg-secondary">{{ p.category }}</span></td>
+                                <td><code>{{ p.key if p.key is defined else p[0] }}</code></td>
+                                <td>{{ p.name if p.name is defined else p[1] }}</td>
+                                <td><span class="badge bg-secondary">{{ p.category if p.category is defined else p[2] }}</span></td>
                                 <td>
-                                    {% for plan, price in p.prices %}
-                                    <small class="d-block">{{ plan }}: ₹{{ price }}</small>
-                                    {% endfor %}
+                                    {% if p.prices is defined and p.prices %}
+                                        {% for plan, price in p.prices %}
+                                        <small class="d-block">{{ plan }}: ₹{{ price }}</small>
+                                        {% endfor %}
+                                    {% else %}
+                                        <small class="text-muted">N/A</small>
+                                    {% endif %}
                                 </td>
-                                <td><a href="{{ p.download_link }}" target="_blank" class="text-truncate d-inline-block" style="max-width: 150px;">{{ p.download_link or 'None' }}</a></td>
+                                <td><a href="{{ p.download_link if p.download_link is defined else '#' }}" target="_blank" class="text-truncate d-inline-block" style="max-width: 150px;">{{ p.download_link if p.download_link is defined else 'None' }}</a></td>
                                 <td>
-                                    <button class="btn btn-sm btn-success" onclick="openAddStockModal('{{ p.key }}')"><i class="fa-solid fa-plus"></i> Stock</button>
-                                    <button class="btn btn-sm btn-danger" onclick="deleteProduct('{{ p.key }}')"><i class="fa-solid fa-trash"></i></button>
+                                    <button class="btn btn-sm btn-success" onclick="openAddStockModal('{{ p.key if p.key is defined else p[0] }}')"><i class="fa-solid fa-plus"></i> Stock</button>
+                                    <button class="btn btn-sm btn-danger" onclick="deleteProduct('{{ p.key if p.key is defined else p[0] }}')"><i class="fa-solid fa-trash"></i></button>
                                 </td>
                             </tr>
                             {% endfor %}
+                            {% else %}
+                            <tr><td colspan="6" class="text-center">No products found</td></tr>
+                            {% endif %}
                         </tbody>
                     </table>
                 </div>
@@ -167,15 +175,15 @@
                     <form id="apiForm">
                         <div class="mb-3">
                             <label>API Restock Base URL</label>
-                            <input type="text" id="api_url" class="form-control" value="{{ api_cfg[0] }}">
+                            <input type="text" id="api_url" class="form-control" value="{{ api_cfg[0] if api_cfg is defined and api_cfg else '' }}">
                         </div>
                         <div class="mb-3">
                             <label>API Key</label>
-                            <input type="text" id="api_key" class="form-control" value="{{ api_cfg[1] }}">
+                            <input type="text" id="api_key" class="form-control" value="{{ api_cfg[1] if api_cfg is defined and api_cfg else '' }}">
                         </div>
                         <div class="mb-3">
                             <label>FamPay Verification Token</label>
-                            <input type="text" id="fam_token" class="form-control" value="{{ api_cfg[2] }}">
+                            <input type="text" id="fam_token" class="form-control" value="{{ api_cfg[2] if api_cfg is defined and api_cfg else '' }}">
                         </div>
                         <button type="button" class="btn btn-red" onclick="saveApiSettings()">Save API Configuration</button>
                     </form>
@@ -200,6 +208,7 @@
                             </tr>
                         </thead>
                         <tbody>
+                            {% if recent_orders is defined and recent_orders %}
                             {% for ord in recent_orders %}
                             <tr>
                                 <td><code>{{ ord[0] }}</code></td>
@@ -210,6 +219,9 @@
                                 <td>{{ ord[5] }}</td>
                             </tr>
                             {% endfor %}
+                            {% else %}
+                            <tr><td colspan="6" class="text-center">No recent orders found</td></tr>
+                            {% endif %}
                         </tbody>
                     </table>
                 </div>
@@ -276,4 +288,5 @@ function saveApiSettings() {
 </script>
 {% endif %}
 </body>
-  </html>
+</html>
+
