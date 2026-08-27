@@ -12,8 +12,8 @@ import urllib.parse
 from threading import Thread
 from datetime import datetime
 import pytz
-from flask import Flask
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from flask import Flask, render_template, request, jsonify, redirect, url_for, session
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -30,37 +30,20 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ==========================================
-# 🌐 FLASK KEEP-ALIVE SERVER
-# ==========================================
-flask_app = Flask('')
-
-@flask_app.route('/')
-def home():
-    return "Bot is alive and running 24/7!"
-
-def run_flask():
-    port = int(os.environ.get("PORT", 8080))
-    flask_app.run(host='0.0.0.0', port=port)
-
-def keep_alive():
-    t = Thread(target=run_flask)
-    t.daemon = True
-    t.start()
-
-# ==========================================
-# ⚙️ CONFIGURATION & CONFIG CONSTANTS
+# ⚙️ CONFIGURATION & CONSTANTS
 # ==========================================
 BOT_TOKEN = "8892856619:AAGZhdOv389_AaKvbcbInlJAiDMOwQxOeHc"
 ADMIN_ID = 7616127905
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")  # Change password here or via ENV
 RECEIVER_UPI_ID = "9544113089@fam"
 GMAIL_USER = os.environ.get("GMAIL_USER", "athulsudin37@gmail.com")
 GMAIL_APP_PASS = os.environ.get("GMAIL_APP_PASS", "")
 
-ACTIVE_ORDERS = {}       # admin_msg_id -> order_data
-MAINTENANCE_MODE = {}    # prod_key -> True/False
-PRODUCT_LINKS = {}       # prod_key -> download_url_string
-KEYS_STOCK = {}          # (prod_key, plan_name) -> list of key strings
-USED_UTRS = set()        # Used UTR list for double-spending protection
+ACTIVE_ORDERS = {}       
+MAINTENANCE_MODE = {}    
+PRODUCT_LINKS = {}       
+KEYS_STOCK = {}          
+API_SETTINGS = {}
 
 # ==========================================
 # 🗄️ SQLITE DATABASE MANAGEMENT
@@ -71,7 +54,6 @@ def init_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     
-    # Users table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -82,7 +64,6 @@ def init_db():
         )
     ''')
     
-    # Orders history table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS order_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -96,7 +77,6 @@ def init_db():
         )
     ''')
     
-    # Stock Keys table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS key_stock (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -106,10 +86,23 @@ def init_db():
         )
     ''')
 
-    # Used UTRs table
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS used_utrs (
-            utr TEXT PRIMARY KEY
+        CREATE TABLE IF NOT EXISTS products (
+            prod_key TEXT PRIMARY KEY,
+            name TEXT,
+            category TEXT,
+            prices TEXT,
+            download_link TEXT,
+            maintenance INTEGER DEFAULT 0
+        )
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS api_config (
+            id INTEGER PRIMARY KEY DEFAULT 1,
+            api_url TEXT,
+            api_key TEXT,
+            fam_api_token TEXT
         )
     ''')
 
@@ -142,7 +135,6 @@ def db_add_order(user_id, prod_name, plan, key_delivered, amount, utr, timestamp
         INSERT INTO order_history (user_id, prod_name, plan, key_delivered, amount, utr, timestamp)
         VALUES (?, ?, ?, ?, ?, ?, ?)
     ''', (user_id, prod_name, plan, key_delivered, amount, utr, timestamp))
-    
     cursor.execute('UPDATE users SET orders_count = orders_count + 1 WHERE user_id = ?', (user_id,))
     conn.commit()
     conn.close()
@@ -158,99 +150,76 @@ def db_get_user_history(user_id, limit=5):
     conn.close()
     return rows
 
+def load_products_from_db():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('SELECT prod_key, name, category, prices, download_link, maintenance FROM products')
+    rows = cursor.fetchall()
+    conn.close()
+
+    cat_map = {
+        "non_root": NON_ROOT_PRODUCTS,
+        "root": ROOT_PRODUCTS,
+        "ios": IOS_PRODUCTS,
+        "pc": PC_PRODUCTS,
+        "likes": LIKE_PRODUCTS
+    }
+
+    for row in rows:
+        p_key, name, category, prices_json, d_link, maint = row
+        prices = json.loads(prices_json)
+        if category in cat_map:
+            cat_map[category][p_key] = {"name": name, "prices": [tuple(p) for p in prices]}
+        if d_link:
+            PRODUCT_LINKS[p_key] = d_link
+        MAINTENANCE_MODE[p_key] = bool(maint)
+
+def db_seed_initial_products():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('SELECT COUNT(*) FROM products')
+    count = cursor.fetchone()[0]
+    
+    if count == 0:
+        initial_data = [
+            ("bala_mod", "BALA MOD NON ROOT", "non_root", [("1_Hour", 45), ("2_Hour", 85), ("4_Hour", 150), ("6_Hour", 220), ("12_Hour", 300), ("1_Day", 420), ("3_Day", 1050)]),
+            ("tm_pannel", "TM PANNEL NON ROOT", "non_root", [("1_Day", 70), ("7_Day", 210), ("15_Day", 310), ("31_Day", 450), ("Lifetime_Permanent", 1100)]),
+            ("drip_client", "DRIP CLIENT APK MOD", "non_root", [("1_Day", 80), ("3_Day", 140), ("7_Day", 250), ("15_Day", 360), ("31_Day", 500)]),
+            ("prime_hook", "PRIME HOOK APK MOD", "non_root", [("1_Day", 80), ("3_Day", 170), ("7_Day", 320), ("10_Day", 420)]),
+            ("hg_cheat", "HG CHEAT APK MOD", "non_root", [("1_Day", 100), ("7_Day", 230), ("10_Day", 330), ("30_Day", 690)]),
+            ("silent_cheat", "SILENT CHEAT SAFE", "non_root", [("1_Day", 90), ("3_Day", 190), ("7_Day", 320), ("15_Day", 550), ("30_Day", 830)]),
+            ("drip_proxy", "DRIP CLIENT PROXY", "non_root", [("1_Day", 65), ("3_Day", 140), ("7_Day", 260), ("31_Day", 650)]),
+            ("rapid_core", "RAPID CORE INJECTOR", "root", [("1_Day", 90), ("7_Day", 310), ("15_Day", 470), ("30_Day", 690)]),
+            ("neo_strike", "NEO STRIKE BRUTAL", "root", [("1_Day", 90), ("3_Day", 180), ("7_Day", 310), ("14_Day", 590), ("28_Day", 899)]),
+            ("haxx_cker", "HAXX-CKER PRO", "root", [("10_Day", 550)]),
+            ("xytron_pro", "XYTRON PRO", "root", [("1_Day", 100), ("7_Day", 310), ("15_Day", 550), ("31_Day", 830)]),
+            ("br_mod", "BR MOD INJECTOR", "root", [("1_Day", 90), ("7_Day", 250), ("15_Day", 420), ("31_Day", 570)]),
+            ("angry_mod", "ANGRY MOD", "root", [("1_Day", 70), ("7_Day", 130), ("15_Day", 170), ("31_Day", 290)]),
+            ("xyz_cheats", "XYZ CHEATS", "root", [("1_Day", 80), ("3_Day", 160), ("7_Day", 310), ("15_Day", 520), ("30_Day", 880)]),
+            ("migul_pro", "MIGUL PRO IOS", "ios", [("1_Day", 200), ("7_Day", 480), ("31_Day", 900)]),
+            ("flourite_ios", "FLOURITE IOS", "ios", [("1_Day", 270), ("7_Day", 780), ("31_Day", 1600)]),
+            ("br_mod_pc", "BR MOD PC", "pc", [("1_Day", 150), ("10_Day", 550), ("31_Day", 900)]),
+            ("internal_pc", "INTERNAL PC", "pc", [("1_Day", 99), ("3_Day", 199), ("7_Day", 370), ("15_Day", 650), ("30_Day", 900), ("Lifetime_Permanent", 2100)]),
+            ("auto_like_everyday", "AUTO LIKE EVERY DAY", "likes", [("7_DAYS", 90), ("15_DAYS", 160), ("30_DAYS", 275), ("90_DAYS", 730)])
+        ]
+        for key, name, cat, prices in initial_data:
+            cursor.execute('''
+                INSERT INTO products (prod_key, name, category, prices, download_link, maintenance)
+                VALUES (?, ?, ?, ?, ?, 0)
+            ''', (key, name, cat, json.dumps(prices), ""))
+        conn.commit()
+    conn.close()
+
+# Product Storage Dictionaries
+NON_ROOT_PRODUCTS = {}
+ROOT_PRODUCTS = {}
+IOS_PRODUCTS = {}
+PC_PRODUCTS = {}
+LIKE_PRODUCTS = {}
+
 init_db()
-
-# Products Data
-NON_ROOT_PRODUCTS = {
-    "bala_mod": {
-        "name": "BALA MOD NON ROOT",
-        "prices": [("1_Hour", 45), ("2_Hour", 85), ("4_Hour", 150), ("6_Hour", 220), ("12_Hour", 300), ("1_Day", 420), ("3_Day", 1050)]
-    },
-    "tm_pannel": {
-        "name": "TM PANNEL NON ROOT",
-        "prices": [("1_Day", 70), ("7_Day", 210), ("15_Day", 310), ("31_Day", 450), ("Lifetime_Permanent", 1100)]
-    },
-    "drip_client": {
-        "name": "DRIP CLIENT APK MOD",
-        "prices": [("1_Day", 80), ("3_Day", 140), ("7_Day", 250), ("15_Day", 360), ("31_Day", 500)]
-    },
-    "prime_hook": {
-        "name": "PRIME HOOK APK MOD",
-        "prices": [("1_Day", 80), ("3_Day", 170), ("7_Day", 320), ("10_Day", 420)]
-    },
-    "hg_cheat": {
-        "name": "HG CHEAT APK MOD",
-        "prices": [("1_Day", 100), ("7_Day", 230), ("10_Day", 330), ("30_Day", 690)]
-    },
-    "silent_cheat": {
-        "name": "SILENT CHEAT SAFE",
-        "prices": [("1_Day", 90), ("3_Day", 190), ("7_Day", 320), ("15_Day", 550), ("30_Day", 830)]
-    },
-    "drip_proxy": {
-        "name": "DRIP CLIENT PROXY",
-        "prices": [("1_Day", 65), ("3_Day", 140), ("7_Day", 260), ("31_Day", 650)]
-    }
-}
-
-ROOT_PRODUCTS = {
-    "rapid_core": {
-        "name": "RAPID CORE INJECTOR",
-        "prices": [("1_Day", 90), ("7_Day", 310), ("15_Day", 470), ("30_Day", 690)]
-    },
-    "neo_strike": {
-        "name": "NEO STRIKE BRUTAL",
-        "prices": [("1_Day", 90), ("3_Day", 180), ("7_Day", 310), ("14_Day", 590), ("28_Day", 899)]
-    },
-    "haxx_cker": {
-        "name": "HAXX-CKER PRO",
-        "prices": [("10_Day", 550)]
-    },
-    "xytron_pro": {
-        "name": "XYTRON PRO",
-        "prices": [("1_Day", 100), ("7_Day", 310), ("15_Day", 550), ("31_Day", 830)]
-    },
-    "br_mod": {
-        "name": "BR MOD INJECTOR",
-        "prices": [("1_Day", 90), ("7_Day", 250), ("15_Day", 420), ("31_Day", 570)]
-    },
-    "angry_mod": {
-        "name": "ANGRY MOD",
-        "prices": [("1_Day", 70), ("7_Day", 130), ("15_Day", 170), ("31_Day", 290)]
-    },
-    "xyz_cheats": {
-        "name": "XYZ CHEATS",
-        "prices": [("1_Day", 80), ("3_Day", 160), ("7_Day", 310), ("15_Day", 520), ("30_Day", 880)]
-    }
-}
-
-IOS_PRODUCTS = {
-    "migul_pro": {
-        "name": "MIGUL PRO IOS",
-        "prices": [("1_Day", 200), ("7_Day", 480), ("31_Day", 900)]
-    },
-    "flourite_ios": {
-        "name": "FLOURITE IOS",
-        "prices": [("1_Day", 270), ("7_Day", 780), ("31_Day", 1600)]
-    }
-}
-
-PC_PRODUCTS = {
-    "br_mod_pc": {
-        "name": "BR MOD PC",
-        "prices": [("1_Day", 150), ("10_Day", 550), ("31_Day", 900)]
-    },
-    "internal_pc": {
-        "name": "INTERNAL PC",
-        "prices": [("1_Day", 99), ("3_Day", 199), ("7_Day", 370), ("15_Day", 650), ("30_Day", 900), ("Lifetime_Permanent", 2100)]
-    }
-}
-
-LIKE_PRODUCTS = {
-    "auto_like_everyday": {
-        "name": "AUTO LIKE EVERY DAY",
-        "prices": [("7_DAYS", 90), ("15_DAYS", 160), ("30_DAYS", 275), ("90_DAYS", 730)]
-    }
-}
+db_seed_initial_products()
+load_products_from_db()
 
 ALL_CATEGORIES = [NON_ROOT_PRODUCTS, ROOT_PRODUCTS, IOS_PRODUCTS, PC_PRODUCTS, LIKE_PRODUCTS]
 
@@ -333,6 +302,158 @@ async def verify_fampay_gmail_payment(expected_amount, utr=None, retries=2, dela
     return False, last_reason
 
 # ==========================================
+# 🌐 FLASK WEB ADMIN DASHBOARD SERVER
+# ==========================================
+flask_app = Flask(__name__)
+flask_app.secret_key = os.urandom(24)
+
+@flask_app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        pwd = request.form.get('password')
+        if pwd == ADMIN_PASSWORD:
+            session['logged_in'] = True
+            return redirect(url_for('admin_dashboard'))
+        return render_template('admin.html', error="Invalid Admin Password!")
+    return render_template('admin.html', auth_only=True)
+
+@flask_app.route('/')
+@flask_app.route('/admin')
+def admin_dashboard():
+    if not session.get('logged_in'):
+        return redirect(url_for('login'))
+    
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('SELECT prod_key, name, category, prices, download_link, maintenance FROM products')
+    prods_raw = cursor.fetchall()
+    
+    products_list = []
+    for p in prods_raw:
+        products_list.append({
+            "key": p[0], "name": p[1], "category": p[2], 
+            "prices": json.loads(p[3]), "download_link": p[4], "maintenance": bool(p[5])
+        })
+        
+    cursor.execute('SELECT COUNT(*) FROM users')
+    total_users = cursor.fetchone()[0]
+    cursor.execute('SELECT COUNT(*) FROM order_history')
+    total_orders = cursor.fetchone()[0]
+    cursor.execute('SELECT SUM(amount) FROM order_history')
+    total_rev = cursor.fetchone()[0] or 0.0
+    
+    cursor.execute('SELECT user_id, prod_name, plan, key_delivered, amount, timestamp FROM order_history ORDER BY id DESC LIMIT 10')
+    recent_orders = cursor.fetchall()
+
+    cursor.execute('SELECT api_url, api_key, fam_api_token FROM api_config WHERE id = 1')
+    api_cfg = cursor.fetchone() or ("", "", "")
+    conn.close()
+
+    stock_data = {}
+    for (pk, plan), k_list in KEYS_STOCK.items():
+        stock_data[f"{pk} ({plan})"] = len(k_list)
+
+    return render_template(
+        'admin.html',
+        products=products_list,
+        total_users=total_users,
+        total_orders=total_orders,
+        total_revenue=total_rev,
+        recent_orders=recent_orders,
+        stock_data=stock_data,
+        api_cfg=api_cfg
+    )
+
+@flask_app.route('/api/add_product', methods=['POST'])
+def api_add_product():
+    if not session.get('logged_in'):
+        return jsonify({"success": False, "message": "Unauthorized"}), 401
+
+    data = request.json
+    prod_key = data.get('prod_key').strip().lower().replace(" ", "_")
+    name = data.get('name').strip()
+    category = data.get('category')
+    prices = data.get('prices') # List of tuples/lists [[plan, price]]
+    download_link = data.get('download_link', '')
+
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT OR REPLACE INTO products (prod_key, name, category, prices, download_link, maintenance)
+        VALUES (?, ?, ?, ?, ?, 0)
+    ''', (prod_key, name, category, json.dumps(prices), download_link))
+    conn.commit()
+    conn.close()
+
+    load_products_from_db()
+    return jsonify({"success": True, "message": "Product added successfully!"})
+
+@flask_app.route('/api/delete_product', methods=['POST'])
+def api_delete_product():
+    if not session.get('logged_in'):
+        return jsonify({"success": False, "message": "Unauthorized"}), 401
+    
+    prod_key = request.json.get('prod_key')
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('DELETE FROM products WHERE prod_key = ?', (prod_key,))
+    conn.commit()
+    conn.close()
+
+    for cat in ALL_CATEGORIES:
+        cat.pop(prod_key, None)
+
+    return jsonify({"success": True, "message": "Product deleted successfully!"})
+
+@flask_app.route('/api/add_stock', methods=['POST'])
+def api_add_stock():
+    if not session.get('logged_in'):
+        return jsonify({"success": False, "message": "Unauthorized"}), 401
+
+    data = request.json
+    prod_key = data.get('prod_key')
+    plan = data.get('plan')
+    keys = [k.strip() for k in data.get('keys').split("\n") if k.strip()]
+
+    target_tuple = (prod_key, plan)
+    if target_tuple not in KEYS_STOCK:
+        KEYS_STOCK[target_tuple] = []
+    KEYS_STOCK[target_tuple].extend(keys)
+
+    return jsonify({"success": True, "message": f"Added {len(keys)} keys successfully!"})
+
+@flask_app.route('/api/save_api_settings', methods=['POST'])
+def api_save_settings():
+    if not session.get('logged_in'):
+        return jsonify({"success": False, "message": "Unauthorized"}), 401
+
+    data = request.json
+    api_url = data.get('api_url')
+    api_key = data.get('api_key')
+    token = data.get('fam_api_token')
+
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO api_config (id, api_url, api_key, fam_api_token)
+        VALUES (1, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET api_url=?, api_key=?, fam_api_token=?
+    ''', (api_url, api_key, token, api_url, api_key, token))
+    conn.commit()
+    conn.close()
+
+    return jsonify({"success": True, "message": "API Configuration saved!"})
+
+def run_flask():
+    port = int(os.environ.get("PORT", 8080))
+    flask_app.run(host='0.0.0.0', port=port)
+
+def keep_alive():
+    t = Thread(target=run_flask)
+    t.daemon = True
+    t.start()
+
+# ==========================================
 # 🚀 START & WELCOME MESSAGE
 # ==========================================
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -384,7 +505,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
 
         if user.id == ADMIN_ID:
-            keyboard.append([InlineKeyboardButton("👑 Admin Panel", callback_data="admin_panel_home")])
+            # Added Render Web Dashboard Integration
+            web_app_url = os.environ.get("RENDER_EXTERNAL_URL", "http://localhost:8080") + "/admin"
+            keyboard.append([InlineKeyboardButton("👑 Web Admin Panel", url=web_app_url)])
+            keyboard.append([InlineKeyboardButton("👑 Telegram Admin Menu", callback_data="admin_panel_home")])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -400,7 +524,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in start_command: {e}")
 
 # ==========================================
-# 👑 NO-SLASH BUTTON BASED ADMIN PANEL
+# 👑 BOT ADMIN PANEL HANDLERS
 # ==========================================
 async def admin_panel_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -411,7 +535,7 @@ async def admin_panel_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = (
         "👑 <b>WELCOME TO ADMIN CONTROL PANEL</b>\n\n"
-        " Select an option below to control your shop without typing commands:"
+        "Select an option below to control your shop without typing commands:"
     )
     keyboard = [
         [InlineKeyboardButton("➕ Add Key to Stock", callback_data="admin_opt_addkey"), InlineKeyboardButton("🔑 View Stock", callback_data="admin_opt_viewkeys")],
@@ -435,7 +559,7 @@ async def admin_option_click(update: Update, context: ContextTypes.DEFAULT_TYPE)
         context.user_data['admin_flow'] = 'WAITING_ADDKEY'
         msg = (
             "➕ <b>ADD KEYS TO STOCK</b>\n\n"
-            "Please send the details in this exact format:\n"
+            "Please send details in this format:\n"
             "<code>prod_key plan_name key1, key2, key3</code>\n\n"
             "<b>Example:</b>\n"
             "<code>bala_mod 1_Day ABC123KEY, XYZ456KEY</code>"
@@ -485,7 +609,7 @@ async def admin_option_click(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
     elif cb == "admin_opt_broadcast":
         context.user_data['admin_flow'] = 'WAITING_BROADCAST'
-        msg = "📢 <b>BROADCAST MESSAGE</b>\n\nSend the text or photo message you want to broadcast to all users."
+        msg = "📢 <b>BROADCAST MESSAGE</b>\n\nSend text or photo message to broadcast to all users."
 
     keyboard = [[InlineKeyboardButton("❌ Cancel & Return", callback_data="admin_panel_home")]]
     await query.message.edit_text(msg, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -561,10 +685,10 @@ async def how_to_use_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "═══════════════════════\n"
         "📖 <b>HOW TO USE — FF SERVICES SHOP</b>\n"
         "═══════════════════════\n\n"
-        "1️⃣ Tap <b>🛒 Shop Now</b> to view the store.\n"
+        "1️⃣ Tap <b>🛒 Shop Now</b> to view store.\n"
         "2️⃣ Choose your product category.\n"
         "3️⃣ Pick your desired product and duration.\n"
-        "4️⃣ Scan the UPI QR Code provided.\n"
+        "4️⃣ Scan UPI QR Code provided.\n"
         "5️⃣ Pay the exact dynamic total amount shown.\n"
         "6️⃣ Tap <b>[ VERIFY PAYMENT ]</b> button after paying.\n"
         "7️⃣ System auto-verifies payment & key is delivered instantly! 🚀"
@@ -687,7 +811,7 @@ async def show_product_prices(update: Update, context: ContextTypes.DEFAULT_TYPE
         lines.append(f"• {btn_text}")
         keyboard.append([InlineKeyboardButton(btn_text, callback_data=cb)])
 
-    if prod_key in PRODUCT_LINKS:
+    if prod_key in PRODUCT_LINKS and PRODUCT_LINKS[prod_key]:
         keyboard.append([InlineKeyboardButton("📥 Download File/Apk", url=PRODUCT_LINKS[prod_key])])
 
     keyboard.append([InlineKeyboardButton("🔙 Back", callback_data=back_target)])
@@ -707,7 +831,6 @@ async def order_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     base_price = float(parts[-1])
     plan = "_".join(parts[2:-1])
 
-    # Dynamic decimal amount addition
     random_paisa = round(random.randint(1, 99) / 100.0, 2)
     final_price = round(base_price + random_paisa, 2)
 
@@ -783,7 +906,6 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     context.user_data['qr_msg_id'] = sent_msg.message_id
 
-    # 5-Second Live Timer Loop
     async def timer_loop():
         msg_id = sent_msg.message_id
         chat_id = sent_msg.chat_id
@@ -911,7 +1033,7 @@ async def verify_payment_btn_handler(update: Update, context: ContextTypes.DEFAU
             pass
         fail_text = (
             "❌ <b>Payment Not Received Yet!</b>\n\n"
-            "Please complete the payment on your UPI App and try tapping <b>VERIFY PAYMENT</b> again."
+            "Please complete payment on your UPI App and try tapping <b>VERIFY PAYMENT</b> again."
         )
         await query.message.reply_text(fail_text, parse_mode="HTML")
 
@@ -992,6 +1114,13 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                     for idx, (p_name, p_price) in enumerate(prod["prices"]):
                         if p_name.lower() == plan.lower():
                             prod["prices"][idx] = (p_name, new_price)
+                            
+                            conn = sqlite3.connect(DB_FILE)
+                            cursor = conn.cursor()
+                            cursor.execute('UPDATE products SET prices = ? WHERE prod_key = ?', (json.dumps(prod["prices"]), prod_key))
+                            conn.commit()
+                            conn.close()
+
                             await update.message.reply_text(f"✅ Price updated for <b>{prod_key}</b> ({p_name}) to <b>₹{new_price}</b>!", parse_mode="HTML")
                             break
             except Exception as e:
@@ -1004,8 +1133,16 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 parts = text.split(" ")
                 prod_key = parts[0]
                 status = parts[1].lower()
-                MAINTENANCE_MODE[prod_key] = (status == "on")
-                st_str = "ENABLED 🛠️" if MAINTENANCE_MODE[prod_key] else "DISABLED ✅"
+                is_maint = (status == "on")
+                MAINTENANCE_MODE[prod_key] = is_maint
+                
+                conn = sqlite3.connect(DB_FILE)
+                cursor = conn.cursor()
+                cursor.execute('UPDATE products SET maintenance = ? WHERE prod_key = ?', (1 if is_maint else 0, prod_key))
+                conn.commit()
+                conn.close()
+
+                st_str = "ENABLED 🛠️" if is_maint else "DISABLED ✅"
                 await update.message.reply_text(f"Maintenance mode for <b>{prod_key}</b> is now <b>{st_str}</b>!", parse_mode="HTML")
             except Exception as e:
                 await update.message.reply_text(f"❌ Invalid format! Error: {e}")
@@ -1018,6 +1155,13 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 prod_key = parts[0]
                 link_url = parts[1]
                 PRODUCT_LINKS[prod_key] = link_url
+                
+                conn = sqlite3.connect(DB_FILE)
+                cursor = conn.cursor()
+                cursor.execute('UPDATE products SET download_link = ? WHERE prod_key = ?', (link_url, prod_key))
+                conn.commit()
+                conn.close()
+
                 await update.message.reply_text(f"✅ Download Link added for <b>{prod_key}</b>:\n{link_url}", parse_mode="HTML")
             except Exception as e:
                 await update.message.reply_text(f"❌ Invalid format! Error: {e}")
@@ -1088,7 +1232,7 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     if user.id != ADMIN_ID:
         restart_btn = [[InlineKeyboardButton("🔄 Click /start to Restart", callback_data="main_menu")]]
         await update.message.reply_text(
-            "❌ <b>Unknown Command or Message!</b>\n\nPlease restart the bot by clicking 👉 /start",
+            "❌ <b>Unknown Command or Message!</b>\n\nPlease restart bot by clicking 👉 /start",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(restart_btn)
         )
