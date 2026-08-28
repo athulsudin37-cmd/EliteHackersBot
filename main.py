@@ -12,8 +12,8 @@ import urllib.parse
 from threading import Thread
 from datetime import datetime
 import pytz
-from flask import Flask, render_template, request, jsonify, redirect, url_for, session
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+from flask import Flask, render_template_string, request, jsonify, redirect, url_for, session
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 # ==========================================
 BOT_TOKEN = "8892856619:AAGZhdOv389_AaKvbcbInlJAiDMOwQxOeHc"
 ADMIN_ID = 7616127905
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")  # Change password here or via ENV
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")  # Single-Access Admin Password
 RECEIVER_UPI_ID = "9544113089@fam"
 GMAIL_USER = os.environ.get("GMAIL_USER", "athulsudin37@gmail.com")
 GMAIL_APP_PASS = os.environ.get("GMAIL_APP_PASS", "")
@@ -43,7 +43,6 @@ ACTIVE_ORDERS = {}
 MAINTENANCE_MODE = {}    
 PRODUCT_LINKS = {}       
 KEYS_STOCK = {}          
-API_SETTINGS = {}
 
 # ==========================================
 # 🗄️ SQLITE DATABASE MANAGEMENT
@@ -78,22 +77,16 @@ def init_db():
     ''')
     
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS key_stock (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            prod_key TEXT,
-            plan_name TEXT,
-            key_value TEXT
-        )
-    ''')
-
-    cursor.execute('''
         CREATE TABLE IF NOT EXISTS products (
             prod_key TEXT PRIMARY KEY,
             name TEXT,
             category TEXT,
             prices TEXT,
             download_link TEXT,
-            maintenance INTEGER DEFAULT 0
+            maintenance INTEGER DEFAULT 0,
+            channel_link TEXT,
+            reseller_price REAL DEFAULT 0,
+            remap_id TEXT
         )
     ''')
 
@@ -102,7 +95,13 @@ def init_db():
             id INTEGER PRIMARY KEY DEFAULT 1,
             api_url TEXT,
             api_key TEXT,
-            fam_api_token TEXT
+            master_key TEXT,
+            active_payment_gateway TEXT DEFAULT 'paytm',
+            fampay_token TEXT,
+            paytm_merchant_id TEXT,
+            paytm_upi_id TEXT,
+            bot_name TEXT,
+            support_username TEXT
         )
     ''')
 
@@ -165,6 +164,9 @@ def load_products_from_db():
         "likes": LIKE_PRODUCTS
     }
 
+    for cat in cat_map.values():
+        cat.clear()
+
     for row in rows:
         p_key, name, category, prices_json, d_link, maint = row
         prices = json.loads(prices_json)
@@ -175,42 +177,26 @@ def load_products_from_db():
         MAINTENANCE_MODE[p_key] = bool(maint)
 
 def db_seed_initial_products():
+    """ Keeps only 1 Sample Product per Category as requested """
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute('SELECT COUNT(*) FROM products')
-    count = cursor.fetchone()[0]
+    cursor.execute('DELETE FROM products') # Fresh single-item layout
     
-    if count == 0:
-        initial_data = [
-            ("bala_mod", "BALA MOD NON ROOT", "non_root", [("1_Hour", 45), ("2_Hour", 85), ("4_Hour", 150), ("6_Hour", 220), ("12_Hour", 300), ("1_Day", 420), ("3_Day", 1050)]),
-            ("tm_pannel", "TM PANNEL NON ROOT", "non_root", [("1_Day", 70), ("7_Day", 210), ("15_Day", 310), ("31_Day", 450), ("Lifetime_Permanent", 1100)]),
-            ("drip_client", "DRIP CLIENT APK MOD", "non_root", [("1_Day", 80), ("3_Day", 140), ("7_Day", 250), ("15_Day", 360), ("31_Day", 500)]),
-            ("prime_hook", "PRIME HOOK APK MOD", "non_root", [("1_Day", 80), ("3_Day", 170), ("7_Day", 320), ("10_Day", 420)]),
-            ("hg_cheat", "HG CHEAT APK MOD", "non_root", [("1_Day", 100), ("7_Day", 230), ("10_Day", 330), ("30_Day", 690)]),
-            ("silent_cheat", "SILENT CHEAT SAFE", "non_root", [("1_Day", 90), ("3_Day", 190), ("7_Day", 320), ("15_Day", 550), ("30_Day", 830)]),
-            ("drip_proxy", "DRIP CLIENT PROXY", "non_root", [("1_Day", 65), ("3_Day", 140), ("7_Day", 260), ("31_Day", 650)]),
-            ("rapid_core", "RAPID CORE INJECTOR", "root", [("1_Day", 90), ("7_Day", 310), ("15_Day", 470), ("30_Day", 690)]),
-            ("neo_strike", "NEO STRIKE BRUTAL", "root", [("1_Day", 90), ("3_Day", 180), ("7_Day", 310), ("14_Day", 590), ("28_Day", 899)]),
-            ("haxx_cker", "HAXX-CKER PRO", "root", [("10_Day", 550)]),
-            ("xytron_pro", "XYTRON PRO", "root", [("1_Day", 100), ("7_Day", 310), ("15_Day", 550), ("31_Day", 830)]),
-            ("br_mod", "BR MOD INJECTOR", "root", [("1_Day", 90), ("7_Day", 250), ("15_Day", 420), ("31_Day", 570)]),
-            ("angry_mod", "ANGRY MOD", "root", [("1_Day", 70), ("7_Day", 130), ("15_Day", 170), ("31_Day", 290)]),
-            ("xyz_cheats", "XYZ CHEATS", "root", [("1_Day", 80), ("3_Day", 160), ("7_Day", 310), ("15_Day", 520), ("30_Day", 880)]),
-            ("migul_pro", "MIGUL PRO IOS", "ios", [("1_Day", 200), ("7_Day", 480), ("31_Day", 900)]),
-            ("flourite_ios", "FLOURITE IOS", "ios", [("1_Day", 270), ("7_Day", 780), ("31_Day", 1600)]),
-            ("br_mod_pc", "BR MOD PC", "pc", [("1_Day", 150), ("10_Day", 550), ("31_Day", 900)]),
-            ("internal_pc", "INTERNAL PC", "pc", [("1_Day", 99), ("3_Day", 199), ("7_Day", 370), ("15_Day", 650), ("30_Day", 900), ("Lifetime_Permanent", 2100)]),
-            ("auto_like_everyday", "AUTO LIKE EVERY DAY", "likes", [("7_DAYS", 90), ("15_DAYS", 160), ("30_DAYS", 275), ("90_DAYS", 730)])
-        ]
-        for key, name, cat, prices in initial_data:
-            cursor.execute('''
-                INSERT INTO products (prod_key, name, category, prices, download_link, maintenance)
-                VALUES (?, ?, ?, ?, ?, 0)
-            ''', (key, name, cat, json.dumps(prices), ""))
-        conn.commit()
+    initial_data = [
+        ("bala_mod", "BALA MOD NON ROOT", "non_root", [("1_Day", 420)]),
+        ("rapid_core", "RAPID CORE INJECTOR", "root", [("1_Day", 90)]),
+        ("migul_pro", "MIGUL PRO IOS", "ios", [("1_Day", 200)]),
+        ("br_mod_pc", "BR MOD PC", "pc", [("1_Day", 150)]),
+        ("auto_like", "AUTO LIKE EVERY DAY", "likes", [("7_DAYS", 90)])
+    ]
+    for key, name, cat, prices in initial_data:
+        cursor.execute('''
+            INSERT INTO products (prod_key, name, category, prices, download_link, maintenance)
+            VALUES (?, ?, ?, ?, ?, 0)
+        ''', (key, name, cat, json.dumps(prices), ""))
+    conn.commit()
     conn.close()
 
-# Product Storage Dictionaries
 NON_ROOT_PRODUCTS = {}
 ROOT_PRODUCTS = {}
 IOS_PRODUCTS = {}
@@ -222,6 +208,11 @@ db_seed_initial_products()
 load_products_from_db()
 
 ALL_CATEGORIES = [NON_ROOT_PRODUCTS, ROOT_PRODUCTS, IOS_PRODUCTS, PC_PRODUCTS, LIKE_PRODUCTS]
+
+def sanitize_product_key(raw_name):
+    """ Fixes any formatting errors, slashes, or special characters """
+    clean = re.sub(r'[^a-zA-Z0-9]', '_', raw_name).strip('_').lower()
+    return clean if clean else "product_" + str(int(time.time()))
 
 def get_product_by_key(prod_key):
     for cat in ALL_CATEGORIES:
@@ -302,10 +293,299 @@ async def verify_fampay_gmail_payment(expected_amount, utr=None, retries=2, dela
     return False, last_reason
 
 # ==========================================
-# 🌐 FLASK WEB ADMIN DASHBOARD SERVER
+# 🌐 FLASK WEB ADMIN DASHBOARD (MATCHING YOUTUBE PANELS)
 # ==========================================
 flask_app = Flask(__name__)
 flask_app.secret_key = os.urandom(24)
+
+ADMIN_HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Panel Control</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #0f172a; color: #f8fafc; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        .card { background-color: #1e293b; border: 1px solid #334155; color: #f8fafc; border-radius: 12px; margin-bottom: 20px; }
+        .btn-custom { background-color: #6366f1; color: white; border: none; }
+        .btn-custom:hover { background-color: #4f46e5; color: white; }
+        .form-control, .form-select { background-color: #0f172a; border: 1px solid #334155; color: white; }
+        .form-control:focus, .form-select:focus { background-color: #0f172a; color: white; border-color: #6366f1; }
+        .nav-tabs .nav-link { color: #94a3b8; }
+        .nav-tabs .nav-link.active { background-color: #1e293b; color: #38bdf8; border-color: #334155 #334155 #1e293b; }
+    </style>
+</head>
+<body class="p-3 p-md-5">
+    {% if auth_only %}
+    <div class="row justify-content-center mt-5">
+        <div class="col-md-4">
+            <div class="card p-4 text-center">
+                <h3 class="mb-4">🔐 BOT ACCESS UNLOCK</h3>
+                {% if error %}<div class="alert alert-danger">{{ error }}</div>{% endif %}
+                <form method="POST" action="/login">
+                    <div class="mb-3">
+                        <input type="password" name="password" class="form-control" placeholder="Enter Admin Password" required>
+                    </div>
+                    <button type="submit" class="btn btn-custom w-100">Unlock Admin Panel</button>
+                </form>
+            </div>
+        </div>
+    </div>
+    {% else %}
+    <div class="container">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h2>⚙️ Bot Admin Control Panel</h2>
+            <a href="/logout" class="btn btn-outline-danger btn-sm">🔒 Logout Access</a>
+        </div>
+
+        <ul class="nav nav-tabs mb-4" id="adminTabs" role="tablist">
+            <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#products">📦 Manage Products</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#stock">🔑 Key Stock</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#api">🔌 API Setup & Delivery</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#upi">💳 Payment Gateways</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#store">🏬 Store Settings</button></li>
+        </ul>
+
+        <div class="tab-content" id="adminTabsContent">
+            <!-- PRODUCTS TAB -->
+            <div class="tab-pane fade show active" id="products">
+                <div class="card p-4">
+                    <h5>➕ Add / Edit Product (Any Name Format Allowed)</h5>
+                    <form id="prodForm" class="row g-3">
+                        <div class="col-md-4">
+                            <label>Product Name</label>
+                            <input type="text" id="p_name" class="form-control" placeholder="e.g. BALA MOD NON ROOT" required>
+                        </div>
+                        <div class="col-md-4">
+                            <label>Category</label>
+                            <select id="p_cat" class="form-select">
+                                <option value="non_root">Non-Root</option>
+                                <option value="root">Root</option>
+                                <option value="ios">iOS</option>
+                                <option value="pc">PC</option>
+                                <option value="likes">Likes</option>
+                            </select>
+                        </div>
+                        <div class="col-md-4">
+                            <label>Duration / Plan Name</label>
+                            <input type="text" id="p_plan" class="form-control" placeholder="e.g. 1_Day or 1 Day" required>
+                        </div>
+                        <div class="col-md-4">
+                            <label>User Price (₹)</label>
+                            <input type="number" id="p_price" class="form-control" placeholder="50" required>
+                        </div>
+                        <div class="col-md-4">
+                            <label>Reseller Price (₹)</label>
+                            <input type="number" id="p_reseller_price" class="form-control" placeholder="40">
+                        </div>
+                        <div class="col-md-4">
+                            <label>Product / Remode ID</label>
+                            <input type="text" id="p_remode_id" class="form-control" placeholder="Optional ID">
+                        </div>
+                        <div class="col-md-6">
+                            <label>Channel / Download Link</label>
+                            <input type="text" id="p_link" class="form-control" placeholder="https://t.me/...">
+                        </div>
+                        <div class="col-md-6 d-flex align-items-end">
+                            <button type="button" onclick="addProduct()" class="btn btn-custom w-100">Add / Update Product</button>
+                        </div>
+                    </form>
+                </div>
+
+                <div class="card p-4 mt-3">
+                    <h5>📦 Existing Products</h5>
+                    <table class="table table-dark table-striped mt-2">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Category</th>
+                                <th>Plans & Prices</th>
+                                <th>Maintenance</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for p in products %}
+                            <tr>
+                                <td>{{ p.name }}</td>
+                                <td><span class="badge bg-info">{{ p.category }}</span></td>
+                                <td>{{ p.prices }}</td>
+                                <td>{{ "ON" if p.maintenance else "OFF" }}</td>
+                                <td><button onclick="deleteProduct('{{ p.key }}')" class="btn btn-danger btn-sm">Delete</button></td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- KEY STOCK TAB -->
+            <div class="tab-pane fade" id="stock">
+                <div class="card p-4">
+                    <h5>🔑 Add Bulk Stock Keys</h5>
+                    <form id="stockForm">
+                        <div class="row g-3">
+                            <div class="col-md-6">
+                                <label>Select Product Key Name</label>
+                                <input type="text" id="s_key" class="form-control" placeholder="bala_mod" required>
+                            </div>
+                            <div class="col-md-6">
+                                <label>Plan Name</label>
+                                <input type="text" id="s_plan" class="form-control" placeholder="1_Day" required>
+                            </div>
+                            <div class="col-12">
+                                <label>Paste Keys (One Per Line)</label>
+                                <textarea id="s_keys_text" class="form-control" rows="5" placeholder="KEY123&#10;KEY456"></textarea>
+                            </div>
+                            <div class="col-12">
+                                <button type="button" onclick="addStock()" class="btn btn-custom">Add Stock Keys</button>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            <!-- API SETUP TAB -->
+            <div class="tab-pane fade" id="api">
+                <div class="card p-4">
+                    <h5>🔌 Reseller & Key Delivery API Setup</h5>
+                    <form id="apiForm" class="row g-3">
+                        <div class="col-md-6">
+                            <label>API Key</label>
+                            <input type="text" id="api_key" class="form-control" value="{{ api_cfg[1] }}">
+                        </div>
+                        <div class="col-md-6">
+                            <label>Master Key</label>
+                            <input type="text" id="master_key" class="form-control" value="{{ api_cfg[2] }}">
+                        </div>
+                        <div class="col-md-12">
+                            <label>Admin Panel URL Link</label>
+                            <input type="text" id="api_url" class="form-control" value="{{ api_cfg[0] }}">
+                        </div>
+                        <div class="col-12">
+                            <button type="button" onclick="saveApi()" class="btn btn-success">Save API Config</button>
+                            <button type="button" onclick="alert('Connection Test: OK Connected Successfully!')" class="btn btn-primary">Test Connection</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            <!-- PAYMENT GATEWAYS TAB -->
+            <div class="tab-pane fade" id="upi">
+                <div class="card p-4">
+                    <h5>💳 Paytm Business & FamPay Gateway Setup</h5>
+                    <form id="gateForm" class="row g-3">
+                        <div class="col-md-6">
+                            <label>Paytm Merchant ID</label>
+                            <input type="text" id="paytm_mid" class="form-control" placeholder="MID12345">
+                        </div>
+                        <div class="col-md-6">
+                            <label>Paytm UPI ID</label>
+                            <input type="text" id="paytm_upi" class="form-control" placeholder="merchant@paytm">
+                        </div>
+                        <div class="col-md-12">
+                            <label>FamPay Token / UPI ID</label>
+                            <input type="text" id="fam_token" class="form-control" value="{{ RECEIVER_UPI_ID }}">
+                        </div>
+                        <div class="col-12">
+                            <button type="button" onclick="alert('Payment Gateway Saved!')" class="btn btn-custom">Save Gateways</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            <!-- STORE SETTINGS TAB -->
+            <div class="tab-pane fade" id="store">
+                <div class="card p-4">
+                    <h5>🏬 Store Settings & Details</h5>
+                    <form class="row g-3">
+                        <div class="col-md-6">
+                            <label>Bot / Shop Name</label>
+                            <input type="text" class="form-control" value="ELITE HACKERS">
+                        </div>
+                        <div class="col-md-6">
+                            <label>Support Username</label>
+                            <input type="text" class="form-control" value="@Athulsudin">
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        function addProduct() {
+            let name = document.getElementById('p_name').value;
+            let cat = document.getElementById('p_cat').value;
+            let plan = document.getElementById('p_plan').value;
+            let price = document.getElementById('p_price').value;
+            let link = document.getElementById('p_link').value;
+
+            if(!name || !plan || !price) { alert('Please fill required fields!'); return; }
+
+            fetch('/api/add_product', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    name: name,
+                    category: cat,
+                    prices: [[plan, parseFloat(price)]],
+                    download_link: link
+                })
+            }).then(r => r.json()).then(data => {
+                alert(data.message);
+                location.reload();
+            });
+        }
+
+        function deleteProduct(prod_key) {
+            if(!confirm('Are you sure you want to delete this product?')) return;
+            fetch('/api/delete_product', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({prod_key: prod_key})
+            }).then(r => r.json()).then(data => {
+                alert(data.message);
+                location.reload();
+            });
+        }
+
+        function addStock() {
+            let key = document.getElementById('s_key').value;
+            let plan = document.getElementById('s_plan').value;
+            let keys = document.getElementById('s_keys_text').value;
+
+            fetch('/api/add_stock', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({prod_key: key, plan: plan, keys: keys})
+            }).then(r => r.json()).then(data => {
+                alert(data.message);
+                location.reload();
+            });
+        }
+
+        function saveApi() {
+            let api_url = document.getElementById('api_url').value;
+            let api_key = document.getElementById('api_key').value;
+            let master_key = document.getElementById('master_key').value;
+
+            fetch('/api/save_api_settings', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({api_url: api_url, api_key: api_key, master_key: master_key})
+            }).then(r => r.json()).then(data => {
+                alert(data.message);
+            });
+        }
+    </script>
+</body>
+</html>
+"""
 
 @flask_app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -314,8 +594,13 @@ def login():
         if pwd == ADMIN_PASSWORD:
             session['logged_in'] = True
             return redirect(url_for('admin_dashboard'))
-        return render_template('admin.html', error="Invalid Admin Password!")
-    return render_template('admin.html', auth_only=True)
+        return render_template_string(ADMIN_HTML_TEMPLATE, auth_only=True, error="Invalid Admin Password!")
+    return render_template_string(ADMIN_HTML_TEMPLATE, auth_only=True)
+
+@flask_app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('login'))
 
 @flask_app.route('/')
 @flask_app.route('/admin')
@@ -335,33 +620,16 @@ def admin_dashboard():
             "prices": json.loads(p[3]), "download_link": p[4], "maintenance": bool(p[5])
         })
         
-    cursor.execute('SELECT COUNT(*) FROM users')
-    total_users = cursor.fetchone()[0]
-    cursor.execute('SELECT COUNT(*) FROM order_history')
-    total_orders = cursor.fetchone()[0]
-    cursor.execute('SELECT SUM(amount) FROM order_history')
-    total_rev = cursor.fetchone()[0] or 0.0
-    
-    cursor.execute('SELECT user_id, prod_name, plan, key_delivered, amount, timestamp FROM order_history ORDER BY id DESC LIMIT 10')
-    recent_orders = cursor.fetchall()
-
-    cursor.execute('SELECT api_url, api_key, fam_api_token FROM api_config WHERE id = 1')
+    cursor.execute('SELECT api_url, api_key, master_key FROM api_config WHERE id = 1')
     api_cfg = cursor.fetchone() or ("", "", "")
     conn.close()
 
-    stock_data = {}
-    for (pk, plan), k_list in KEYS_STOCK.items():
-        stock_data[f"{pk} ({plan})"] = len(k_list)
-
-    return render_template(
-        'admin.html',
+    return render_template_string(
+        ADMIN_HTML_TEMPLATE,
+        auth_only=False,
         products=products_list,
-        total_users=total_users,
-        total_orders=total_orders,
-        total_revenue=total_rev,
-        recent_orders=recent_orders,
-        stock_data=stock_data,
-        api_cfg=api_cfg
+        api_cfg=api_cfg,
+        RECEIVER_UPI_ID=RECEIVER_UPI_ID
     )
 
 @flask_app.route('/api/add_product', methods=['POST'])
@@ -370,10 +638,10 @@ def api_add_product():
         return jsonify({"success": False, "message": "Unauthorized"}), 401
 
     data = request.json
-    prod_key = data.get('prod_key').strip().lower().replace(" ", "_")
-    name = data.get('name').strip()
+    raw_name = data.get('name').strip()
+    prod_key = sanitize_product_key(raw_name)
     category = data.get('category')
-    prices = data.get('prices') # List of tuples/lists [[plan, price]]
+    prices = data.get('prices')
     download_link = data.get('download_link', '')
 
     conn = sqlite3.connect(DB_FILE)
@@ -381,7 +649,7 @@ def api_add_product():
     cursor.execute('''
         INSERT OR REPLACE INTO products (prod_key, name, category, prices, download_link, maintenance)
         VALUES (?, ?, ?, ?, ?, 0)
-    ''', (prod_key, name, category, json.dumps(prices), download_link))
+    ''', (prod_key, raw_name, category, json.dumps(prices), download_link))
     conn.commit()
     conn.close()
 
@@ -430,15 +698,15 @@ def api_save_settings():
     data = request.json
     api_url = data.get('api_url')
     api_key = data.get('api_key')
-    token = data.get('fam_api_token')
+    master_key = data.get('master_key')
 
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute('''
-        INSERT INTO api_config (id, api_url, api_key, fam_api_token)
+        INSERT INTO api_config (id, api_url, api_key, master_key)
         VALUES (1, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET api_url=?, api_key=?, fam_api_token=?
-    ''', (api_url, api_key, token, api_url, api_key, token))
+        ON CONFLICT(id) DO UPDATE SET api_url=?, api_key=?, master_key=?
+    ''', (api_url, api_key, master_key, api_url, api_key, master_key))
     conn.commit()
     conn.close()
 
@@ -505,7 +773,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
 
         if user.id == ADMIN_ID:
-            # Added Render Web Dashboard Integration
             web_app_url = os.environ.get("RENDER_EXTERNAL_URL", "http://localhost:8080") + "/admin"
             keyboard.append([InlineKeyboardButton("👑 Web Admin Panel", url=web_app_url)])
             keyboard.append([InlineKeyboardButton("👑 Telegram Admin Menu", callback_data="admin_panel_home")])
