@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 # ==========================================
 BOT_TOKEN = "8892856619:AAGZhdOv389_AaKvbcbInlJAiDMOwQxOeHc"
 ADMIN_ID = 7616127905
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")  # Single-Access Admin Password
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "athulsudin1234")  # Single-Access Admin Password
 RECEIVER_UPI_ID = "9544113089@fam"
 GMAIL_USER = os.environ.get("GMAIL_USER", "athulsudin37@gmail.com")
 GMAIL_APP_PASS = os.environ.get("GMAIL_APP_PASS", "")
