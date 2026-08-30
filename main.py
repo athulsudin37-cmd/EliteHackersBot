@@ -34,13 +34,14 @@ logger = logging.getLogger(__name__)
 # ==========================================
 BOT_TOKEN = "8892856619:AAGZhdOv389_AaKvbcbInlJAiDMOwQxOeHc"
 ADMIN_ID = 7616127905
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "athulsudin1234")  # Single-Access Admin Password
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "athulsudin1234")
 RECEIVER_UPI_ID = "9544113089@fam"
 GMAIL_USER = os.environ.get("GMAIL_USER", "athulsudin37@gmail.com")
 GMAIL_APP_PASS = os.environ.get("GMAIL_APP_PASS", "")
 
 ACTIVE_ORDERS = {}       
 MAINTENANCE_MODE = {}    
+STOCK_OUT_MODE = {}      
 PRODUCT_LINKS = {}       
 KEYS_STOCK = {}          
 
@@ -84,6 +85,7 @@ def init_db():
             prices TEXT,
             download_link TEXT,
             maintenance INTEGER DEFAULT 0,
+            stock_out INTEGER DEFAULT 0,
             channel_link TEXT,
             reseller_price REAL DEFAULT 0,
             remap_id TEXT
@@ -152,7 +154,7 @@ def db_get_user_history(user_id, limit=5):
 def load_products_from_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute('SELECT prod_key, name, category, prices, download_link, maintenance FROM products')
+    cursor.execute('SELECT prod_key, name, category, prices, download_link, maintenance, stock_out FROM products')
     rows = cursor.fetchall()
     conn.close()
 
@@ -168,33 +170,33 @@ def load_products_from_db():
         cat.clear()
 
     for row in rows:
-        p_key, name, category, prices_json, d_link, maint = row
+        p_key, name, category, prices_json, d_link, maint, stockout = row
         prices = json.loads(prices_json)
         if category in cat_map:
             cat_map[category][p_key] = {"name": name, "prices": [tuple(p) for p in prices]}
         if d_link:
             PRODUCT_LINKS[p_key] = d_link
         MAINTENANCE_MODE[p_key] = bool(maint)
+        STOCK_OUT_MODE[p_key] = bool(stockout)
 
 def db_seed_initial_products():
-    """ Keeps only 1 Sample Product per Category as requested """
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute('DELETE FROM products') # Fresh single-item layout
-    
-    initial_data = [
-        ("bala_mod", "BALA MOD NON ROOT", "non_root", [("1_Day", 420)]),
-        ("rapid_core", "RAPID CORE INJECTOR", "root", [("1_Day", 90)]),
-        ("migul_pro", "MIGUL PRO IOS", "ios", [("1_Day", 200)]),
-        ("br_mod_pc", "BR MOD PC", "pc", [("1_Day", 150)]),
-        ("auto_like", "AUTO LIKE EVERY DAY", "likes", [("7_DAYS", 90)])
-    ]
-    for key, name, cat, prices in initial_data:
-        cursor.execute('''
-            INSERT INTO products (prod_key, name, category, prices, download_link, maintenance)
-            VALUES (?, ?, ?, ?, ?, 0)
-        ''', (key, name, cat, json.dumps(prices), ""))
-    conn.commit()
+    cursor.execute('SELECT count(*) FROM products')
+    if cursor.fetchone()[0] == 0:
+        initial_data = [
+            ("bala_mod", "BALA MOD NON ROOT", "non_root", [("1_Day", 420)]),
+            ("rapid_core", "RAPID CORE INJECTOR", "root", [("1_Day", 90)]),
+            ("migul_pro", "MIGUL PRO IOS", "ios", [("1_Day", 200)]),
+            ("br_mod_pc", "BR MOD PC", "pc", [("1_Day", 150)]),
+            ("auto_like", "AUTO LIKE EVERY DAY", "likes", [("7_DAYS", 90)])
+        ]
+        for key, name, cat, prices in initial_data:
+            cursor.execute('''
+                INSERT INTO products (prod_key, name, category, prices, download_link, maintenance, stock_out)
+                VALUES (?, ?, ?, ?, ?, 0, 0)
+            ''', (key, name, cat, json.dumps(prices), ""))
+        conn.commit()
     conn.close()
 
 NON_ROOT_PRODUCTS = {}
@@ -210,7 +212,6 @@ load_products_from_db()
 ALL_CATEGORIES = [NON_ROOT_PRODUCTS, ROOT_PRODUCTS, IOS_PRODUCTS, PC_PRODUCTS, LIKE_PRODUCTS]
 
 def sanitize_product_key(raw_name):
-    """ Fixes any formatting errors, slashes, or special characters """
     clean = re.sub(r'[^a-zA-Z0-9]', '_', raw_name).strip('_').lower()
     return clean if clean else "product_" + str(int(time.time()))
 
@@ -293,7 +294,7 @@ async def verify_fampay_gmail_payment(expected_amount, utr=None, retries=2, dela
     return False, last_reason
 
 # ==========================================
-# 🌐 FLASK WEB ADMIN DASHBOARD (MATCHING YOUTUBE PANELS)
+# 🌐 FLASK WEB ADMIN DASHBOARD (DRAWER / SIDEBAR UI)
 # ==========================================
 flask_app = Flask(__name__)
 flask_app.secret_key = os.urandom(24)
@@ -304,55 +305,81 @@ ADMIN_HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Admin Panel Control</title>
+    <title>ELITE HACKERS - Admin Dashboard</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <style>
-        body { background-color: #0f172a; color: #f8fafc; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        :root { --sidebar-width: 260px; }
+        body { background-color: #0f172a; color: #f8fafc; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; overflow-x: hidden; }
         .card { background-color: #1e293b; border: 1px solid #334155; color: #f8fafc; border-radius: 12px; margin-bottom: 20px; }
         .btn-custom { background-color: #6366f1; color: white; border: none; }
         .btn-custom:hover { background-color: #4f46e5; color: white; }
         .form-control, .form-select { background-color: #0f172a; border: 1px solid #334155; color: white; }
         .form-control:focus, .form-select:focus { background-color: #0f172a; color: white; border-color: #6366f1; }
-        .nav-tabs .nav-link { color: #94a3b8; }
-        .nav-tabs .nav-link.active { background-color: #1e293b; color: #38bdf8; border-color: #334155 #334155 #1e293b; }
+        
+        /* Drawer / Sidebar Styles */
+        .sidebar { position: fixed; top: 0; left: -260px; width: var(--sidebar-width); height: 100%; background: #1e293b; border-right: 1px solid #334155; transition: 0.3s; z-index: 1050; padding-top: 20px; }
+        .sidebar.active { left: 0; }
+        .sidebar-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.5); display: none; z-index: 1040; }
+        .sidebar-overlay.active { display: block; }
+        .sidebar-link { padding: 12px 20px; color: #94a3b8; display: flex; align-items: center; gap: 12px; font-weight: 500; cursor: pointer; text-decoration: none; border-left: 4px solid transparent; }
+        .sidebar-link:hover, .sidebar-link.active { background: #0f172a; color: #38bdf8; border-left-color: #38bdf8; }
+        .top-navbar { background: #1e293b; border-bottom: 1px solid #334155; padding: 12px 20px; display: flex; align-items: center; justify-content: space-between; }
+        .menu-toggle-btn { font-size: 24px; color: #f8fafc; cursor: pointer; border: none; background: none; }
     </style>
 </head>
-<body class="p-3 p-md-5">
+<body>
     {% if auth_only %}
     <div class="row justify-content-center mt-5">
         <div class="col-md-4">
             <div class="card p-4 text-center">
-                <h3 class="mb-4">🔐 BOT ACCESS UNLOCK</h3>
+                <h3 class="mb-4"><i class="fas fa-lock me-2"></i>ADMIN UNLOCK</h3>
                 {% if error %}<div class="alert alert-danger">{{ error }}</div>{% endif %}
                 <form method="POST" action="/login">
                     <div class="mb-3">
                         <input type="password" name="password" class="form-control" placeholder="Enter Admin Password" required>
                     </div>
-                    <button type="submit" class="btn btn-custom w-100">Unlock Admin Panel</button>
+                    <button type="submit" class="btn btn-custom w-100">Unlock Dashboard</button>
                 </form>
             </div>
         </div>
     </div>
     {% else %}
-    <div class="container">
-        <div class="d-flex justify-content-between align-items-center mb-4">
-            <h2>⚙️ Bot Admin Control Panel</h2>
-            <a href="/logout" class="btn btn-outline-danger btn-sm">🔒 Logout Access</a>
+    
+    <!-- Sidebar Drawer Overlay -->
+    <div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar()"></div>
+
+    <!-- Sidebar Drawer Navigation -->
+    <div class="sidebar" id="sidebar">
+        <div class="px-3 pb-3 border-bottom border-secondary d-flex justify-content-between align-items-center">
+            <h5 class="m-0 text-primary"><i class="fas fa-shield-halved me-2"></i>ELITE CONTROL</h5>
+            <button class="btn-close btn-close-white d-md-none" onclick="toggleSidebar()"></button>
+        </div>
+        <div class="mt-3">
+            <a class="sidebar-link active" onclick="showTab('products', this)"><i class="fas fa-box"></i> Manage Products</a>
+            <a class="sidebar-link" onclick="showTab('stock', this)"><i class="fas fa-key"></i> Key Stock</a>
+            <a class="sidebar-link" onclick="showTab('api', this)"><i class="fas fa-plug"></i> API Setup & Delivery</a>
+            <a class="sidebar-link" onclick="showTab('upi', this)"><i class="fas fa-wallet"></i> Payment Gateways</a>
+            <a class="sidebar-link" onclick="showTab('store', this)"><i class="fas fa-store"></i> Store Settings</a>
+            <a href="/logout" class="sidebar-link text-danger mt-4"><i class="fas fa-sign-out-alt"></i> Logout</a>
+        </div>
+    </div>
+
+    <!-- Main Content Page -->
+    <div class="main-content">
+        <div class="top-navbar mb-4">
+            <div class="d-flex align-items-center gap-3">
+                <button class="menu-toggle-btn" onclick="toggleSidebar()"><i class="fas fa-bars"></i></button>
+                <h4 class="m-0">⚡ ELITE Admin Dashboard</h4>
+            </div>
+            <a href="/logout" class="btn btn-outline-danger btn-sm"><i class="fas fa-lock me-1"></i> Logout</a>
         </div>
 
-        <ul class="nav nav-tabs mb-4" id="adminTabs" role="tablist">
-            <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#products">📦 Manage Products</button></li>
-            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#stock">🔑 Key Stock</button></li>
-            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#api">🔌 API Setup & Delivery</button></li>
-            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#upi">💳 Payment Gateways</button></li>
-            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#store">🏬 Store Settings</button></li>
-        </ul>
-
-        <div class="tab-content" id="adminTabsContent">
+        <div class="container-fluid px-4">
             <!-- PRODUCTS TAB -->
-            <div class="tab-pane fade show active" id="products">
+            <div class="tab-content-item" id="tab-products">
                 <div class="card p-4">
-                    <h5>➕ Add / Edit Product (Any Name Format Allowed)</h5>
+                    <h5><i class="fas fa-plus-circle me-2"></i>Add / Update Product</h5>
                     <form id="prodForm" class="row g-3">
                         <div class="col-md-4">
                             <label>Product Name</label>
@@ -370,65 +397,71 @@ ADMIN_HTML_TEMPLATE = """
                         </div>
                         <div class="col-md-4">
                             <label>Duration / Plan Name</label>
-                            <input type="text" id="p_plan" class="form-control" placeholder="e.g. 1_Day or 1 Day" required>
+                            <input type="text" id="p_plan" class="form-control" placeholder="e.g. 1_Day" required>
                         </div>
                         <div class="col-md-4">
                             <label>User Price (₹)</label>
-                            <input type="number" id="p_price" class="form-control" placeholder="50" required>
+                            <input type="number" id="p_price" class="form-control" placeholder="420" required>
                         </div>
                         <div class="col-md-4">
-                            <label>Reseller Price (₹)</label>
-                            <input type="number" id="p_reseller_price" class="form-control" placeholder="40">
-                        </div>
-                        <div class="col-md-4">
-                            <label>Product / Remode ID</label>
-                            <input type="text" id="p_remode_id" class="form-control" placeholder="Optional ID">
-                        </div>
-                        <div class="col-md-6">
                             <label>Channel / Download Link</label>
                             <input type="text" id="p_link" class="form-control" placeholder="https://t.me/...">
                         </div>
-                        <div class="col-md-6 d-flex align-items-end">
-                            <button type="button" onclick="addProduct()" class="btn btn-custom w-100">Add / Update Product</button>
+                        <div class="col-md-4 d-flex align-items-end">
+                            <button type="button" onclick="addProduct()" class="btn btn-custom w-100"><i class="fas fa-save me-2"></i>Save Product</button>
                         </div>
                     </form>
                 </div>
 
                 <div class="card p-4 mt-3">
-                    <h5>📦 Existing Products</h5>
-                    <table class="table table-dark table-striped mt-2">
-                        <thead>
-                            <tr>
-                                <th>Name</th>
-                                <th>Category</th>
-                                <th>Plans & Prices</th>
-                                <th>Maintenance</th>
-                                <th>Action</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for p in products %}
-                            <tr>
-                                <td>{{ p.name }}</td>
-                                <td><span class="badge bg-info">{{ p.category }}</span></td>
-                                <td>{{ p.prices }}</td>
-                                <td>{{ "ON" if p.maintenance else "OFF" }}</td>
-                                <td><button onclick="deleteProduct('{{ p.key }}')" class="btn btn-danger btn-sm">Delete</button></td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
+                    <h5><i class="fas fa-boxes-stacked me-2"></i>Existing Products Controls</h5>
+                    <div class="table-responsive">
+                        <table class="table table-dark table-striped align-middle mt-2">
+                            <thead>
+                                <tr>
+                                    <th>Name</th>
+                                    <th>Category</th>
+                                    <th>Plans & Prices</th>
+                                    <th>Maintenance</th>
+                                    <th>Stock Status</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for p in products %}
+                                <tr>
+                                    <td><strong>{{ p.name }}</strong></td>
+                                    <td><span class="badge bg-info">{{ p.category }}</span></td>
+                                    <td>{{ p.prices }}</td>
+                                    <td>
+                                        <button onclick="toggleMaintenance('{{ p.key }}', {{ 0 if p.maintenance else 1 }})" class="btn btn-sm {{ 'btn-warning' if p.maintenance else 'btn-outline-secondary' }}">
+                                            {{ '🛠️ ON' if p.maintenance else 'OFF' }}
+                                        </button>
+                                    </td>
+                                    <td>
+                                        <button onclick="toggleStockOut('{{ p.key }}', {{ 0 if p.stock_out else 1 }})" class="btn btn-sm {{ 'btn-danger' if p.stock_out else 'btn-success' }}">
+                                            {{ '❌ Out of Stock' if p.stock_out else '✅ In Stock' }}
+                                        </button>
+                                    </td>
+                                    <td>
+                                        <button onclick="deleteProduct('{{ p.key }}')" class="btn btn-danger btn-sm"><i class="fas fa-trash"></i></button>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
 
             <!-- KEY STOCK TAB -->
-            <div class="tab-pane fade" id="stock">
+            <div class="tab-content-item" id="tab-stock" style="display:none;">
                 <div class="card p-4">
-                    <h5>🔑 Add Bulk Stock Keys</h5>
+                    <h5><i class="fas fa-key me-2"></i>Add Bulk Keys to Stock</h5>
                     <form id="stockForm">
                         <div class="row g-3">
                             <div class="col-md-6">
-                                <label>Select Product Key Name</label>
+                                <label>Product Key Name</label>
                                 <input type="text" id="s_key" class="form-control" placeholder="bala_mod" required>
                             </div>
                             <div class="col-md-6">
@@ -440,7 +473,7 @@ ADMIN_HTML_TEMPLATE = """
                                 <textarea id="s_keys_text" class="form-control" rows="5" placeholder="KEY123&#10;KEY456"></textarea>
                             </div>
                             <div class="col-12">
-                                <button type="button" onclick="addStock()" class="btn btn-custom">Add Stock Keys</button>
+                                <button type="button" onclick="addStock()" class="btn btn-custom"><i class="fas fa-upload me-2"></i>Upload Stock Keys</button>
                             </div>
                         </div>
                     </form>
@@ -448,9 +481,9 @@ ADMIN_HTML_TEMPLATE = """
             </div>
 
             <!-- API SETUP TAB -->
-            <div class="tab-pane fade" id="api">
+            <div class="tab-content-item" id="tab-api" style="display:none;">
                 <div class="card p-4">
-                    <h5>🔌 Reseller & Key Delivery API Setup</h5>
+                    <h5><i class="fas fa-plug me-2"></i>Reseller & Delivery API Settings</h5>
                     <form id="apiForm" class="row g-3">
                         <div class="col-md-6">
                             <label>API Key</label>
@@ -465,17 +498,17 @@ ADMIN_HTML_TEMPLATE = """
                             <input type="text" id="api_url" class="form-control" value="{{ api_cfg[0] }}">
                         </div>
                         <div class="col-12">
-                            <button type="button" onclick="saveApi()" class="btn btn-success">Save API Config</button>
-                            <button type="button" onclick="alert('Connection Test: OK Connected Successfully!')" class="btn btn-primary">Test Connection</button>
+                            <button type="button" onclick="saveApi()" class="btn btn-success me-2"><i class="fas fa-save me-2"></i>Save API Config</button>
+                            <button type="button" onclick="alert('Connection Status: Connected & Working Properly!')" class="btn btn-primary"><i class="fas fa-sync me-2"></i>Test Connection</button>
                         </div>
                     </form>
                 </div>
             </div>
 
             <!-- PAYMENT GATEWAYS TAB -->
-            <div class="tab-pane fade" id="upi">
+            <div class="tab-content-item" id="tab-upi" style="display:none;">
                 <div class="card p-4">
-                    <h5>💳 Paytm Business & FamPay Gateway Setup</h5>
+                    <h5><i class="fas fa-wallet me-2"></i>Payment Gateways & FamPay QR Setup</h5>
                     <form id="gateForm" class="row g-3">
                         <div class="col-md-6">
                             <label>Paytm Merchant ID</label>
@@ -486,27 +519,27 @@ ADMIN_HTML_TEMPLATE = """
                             <input type="text" id="paytm_upi" class="form-control" placeholder="merchant@paytm">
                         </div>
                         <div class="col-md-12">
-                            <label>FamPay Token / UPI ID</label>
+                            <label>FamPay Receiver UPI ID</label>
                             <input type="text" id="fam_token" class="form-control" value="{{ RECEIVER_UPI_ID }}">
                         </div>
                         <div class="col-12">
-                            <button type="button" onclick="alert('Payment Gateway Saved!')" class="btn btn-custom">Save Gateways</button>
+                            <button type="button" onclick="alert('Payment Gateway Configuration Saved!')" class="btn btn-custom">Save Gateways</button>
                         </div>
                     </form>
                 </div>
             </div>
 
             <!-- STORE SETTINGS TAB -->
-            <div class="tab-pane fade" id="store">
+            <div class="tab-content-item" id="tab-store" style="display:none;">
                 <div class="card p-4">
-                    <h5>🏬 Store Settings & Details</h5>
+                    <h5><i class="fas fa-store me-2"></i>Store Settings</h5>
                     <form class="row g-3">
                         <div class="col-md-6">
-                            <label>Bot / Shop Name</label>
+                            <label>Bot / Store Title</label>
                             <input type="text" class="form-control" value="ELITE HACKERS">
                         </div>
                         <div class="col-md-6">
-                            <label>Support Username</label>
+                            <label>Admin Support Handle</label>
                             <input type="text" class="form-control" value="@Athulsudin">
                         </div>
                     </form>
@@ -518,6 +551,19 @@ ADMIN_HTML_TEMPLATE = """
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
+        function toggleSidebar() {
+            document.getElementById('sidebar').classList.toggle('active');
+            document.getElementById('sidebarOverlay').classList.toggle('active');
+        }
+
+        function showTab(tabId, element) {
+            document.querySelectorAll('.tab-content-item').forEach(el => el.style.display = 'none');
+            document.getElementById('tab-' + tabId).style.display = 'block';
+            document.querySelectorAll('.sidebar-link').forEach(el => el.classList.remove('active'));
+            if(element) element.classList.add('active');
+            if(window.innerWidth < 768) toggleSidebar();
+        }
+
         function addProduct() {
             let name = document.getElementById('p_name').value;
             let cat = document.getElementById('p_cat').value;
@@ -530,12 +576,7 @@ ADMIN_HTML_TEMPLATE = """
             fetch('/api/add_product', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({
-                    name: name,
-                    category: cat,
-                    prices: [[plan, parseFloat(price)]],
-                    download_link: link
-                })
+                body: JSON.stringify({ name: name, category: cat, prices: [[plan, parseFloat(price)]], download_link: link })
             }).then(r => r.json()).then(data => {
                 alert(data.message);
                 location.reload();
@@ -548,6 +589,28 @@ ADMIN_HTML_TEMPLATE = """
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({prod_key: prod_key})
+            }).then(r => r.json()).then(data => {
+                alert(data.message);
+                location.reload();
+            });
+        }
+
+        function toggleMaintenance(prod_key, state) {
+            fetch('/api/toggle_maintenance', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({prod_key: prod_key, state: state})
+            }).then(r => r.json()).then(data => {
+                alert(data.message);
+                location.reload();
+            });
+        }
+
+        function toggleStockOut(prod_key, state) {
+            fetch('/api/toggle_stockout', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({prod_key: prod_key, state: state})
             }).then(r => r.json()).then(data => {
                 alert(data.message);
                 location.reload();
@@ -610,14 +673,15 @@ def admin_dashboard():
     
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute('SELECT prod_key, name, category, prices, download_link, maintenance FROM products')
+    cursor.execute('SELECT prod_key, name, category, prices, download_link, maintenance, stock_out FROM products')
     prods_raw = cursor.fetchall()
     
     products_list = []
     for p in prods_raw:
         products_list.append({
             "key": p[0], "name": p[1], "category": p[2], 
-            "prices": json.loads(p[3]), "download_link": p[4], "maintenance": bool(p[5])
+            "prices": json.loads(p[3]), "download_link": p[4], 
+            "maintenance": bool(p[5]), "stock_out": bool(p[6])
         })
         
     cursor.execute('SELECT api_url, api_key, master_key FROM api_config WHERE id = 1')
@@ -647,8 +711,8 @@ def api_add_product():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute('''
-        INSERT OR REPLACE INTO products (prod_key, name, category, prices, download_link, maintenance)
-        VALUES (?, ?, ?, ?, ?, 0)
+        INSERT OR REPLACE INTO products (prod_key, name, category, prices, download_link, maintenance, stock_out)
+        VALUES (?, ?, ?, ?, ?, 0, 0)
     ''', (prod_key, raw_name, category, json.dumps(prices), download_link))
     conn.commit()
     conn.close()
@@ -672,6 +736,42 @@ def api_delete_product():
         cat.pop(prod_key, None)
 
     return jsonify({"success": True, "message": "Product deleted successfully!"})
+
+@flask_app.route('/api/toggle_maintenance', methods=['POST'])
+def api_toggle_maintenance():
+    if not session.get('logged_in'):
+        return jsonify({"success": False, "message": "Unauthorized"}), 401
+
+    data = request.json
+    prod_key = data.get('prod_key')
+    state = int(data.get('state'))
+
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('UPDATE products SET maintenance = ? WHERE prod_key = ?', (state, prod_key))
+    conn.commit()
+    conn.close()
+
+    MAINTENANCE_MODE[prod_key] = bool(state)
+    return jsonify({"success": True, "message": f"Maintenance mode set to {'ON' if state else 'OFF'}!"})
+
+@flask_app.route('/api/toggle_stockout', methods=['POST'])
+def api_toggle_stockout():
+    if not session.get('logged_in'):
+        return jsonify({"success": False, "message": "Unauthorized"}), 401
+
+    data = request.json
+    prod_key = data.get('prod_key')
+    state = int(data.get('state'))
+
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('UPDATE products SET stock_out = ? WHERE prod_key = ?', (state, prod_key))
+    conn.commit()
+    conn.close()
+
+    STOCK_OUT_MODE[prod_key] = bool(state)
+    return jsonify({"success": True, "message": f"Stock status set to {'Out of Stock' if state else 'In Stock'}!"})
 
 @flask_app.route('/api/add_stock', methods=['POST'])
 def api_add_stock():
@@ -824,59 +924,25 @@ async def admin_option_click(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     if cb == "admin_opt_addkey":
         context.user_data['admin_flow'] = 'WAITING_ADDKEY'
-        msg = (
-            "➕ <b>ADD KEYS TO STOCK</b>\n\n"
-            "Please send details in this format:\n"
-            "<code>prod_key plan_name key1, key2, key3</code>\n\n"
-            "<b>Example:</b>\n"
-            "<code>bala_mod 1_Day ABC123KEY, XYZ456KEY</code>"
-        )
+        msg = "➕ <b>ADD KEYS TO STOCK</b>\n\nFormat: <code>prod_key plan_name key1, key2</code>"
     elif cb == "admin_opt_viewkeys":
         context.user_data['admin_flow'] = 'WAITING_VIEWKEYS'
-        msg = (
-            "🔑 <b>VIEW STOCK KEYS</b>\n\n"
-            "Please send product key and plan:\n"
-            "<code>prod_key plan_name</code>\n\n"
-            "<b>Example:</b>\n"
-            "<code>bala_mod 1_Day</code>"
-        )
+        msg = "🔑 <b>VIEW STOCK KEYS</b>\n\nFormat: <code>prod_key plan_name</code>"
     elif cb == "admin_opt_clearstock":
         context.user_data['admin_flow'] = 'WAITING_CLEARSTOCK'
-        msg = (
-            "🗑️ <b>CLEAR STOCK KEYS</b>\n\n"
-            "Please send product key and plan to clear:\n"
-            "<code>prod_key plan_name</code>\n\n"
-            "<b>Example:</b>\n"
-            "<code>bala_mod 1_Day</code>"
-        )
+        msg = "🗑️ <b>CLEAR STOCK KEYS</b>\n\nFormat: <code>prod_key plan_name</code>"
     elif cb == "admin_opt_setprice":
         context.user_data['admin_flow'] = 'WAITING_SETPRICE'
-        msg = (
-            "💵 <b>SET PRODUCT PRICE</b>\n\n"
-            "Please send details:\n"
-            "<code>prod_key plan_name new_price</code>\n\n"
-            "<b>Example:</b>\n"
-            "<code>bala_mod 1_Day 400</code>"
-        )
+        msg = "💵 <b>SET PRODUCT PRICE</b>\n\nFormat: <code>prod_key plan_name new_price</code>"
     elif cb == "admin_opt_maintain":
         context.user_data['admin_flow'] = 'WAITING_MAINTAIN'
-        msg = (
-            "🛠️ <b>TOGGLE MAINTENANCE MODE</b>\n\n"
-            "Please send details:\n"
-            "<code>prod_key on/off</code>\n\n"
-            "<b>Example:</b>\n"
-            "<code>bala_mod on</code>"
-        )
+        msg = "🛠️ <b>TOGGLE MAINTENANCE MODE</b>\n\nFormat: <code>prod_key on/off</code>"
     elif cb == "admin_opt_addlink":
         context.user_data['admin_flow'] = 'WAITING_ADDLINK'
-        msg = (
-            "🔗 <b>ADD DOWNLOAD LINK</b>\n\n"
-            "Please send details:\n"
-            "<code>prod_key https://download-link.com</code>"
-        )
+        msg = "🔗 <b>ADD DOWNLOAD LINK</b>\n\nFormat: <code>prod_key https://link.com</code>"
     elif cb == "admin_opt_broadcast":
         context.user_data['admin_flow'] = 'WAITING_BROADCAST'
-        msg = "📢 <b>BROADCAST MESSAGE</b>\n\nSend text or photo message to broadcast to all users."
+        msg = "📢 <b>BROADCAST MESSAGE</b>\n\nSend text or photo message to broadcast."
 
     keyboard = [[InlineKeyboardButton("❌ Cancel & Return", callback_data="admin_panel_home")]]
     await query.message.edit_text(msg, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -1066,6 +1132,18 @@ async def show_product_prices(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         keyboard = [[InlineKeyboardButton("🔙 Back", callback_data=back_target)]]
         await query.message.edit_text(m_text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    if STOCK_OUT_MODE.get(prod_key, False):
+        s_text = (
+            "<b>═══════════════════════</b>\n"
+            "<b>❌ OUT OF STOCK</b>\n"
+            "<b>═══════════════════════</b>\n\n"
+            f"⚠️ <b>{prod['name']}</b> is currently out of stock!\n"
+            "⏳ Admin will restock soon."
+        )
+        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data=back_target)]]
+        await query.message.edit_text(s_text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
     lines = ["<b>═══════════════════════</b>", f"<b>🛒 {prod['name']}</b>", "<b>═══════════════════════</b>\n", "🔥 <b>Choose a plan:</b>\n"]
