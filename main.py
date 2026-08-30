@@ -45,13 +45,24 @@ STOCK_OUT_MODE = {}
 PRODUCT_LINKS = {}       
 KEYS_STOCK = {}          
 
+NON_ROOT_PRODUCTS = {}
+ROOT_PRODUCTS = {}
+IOS_PRODUCTS = {}
+PC_PRODUCTS = {}
+LIKE_PRODUCTS = {}
+
+ALL_CATEGORIES = [NON_ROOT_PRODUCTS, ROOT_PRODUCTS, IOS_PRODUCTS, PC_PRODUCTS, LIKE_PRODUCTS]
+
 # ==========================================
 # 🗄️ SQLITE DATABASE MANAGEMENT
 # ==========================================
 DB_FILE = "bot_database.db"
 
+def get_db_connection():
+    return sqlite3.connect(DB_FILE, timeout=30.0)
+
 def init_db():
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     cursor = conn.cursor()
     
     cursor.execute('''
@@ -111,7 +122,7 @@ def init_db():
     conn.close()
 
 def db_add_or_update_user(user_id, full_name, username, joined_date):
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
         INSERT INTO users (user_id, full_name, username, joined_date, orders_count)
@@ -122,7 +133,7 @@ def db_add_or_update_user(user_id, full_name, username, joined_date):
     conn.close()
 
 def db_get_user(user_id):
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('SELECT full_name, username, joined_date, orders_count FROM users WHERE user_id = ?', (user_id,))
     row = cursor.fetchone()
@@ -130,7 +141,7 @@ def db_get_user(user_id):
     return row
 
 def db_add_order(user_id, prod_name, plan, key_delivered, amount, utr, timestamp):
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
         INSERT INTO order_history (user_id, prod_name, plan, key_delivered, amount, utr, timestamp)
@@ -141,7 +152,7 @@ def db_add_order(user_id, prod_name, plan, key_delivered, amount, utr, timestamp
     conn.close()
 
 def db_get_user_history(user_id, limit=5):
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
         SELECT prod_name, plan, key_delivered, timestamp 
@@ -152,7 +163,7 @@ def db_get_user_history(user_id, limit=5):
     return rows
 
 def load_products_from_db():
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('SELECT prod_key, name, category, prices, download_link, maintenance, stock_out FROM products')
     rows = cursor.fetchall()
@@ -180,7 +191,7 @@ def load_products_from_db():
         STOCK_OUT_MODE[p_key] = bool(stockout)
 
 def db_seed_initial_products():
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('SELECT count(*) FROM products')
     if cursor.fetchone()[0] == 0:
@@ -199,17 +210,9 @@ def db_seed_initial_products():
         conn.commit()
     conn.close()
 
-NON_ROOT_PRODUCTS = {}
-ROOT_PRODUCTS = {}
-IOS_PRODUCTS = {}
-PC_PRODUCTS = {}
-LIKE_PRODUCTS = {}
-
 init_db()
 db_seed_initial_products()
 load_products_from_db()
-
-ALL_CATEGORIES = [NON_ROOT_PRODUCTS, ROOT_PRODUCTS, IOS_PRODUCTS, PC_PRODUCTS, LIKE_PRODUCTS]
 
 def sanitize_product_key(raw_name):
     clean = re.sub(r'[^a-zA-Z0-9]', '_', raw_name).strip('_').lower()
@@ -240,7 +243,7 @@ def clean_html_text(text):
 async def check_email_once(expected_amount, utr=None):
     def _imap_check():
         try:
-            mail = imaplib.IMAP4_SSL("imap.gmail.com")
+            mail = imaplib.IMAP4_SSL("imap.gmail.com", timeout=15)
             mail.login(GMAIL_USER, GMAIL_APP_PASS)
             mail.select("inbox")
 
@@ -294,7 +297,7 @@ async def verify_fampay_gmail_payment(expected_amount, utr=None, retries=2, dela
     return False, last_reason
 
 # ==========================================
-# 🌐 FLASK WEB ADMIN DASHBOARD (DRAWER / SIDEBAR UI)
+# 🌐 FLASK WEB ADMIN DASHBOARD
 # ==========================================
 flask_app = Flask(__name__)
 flask_app.secret_key = os.urandom(24)
@@ -317,7 +320,6 @@ ADMIN_HTML_TEMPLATE = """
         .form-control, .form-select { background-color: #0f172a; border: 1px solid #334155; color: white; }
         .form-control:focus, .form-select:focus { background-color: #0f172a; color: white; border-color: #6366f1; }
         
-        /* Drawer / Sidebar Styles */
         .sidebar { position: fixed; top: 0; left: -260px; width: var(--sidebar-width); height: 100%; background: #1e293b; border-right: 1px solid #334155; transition: 0.3s; z-index: 1050; padding-top: 20px; }
         .sidebar.active { left: 0; }
         .sidebar-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.5); display: none; z-index: 1040; }
@@ -345,11 +347,7 @@ ADMIN_HTML_TEMPLATE = """
         </div>
     </div>
     {% else %}
-    
-    <!-- Sidebar Drawer Overlay -->
     <div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar()"></div>
-
-    <!-- Sidebar Drawer Navigation -->
     <div class="sidebar" id="sidebar">
         <div class="px-3 pb-3 border-bottom border-secondary d-flex justify-content-between align-items-center">
             <h5 class="m-0 text-primary"><i class="fas fa-shield-halved me-2"></i>ELITE CONTROL</h5>
@@ -365,7 +363,6 @@ ADMIN_HTML_TEMPLATE = """
         </div>
     </div>
 
-    <!-- Main Content Page -->
     <div class="main-content">
         <div class="top-navbar mb-4">
             <div class="d-flex align-items-center gap-3">
@@ -376,7 +373,6 @@ ADMIN_HTML_TEMPLATE = """
         </div>
 
         <div class="container-fluid px-4">
-            <!-- PRODUCTS TAB -->
             <div class="tab-content-item" id="tab-products">
                 <div class="card p-4">
                     <h5><i class="fas fa-plus-circle me-2"></i>Add / Update Product</h5>
@@ -454,7 +450,6 @@ ADMIN_HTML_TEMPLATE = """
                 </div>
             </div>
 
-            <!-- KEY STOCK TAB -->
             <div class="tab-content-item" id="tab-stock" style="display:none;">
                 <div class="card p-4">
                     <h5><i class="fas fa-key me-2"></i>Add Bulk Keys to Stock</h5>
@@ -480,7 +475,6 @@ ADMIN_HTML_TEMPLATE = """
                 </div>
             </div>
 
-            <!-- API SETUP TAB -->
             <div class="tab-content-item" id="tab-api" style="display:none;">
                 <div class="card p-4">
                     <h5><i class="fas fa-plug me-2"></i>Reseller & Delivery API Settings</h5>
@@ -505,7 +499,6 @@ ADMIN_HTML_TEMPLATE = """
                 </div>
             </div>
 
-            <!-- PAYMENT GATEWAYS TAB -->
             <div class="tab-content-item" id="tab-upi" style="display:none;">
                 <div class="card p-4">
                     <h5><i class="fas fa-wallet me-2"></i>Payment Gateways & FamPay QR Setup</h5>
@@ -529,7 +522,6 @@ ADMIN_HTML_TEMPLATE = """
                 </div>
             </div>
 
-            <!-- STORE SETTINGS TAB -->
             <div class="tab-content-item" id="tab-store" style="display:none;">
                 <div class="card p-4">
                     <h5><i class="fas fa-store me-2"></i>Store Settings</h5>
@@ -671,7 +663,7 @@ def admin_dashboard():
     if not session.get('logged_in'):
         return redirect(url_for('login'))
     
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('SELECT prod_key, name, category, prices, download_link, maintenance, stock_out FROM products')
     prods_raw = cursor.fetchall()
@@ -708,7 +700,7 @@ def api_add_product():
     prices = data.get('prices')
     download_link = data.get('download_link', '')
 
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
         INSERT OR REPLACE INTO products (prod_key, name, category, prices, download_link, maintenance, stock_out)
@@ -726,7 +718,7 @@ def api_delete_product():
         return jsonify({"success": False, "message": "Unauthorized"}), 401
     
     prod_key = request.json.get('prod_key')
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('DELETE FROM products WHERE prod_key = ?', (prod_key,))
     conn.commit()
@@ -746,7 +738,7 @@ def api_toggle_maintenance():
     prod_key = data.get('prod_key')
     state = int(data.get('state'))
 
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('UPDATE products SET maintenance = ? WHERE prod_key = ?', (state, prod_key))
     conn.commit()
@@ -764,7 +756,7 @@ def api_toggle_stockout():
     prod_key = data.get('prod_key')
     state = int(data.get('state'))
 
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('UPDATE products SET stock_out = ? WHERE prod_key = ?', (state, prod_key))
     conn.commit()
@@ -800,7 +792,7 @@ def api_save_settings():
     api_key = data.get('api_key')
     master_key = data.get('master_key')
 
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
         INSERT INTO api_config (id, api_url, api_key, master_key)
@@ -1460,7 +1452,7 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                         if p_name.lower() == plan.lower():
                             prod["prices"][idx] = (p_name, new_price)
                             
-                            conn = sqlite3.connect(DB_FILE)
+                            conn = get_db_connection()
                             cursor = conn.cursor()
                             cursor.execute('UPDATE products SET prices = ? WHERE prod_key = ?', (json.dumps(prod["prices"]), prod_key))
                             conn.commit()
@@ -1481,7 +1473,7 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 is_maint = (status == "on")
                 MAINTENANCE_MODE[prod_key] = is_maint
                 
-                conn = sqlite3.connect(DB_FILE)
+                conn = get_db_connection()
                 cursor = conn.cursor()
                 cursor.execute('UPDATE products SET maintenance = ? WHERE prod_key = ?', (1 if is_maint else 0, prod_key))
                 conn.commit()
@@ -1501,7 +1493,7 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 link_url = parts[1]
                 PRODUCT_LINKS[prod_key] = link_url
                 
-                conn = sqlite3.connect(DB_FILE)
+                conn = get_db_connection()
                 cursor = conn.cursor()
                 cursor.execute('UPDATE products SET download_link = ? WHERE prod_key = ?', (link_url, prod_key))
                 conn.commit()
@@ -1514,7 +1506,7 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             return
 
         elif flow == 'WAITING_BROADCAST':
-            conn = sqlite3.connect(DB_FILE)
+            conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute('SELECT user_id FROM users')
             users = [row[0] for row in cursor.fetchall()]
@@ -1617,7 +1609,7 @@ async def handle_admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE
 # 🤖 BOT SETUP & RUNNER
 # ==========================================
 def start_bot():
-    app = Application.builder().token(BOT_TOKEN).concurrent_updates(False).build()
+    app = Application.builder().token(BOT_TOKEN).concurrent_updates(False).read_timeout(30).write_timeout(30).connect_timeout(30).build()
 
     app.add_handler(CommandHandler("start", start_command))
     
@@ -1660,3 +1652,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
