@@ -253,6 +253,7 @@ def db_add_keys_to_inventory(prod_key, plan, keys_list):
     conn.commit()
     conn.close()
 
+# AUTO-KEY DELIVERY SYSTEM (1 key per purchase, marks as used, takes next available key)
 def db_pop_auto_key(prod_key, plan):
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
@@ -433,7 +434,7 @@ async def verify_fampay_gmail_payment(expected_amount, utr=None, retries=2, dela
     return False, last_reason
 
 # ==========================================
-# 🌐 FLASK WEB ADMIN DASHBOARD
+# 🌐 FLASK WEB ADMIN DASHBOARD (UPDATED DESIGN & BROADCAST)
 # ==========================================
 flask_app = Flask(__name__)
 flask_app.secret_key = os.urandom(24)
@@ -456,7 +457,6 @@ ADMIN_HTML_TEMPLATE = """
         .form-control, .form-select { background-color: #0f172a; border: 1px solid #334155; color: white; }
         .form-control:focus, .form-select:focus { background-color: #0f172a; color: white; border-color: #6366f1; }
         
-        /* Drawer / Sidebar Styles */
         .sidebar { position: fixed; top: 0; left: -270px; width: var(--sidebar-width); height: 100%; background: #1e293b; border-right: 1px solid #334155; transition: 0.3s; z-index: 1050; padding-top: 20px; overflow-y: auto; }
         .sidebar.active { left: 0; }
         .sidebar-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.5); display: none; z-index: 1040; }
@@ -497,7 +497,7 @@ ADMIN_HTML_TEMPLATE = """
             <a class="sidebar-link active" onclick="showTab('dashboard', this)"><i class="fas fa-chart-line"></i> Dashboard</a>
             <a class="sidebar-link" onclick="showTab('products', this)"><i class="fas fa-box"></i> Manage Product</a>
             <a class="sidebar-link" onclick="showTab('stock', this)"><i class="fas fa-id-badge"></i> ID Stock</a>
-            <a class="sidebar-link" onclick="showTab('links', this)"><i class="fas fa-link"></i> Product Links</a>
+            <a class="sidebar-link" onclick="showTab('broadcast', this)"><i class="fas fa-bullhorn"></i> Broadcast</a>
             <a class="sidebar-link" onclick="showTab('keys', this)"><i class="fas fa-key"></i> Manage Keys</a>
             <a class="sidebar-link" onclick="showTab('api', this)"><i class="fas fa-plug"></i> Key Delivery API Setup</a>
             <a class="sidebar-link" onclick="showTab('upi', this)"><i class="fas fa-credit-card"></i> UPI Payment Setup</a>
@@ -546,10 +546,11 @@ ADMIN_HTML_TEMPLATE = """
 
                 <div class="card p-4">
                     <h5><i class="fas fa-info-circle me-2"></i>Welcome to Admin Dashboard</h5>
-                    <p class="text-muted">Use the side drawer menu to manage products, keys, payment setups, and store settings.</p>
+                    <p class="text-muted">Use the side drawer menu to manage products, keys, payment setups, broadcast, and store settings.</p>
                 </div>
             </div>
 
+            <!-- MANAGE PRODUCT SECTION (Updated Video Design Layout) -->
             <div class="tab-content-item" id="tab-products" style="display:none;">
                 <div class="card p-4">
                     <h5><i class="fas fa-plus-circle me-2"></i>Add / Edit Product</h5>
@@ -591,7 +592,7 @@ ADMIN_HTML_TEMPLATE = """
                 </div>
 
                 <div class="card p-4 mt-3">
-                    <h5><i class="fas fa-boxes-stacked me-2"></i>Existing Products Controls</h5>
+                    <h5><i class="fas fa-boxes-stacked me-2"></i>Manage Products Control Center</h5>
                     <div class="table-responsive">
                         <table class="table table-dark table-striped align-middle mt-2">
                             <thead>
@@ -664,17 +665,26 @@ ADMIN_HTML_TEMPLATE = """
                 </div>
             </div>
 
+            <!-- BROADCAST SECTION -->
+            <div class="tab-content-item" id="tab-broadcast" style="display:none;">
+                <div class="card p-4">
+                    <h5><i class="fas fa-bullhorn me-2"></i>Broadcast Message to All Users</h5>
+                    <form id="broadcastForm" class="row g-3 mt-2">
+                        <div class="col-12">
+                            <label>Broadcast Message (HTML supported)</label>
+                            <textarea id="bc_message" class="form-control" rows="6" placeholder="Type your broadcast message here..."></textarea>
+                        </div>
+                        <div class="col-12">
+                            <button type="button" onclick="sendBroadcast()" class="btn btn-custom"><i class="fas fa-paper-plane me-2"></i>Send Broadcast Now</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
             <div class="tab-content-item" id="tab-keys" style="display:none;">
                 <div class="card p-4">
                     <h5><i class="fas fa-key me-2"></i>Manage Stock & Keys</h5>
                     <p class="text-muted">Manage available inventory keys for automatic delivery.</p>
-                </div>
-            </div>
-
-            <div class="tab-content-item" id="tab-links" style="display:none;">
-                <div class="card p-4">
-                    <h5><i class="fas fa-link me-2"></i>Product Download Links</h5>
-                    <p class="text-muted">Attach files or channel links directly to products.</p>
                 </div>
             </div>
 
@@ -840,6 +850,18 @@ ADMIN_HTML_TEMPLATE = """
             }).then(r => r.json()).then(data => {
                 alert(data.message);
                 location.reload();
+            });
+        }
+
+        function sendBroadcast() {
+            let msg = document.getElementById('bc_message').value;
+            if(!msg) { alert('Please type broadcast message!'); return; }
+            fetch('/api/send_broadcast', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({message: msg})
+            }).then(r => r.json()).then(data => {
+                alert(data.message);
             });
         }
 
@@ -1048,6 +1070,37 @@ def api_add_stock():
 
     db_add_keys_to_inventory(prod_key, plan, keys)
     return jsonify({"success": True, "message": f"Added {len(keys)} keys successfully to inventory!"})
+
+@flask_app.route('/api/send_broadcast', methods=['POST'])
+def api_send_broadcast():
+    if not session.get('logged_in'):
+        return jsonify({"success": False, "message": "Unauthorized"}), 401
+
+    msg = request.json.get('message', '').strip()
+    if not msg:
+        return jsonify({"success": False, "message": "Message cannot be empty!"})
+
+    def run_broadcast_sync():
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            conn = sqlite3.connect(DB_FILE)
+            cursor = conn.cursor()
+            cursor.execute('SELECT user_id FROM users')
+            users = [row[0] for row in cursor.fetchall()]
+            conn.close()
+
+            app_bot = Application.builder().token(BOT_TOKEN).build().bot
+            for u_id in users:
+                try:
+                    loop.run_until_complete(app_bot.send_message(chat_id=u_id, text=msg, parse_mode="HTML"))
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.error(f"Broadcast error: {e}")
+
+    Thread(target=run_broadcast_sync).start()
+    return jsonify({"success": True, "message": "Broadcast started in background for all users!"})
 
 @flask_app.route('/api/save_api_settings', methods=['POST'])
 def api_save_settings():
@@ -1610,6 +1663,7 @@ async def verify_payment_btn_handler(update: Update, context: ContextTypes.DEFAU
         prod_key = order['prod_key']
         plan = order['plan']
         
+        # KEY DELIVERY LOGIC: Fetches key, marks as used, takes next available key
         delivered_key = db_pop_auto_key(prod_key, plan)
 
         if delivered_key:
@@ -1929,6 +1983,7 @@ def start_bot():
     app.add_handler(CallbackQueryHandler(ios_list, pattern="^ios_list$"))
     app.add_handler(CallbackQueryHandler(pc_list, pattern="^pc_list$"))
     app.add_handler(CallbackQueryHandler(show_product_prices, pattern="^prod_"))
+    app.add_handler(CallbackQueryHandler, pattern="^plan_"))
     app.add_handler(CallbackQueryHandler(order_summary, pattern="^plan_"))
     app.add_handler(CallbackQueryHandler(confirm_pay, pattern="^confirm_pay$"))
     app.add_handler(CallbackQueryHandler(verify_payment_btn_handler, pattern="^verify_payment_btn$"))
@@ -1952,6 +2007,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
