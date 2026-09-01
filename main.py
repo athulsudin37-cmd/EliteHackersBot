@@ -1983,7 +1983,6 @@ def start_bot():
     app.add_handler(CallbackQueryHandler(ios_list, pattern="^ios_list$"))
     app.add_handler(CallbackQueryHandler(pc_list, pattern="^pc_list$"))
     app.add_handler(CallbackQueryHandler(show_product_prices, pattern="^prod_"))
-    app.add_handler(CallbackQueryHandler, pattern="^plan_"))
     app.add_handler(CallbackQueryHandler(order_summary, pattern="^plan_"))
     app.add_handler(CallbackQueryHandler(confirm_pay, pattern="^confirm_pay$"))
     app.add_handler(CallbackQueryHandler(verify_payment_btn_handler, pattern="^verify_payment_btn$"))
