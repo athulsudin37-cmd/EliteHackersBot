@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FF Panels Shop</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    body {
+      background-color: #17212b;
+      color: #ffffff;
+      font-family: Arial, sans-serif;
+      padding: 12px;
+      margin: 0;
+      box-sizing: border-box;
+    }
+    .header {
+      text-align: center;
+      margin-bottom: 15px;
+      font-weight: bold;
+      background: #202b36;
+      padding: 10px;
+      border-radius: 8px;
+    }
+    .btn {
+      width: 100%;
+      padding: 12px 15px;
+      margin-bottom: 8px;
+      border: none;
+      border-radius: 10px;
+      font-size: 15px;
+      font-weight: bold;
+      color: white;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      gap: 10px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    }
+    .btn-green { background-color: #388e3c; }
+    .btn-blue { background-color: #1976d2; }
+    .btn-red { background-color: #b71c1c; }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+
+  <!-- Main Menu Page -->
+  <div id="main-menu">
+    <div class="header">Tap any button below to begin.</div>
+
+    <button class="btn btn-green" onclick="openShop()">🛒 Shop / Store Product</button>
+
+    <div class="grid">
+      <button class="btn btn-green">💰 Add Balance</button>
+      <button class="btn btn-blue">🔑 My Key</button>
+      <button class="btn btn-blue">👑 My Profile</button>
+      <button class="btn btn-blue">🔄 Referral</button>
+      <button class="btn btn-blue">📖 How To Use</button>
+      <button class="btn btn-green">🎁 Lucky</button>
+      <button class="btn btn-blue">➡️ Share</button>
+      <button class="btn btn-blue">🔔 Support</button>
+    </div>
+
+    <button class="btn btn-blue" style="margin-top: 8px;">🌐 Language</button>
+  </div>
+
+  <!-- Product Menu Page -->
+  <div id="product-menu" class="hidden">
+    <div class="header">🔥 Choose a product:</div>
+
+    <div id="product-list"></div>
+
+    <button class="btn btn-red" onclick="closeShop()">🔙 Back</button>
+  </div>
+
+  <script>
+    Telegram.WebApp.ready();
+    Telegram.WebApp.expand();
+
+    // =========================================================================================
+    // 📌 പുതിയ പ്രോഡക്റ്റ് ആഡ് ചെയ്യുന്നതിനുള്ള ഗൈഡ്:
+    // -----------------------------------------------------------------------------------------
+    // 1. പുതിയ പ്രോഡക്റ്റ് ചേർക്കാൻ താഴെയുള്ള ലിസ്റ്റിലേക്ക് ഇതുപോലെ ഒരു ലൈൻ കൂടി കൊടുത്താൽ മതി:
+    //    { name: "PRODUCT NAME", color: "red", icon: "🔥" },
+    //
+    // 2. നിറം മാറ്റാൻ color: എന്ന ഭാഗത്ത് നൽകാം:
+    //    - ചുവപ്പ് നിറത്തിന്  --> "red"
+    //    - നീല നിറത്തിന്    --> "blue"
+    //    - പച്ച നിറത്തിന്    --> "green"
+    // =========================================================================================
+
+    const products = [
+      { name: "DRIP CLIENT PROXY NONROOT", color: "red", icon: "🛠️" },
+      { name: "HAXX-CKER ROOT MAIN ID", color: "blue", icon: "🦅" },
+      { name: "ABCD APK MOD NONROT", color: "red", icon: "🛠️" },
+      { name: "BALA MOD APK MAIN ID", color: "blue", icon: "📱" },
+      { name: "X RAGE PRO MAIN ID NONROOT", color: "blue", icon: "⚡" },
+      { name: "HEX BLADE ROOT INJECTOR", color: "blue", icon: "🔑" }
+      
+      // 👈 പുതിയ പ്രോഡക്റ്റുകൾ വരുമ്പോൾ ഈ ലൈനിന്റെ താഴെ ചേർത്താൽ മതി
+    ];
+
+    function renderProducts() {
+      const container = document.getElementById('product-list');
+      container.innerHTML = '';
+
+      products.forEach(prod => {
+        const btn = document.createElement('button');
+        btn.className = `btn btn-${prod.color}`;
+        btn.innerHTML = `<span>${prod.icon}</span> <span>${prod.name}</span>`;
+        btn.onclick = () => {
+          Telegram.WebApp.sendData(prod.name);
+        };
+        container.appendChild(btn);
+      });
+    }
+
+    function openShop() {
+      document.getElementById('main-menu').classList.add('hidden');
+      document.getElementById('product-menu').classList.remove('hidden');
+      renderProducts();
+    }
+
+    function closeShop() {
+      document.getElementById('product-menu').classList.add('hidden');
+      document.getElementById('main-menu').classList.remove('hidden');
+    }
+  </script>
+</body>
+</html>
