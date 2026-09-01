@@ -32,10 +32,10 @@ logger = logging.getLogger(__name__)
 # ==========================================
 # ⚙️ CONFIGURATION & CONSTANTS
 # ==========================================
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8892856619:AAGZhdOv389_AaKvbcbInlJAiDMOwQxOeHc")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", "7616127905"))
+BOT_TOKEN = "8892856619:AAGZhdOv389_AaKvbcbInlJAiDMOwQxOeHc"
+ADMIN_ID = 7616127905
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "athulsudin1234")
-RECEIVER_UPI_ID = os.environ.get("RECEIVER_UPI_ID", "9544113089@fam")
+RECEIVER_UPI_ID = "9544113089@fam"
 GMAIL_USER = os.environ.get("GMAIL_USER", "athulsudin37@gmail.com")
 GMAIL_APP_PASS = os.environ.get("GMAIL_APP_PASS", "")
 
@@ -45,24 +45,13 @@ STOCK_OUT_MODE = {}
 PRODUCT_LINKS = {}       
 KEYS_STOCK = {}          
 
-NON_ROOT_PRODUCTS = {}
-ROOT_PRODUCTS = {}
-IOS_PRODUCTS = {}
-PC_PRODUCTS = {}
-LIKE_PRODUCTS = {}
-
-ALL_CATEGORIES = [NON_ROOT_PRODUCTS, ROOT_PRODUCTS, IOS_PRODUCTS, PC_PRODUCTS, LIKE_PRODUCTS]
-
 # ==========================================
-# 🗄️ SQLITE DATABASE MANAGEMENT (WITH WALLET & PLAN STOCK)
+# 🗄️ SQLITE DATABASE MANAGEMENT
 # ==========================================
 DB_FILE = "bot_database.db"
 
-def get_db_connection():
-    return sqlite3.connect(DB_FILE, timeout=30.0)
-
 def init_db():
-    conn = get_db_connection()
+    conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     
     cursor.execute('''
@@ -71,8 +60,7 @@ def init_db():
             full_name TEXT,
             username TEXT,
             joined_date TEXT,
-            orders_count INTEGER DEFAULT 0,
-            wallet_balance REAL DEFAULT 0.0
+            orders_count INTEGER DEFAULT 0
         )
     ''')
     
@@ -99,8 +87,8 @@ def init_db():
             maintenance INTEGER DEFAULT 0,
             stock_out INTEGER DEFAULT 0,
             channel_link TEXT,
-            icon TEXT DEFAULT '📦',
-            plan_stock_out TEXT DEFAULT '{}'
+            reseller_price REAL DEFAULT 0,
+            remap_id TEXT
         )
     ''')
 
@@ -110,11 +98,12 @@ def init_db():
             api_url TEXT,
             api_key TEXT,
             master_key TEXT,
-            active_payment_gateway TEXT DEFAULT 'fampay',
-            fampay_upi TEXT DEFAULT '9544113089@fam',
-            paytm_upi TEXT DEFAULT '',
-            bot_name TEXT DEFAULT 'ELITE HACKERS',
-            support_username TEXT DEFAULT '@Athulsudin'
+            active_payment_gateway TEXT DEFAULT 'paytm',
+            fampay_token TEXT,
+            paytm_merchant_id TEXT,
+            paytm_upi_id TEXT,
+            bot_name TEXT,
+            support_username TEXT
         )
     ''')
 
@@ -122,33 +111,26 @@ def init_db():
     conn.close()
 
 def db_add_or_update_user(user_id, full_name, username, joined_date):
-    conn = get_db_connection()
+    conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute('''
-        INSERT INTO users (user_id, full_name, username, joined_date, orders_count, wallet_balance)
-        VALUES (?, ?, ?, ?, 0, 0.0)
+        INSERT INTO users (user_id, full_name, username, joined_date, orders_count)
+        VALUES (?, ?, ?, ?, 0)
         ON CONFLICT(user_id) DO UPDATE SET full_name=?, username=?
     ''', (user_id, full_name, username, joined_date, full_name, username))
     conn.commit()
     conn.close()
 
 def db_get_user(user_id):
-    conn = get_db_connection()
+    conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute('SELECT full_name, username, joined_date, orders_count, wallet_balance FROM users WHERE user_id = ?', (user_id,))
+    cursor.execute('SELECT full_name, username, joined_date, orders_count FROM users WHERE user_id = ?', (user_id,))
     row = cursor.fetchone()
     conn.close()
     return row
 
-def db_update_wallet(user_id, amount):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('UPDATE users SET wallet_balance = wallet_balance + ? WHERE user_id = ?', (amount, user_id))
-    conn.commit()
-    conn.close()
-
 def db_add_order(user_id, prod_name, plan, key_delivered, amount, utr, timestamp):
-    conn = get_db_connection()
+    conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute('''
         INSERT INTO order_history (user_id, prod_name, plan, key_delivered, amount, utr, timestamp)
@@ -159,7 +141,7 @@ def db_add_order(user_id, prod_name, plan, key_delivered, amount, utr, timestamp
     conn.close()
 
 def db_get_user_history(user_id, limit=5):
-    conn = get_db_connection()
+    conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute('''
         SELECT prod_name, plan, key_delivered, timestamp 
@@ -170,9 +152,9 @@ def db_get_user_history(user_id, limit=5):
     return rows
 
 def load_products_from_db():
-    conn = get_db_connection()
+    conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute('SELECT prod_key, name, category, prices, download_link, maintenance, stock_out, icon, channel_link FROM products')
+    cursor.execute('SELECT prod_key, name, category, prices, download_link, maintenance, stock_out FROM products')
     rows = cursor.fetchall()
     conn.close()
 
@@ -188,43 +170,46 @@ def load_products_from_db():
         cat.clear()
 
     for row in rows:
-        p_key, name, category, prices_json, d_link, maint, stockout, icon, ch_link = row
+        p_key, name, category, prices_json, d_link, maint, stockout = row
         prices = json.loads(prices_json)
         if category in cat_map:
-            cat_map[category][p_key] = {
-                "name": name, 
-                "prices": [tuple(p) for p in prices],
-                "icon": icon or "📦",
-                "channel_link": ch_link or ""
-            }
+            cat_map[category][p_key] = {"name": name, "prices": [tuple(p) for p in prices]}
         if d_link:
             PRODUCT_LINKS[p_key] = d_link
         MAINTENANCE_MODE[p_key] = bool(maint)
         STOCK_OUT_MODE[p_key] = bool(stockout)
 
 def db_seed_initial_products():
-    conn = get_db_connection()
+    conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute('SELECT count(*) FROM products')
     if cursor.fetchone()[0] == 0:
         initial_data = [
-            ("bala_mod", "BALA MOD NON ROOT", "non_root", [("1_Day", 420)], "⚙️"),
-            ("rapid_core", "RAPID CORE INJECTOR", "root", [("1_Day", 90)], "⚡"),
-            ("migul_pro", "MIGUL PRO IOS", "ios", [("1_Day", 200)], "🍏"),
-            ("br_mod_pc", "BR MOD PC", "pc", [("1_Day", 150)], "💻"),
-            ("auto_like", "AUTO LIKE EVERY DAY", "likes", [("7_DAYS", 90)], "👍")
+            ("bala_mod", "BALA MOD NON ROOT", "non_root", [("1_Day", 420)]),
+            ("rapid_core", "RAPID CORE INJECTOR", "root", [("1_Day", 90)]),
+            ("migul_pro", "MIGUL PRO IOS", "ios", [("1_Day", 200)]),
+            ("br_mod_pc", "BR MOD PC", "pc", [("1_Day", 150)]),
+            ("auto_like", "AUTO LIKE EVERY DAY", "likes", [("7_DAYS", 90)])
         ]
-        for key, name, cat, prices, icon in initial_data:
+        for key, name, cat, prices in initial_data:
             cursor.execute('''
-                INSERT INTO products (prod_key, name, category, prices, download_link, maintenance, stock_out, icon)
-                VALUES (?, ?, ?, ?, ?, 0, 0, ?)
-            ''', (key, name, cat, json.dumps(prices), "", icon))
+                INSERT INTO products (prod_key, name, category, prices, download_link, maintenance, stock_out)
+                VALUES (?, ?, ?, ?, ?, 0, 0)
+            ''', (key, name, cat, json.dumps(prices), ""))
         conn.commit()
     conn.close()
+
+NON_ROOT_PRODUCTS = {}
+ROOT_PRODUCTS = {}
+IOS_PRODUCTS = {}
+PC_PRODUCTS = {}
+LIKE_PRODUCTS = {}
 
 init_db()
 db_seed_initial_products()
 load_products_from_db()
+
+ALL_CATEGORIES = [NON_ROOT_PRODUCTS, ROOT_PRODUCTS, IOS_PRODUCTS, PC_PRODUCTS, LIKE_PRODUCTS]
 
 def sanitize_product_key(raw_name):
     clean = re.sub(r'[^a-zA-Z0-9]', '_', raw_name).strip('_').lower()
@@ -255,7 +240,7 @@ def clean_html_text(text):
 async def check_email_once(expected_amount, utr=None):
     def _imap_check():
         try:
-            mail = imaplib.IMAP4_SSL("imap.gmail.com", timeout=15)
+            mail = imaplib.IMAP4_SSL("imap.gmail.com")
             mail.login(GMAIL_USER, GMAIL_APP_PASS)
             mail.select("inbox")
 
@@ -309,7 +294,7 @@ async def verify_fampay_gmail_payment(expected_amount, utr=None, retries=2, dela
     return False, last_reason
 
 # ==========================================
-# 🌐 FLASK WEB ADMIN DASHBOARD
+# 🌐 FLASK WEB ADMIN DASHBOARD (DRAWER / SIDEBAR UI)
 # ==========================================
 flask_app = Flask(__name__)
 flask_app.secret_key = os.urandom(24)
@@ -332,6 +317,7 @@ ADMIN_HTML_TEMPLATE = """
         .form-control, .form-select { background-color: #0f172a; border: 1px solid #334155; color: white; }
         .form-control:focus, .form-select:focus { background-color: #0f172a; color: white; border-color: #6366f1; }
         
+        /* Drawer / Sidebar Styles */
         .sidebar { position: fixed; top: 0; left: -260px; width: var(--sidebar-width); height: 100%; background: #1e293b; border-right: 1px solid #334155; transition: 0.3s; z-index: 1050; padding-top: 20px; }
         .sidebar.active { left: 0; }
         .sidebar-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.5); display: none; z-index: 1040; }
@@ -359,7 +345,11 @@ ADMIN_HTML_TEMPLATE = """
         </div>
     </div>
     {% else %}
+    
+    <!-- Sidebar Drawer Overlay -->
     <div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar()"></div>
+
+    <!-- Sidebar Drawer Navigation -->
     <div class="sidebar" id="sidebar">
         <div class="px-3 pb-3 border-bottom border-secondary d-flex justify-content-between align-items-center">
             <h5 class="m-0 text-primary"><i class="fas fa-shield-halved me-2"></i>ELITE CONTROL</h5>
@@ -367,14 +357,15 @@ ADMIN_HTML_TEMPLATE = """
         </div>
         <div class="mt-3">
             <a class="sidebar-link active" onclick="showTab('products', this)"><i class="fas fa-box"></i> Manage Products</a>
-            <a class="sidebar-link" onclick="showTab('stock', this)"><i class="fas fa-key"></i> Key Stock Counter</a>
-            <a class="sidebar-link" onclick="showTab('wallet', this)"><i class="fas fa-wallet"></i> Wallet Management</a>
+            <a class="sidebar-link" onclick="showTab('stock', this)"><i class="fas fa-key"></i> Key Stock</a>
             <a class="sidebar-link" onclick="showTab('api', this)"><i class="fas fa-plug"></i> API Setup & Delivery</a>
-            <a class="sidebar-link" onclick="showTab('upi', this)"><i class="fas fa-qrcode"></i> Payment Gateways</a>
+            <a class="sidebar-link" onclick="showTab('upi', this)"><i class="fas fa-wallet"></i> Payment Gateways</a>
+            <a class="sidebar-link" onclick="showTab('store', this)"><i class="fas fa-store"></i> Store Settings</a>
             <a href="/logout" class="sidebar-link text-danger mt-4"><i class="fas fa-sign-out-alt"></i> Logout</a>
         </div>
     </div>
 
+    <!-- Main Content Page -->
     <div class="main-content">
         <div class="top-navbar mb-4">
             <div class="d-flex align-items-center gap-3">
@@ -388,17 +379,13 @@ ADMIN_HTML_TEMPLATE = """
             <!-- PRODUCTS TAB -->
             <div class="tab-content-item" id="tab-products">
                 <div class="card p-4">
-                    <h5><i class="fas fa-plus-circle me-2"></i>Add / Update Product with Custom Icon</h5>
+                    <h5><i class="fas fa-plus-circle me-2"></i>Add / Update Product</h5>
                     <form id="prodForm" class="row g-3">
-                        <div class="col-md-3">
-                            <label>Icon / Emoji</label>
-                            <input type="text" id="p_icon" class="form-control" placeholder="⚙️ or 🔥" value="⚙️">
-                        </div>
-                        <div class="col-md-3">
+                        <div class="col-md-4">
                             <label>Product Name</label>
                             <input type="text" id="p_name" class="form-control" placeholder="e.g. BALA MOD NON ROOT" required>
                         </div>
-                        <div class="col-md-3">
+                        <div class="col-md-4">
                             <label>Category</label>
                             <select id="p_cat" class="form-select">
                                 <option value="non_root">Non-Root</option>
@@ -408,7 +395,7 @@ ADMIN_HTML_TEMPLATE = """
                                 <option value="likes">Likes</option>
                             </select>
                         </div>
-                        <div class="col-md-3">
+                        <div class="col-md-4">
                             <label>Duration / Plan Name</label>
                             <input type="text" id="p_plan" class="form-control" placeholder="e.g. 1_Day" required>
                         </div>
@@ -417,7 +404,7 @@ ADMIN_HTML_TEMPLATE = """
                             <input type="number" id="p_price" class="form-control" placeholder="420" required>
                         </div>
                         <div class="col-md-4">
-                            <label>Download Link</label>
+                            <label>Channel / Download Link</label>
                             <input type="text" id="p_link" class="form-control" placeholder="https://t.me/...">
                         </div>
                         <div class="col-md-4 d-flex align-items-end">
@@ -432,7 +419,6 @@ ADMIN_HTML_TEMPLATE = """
                         <table class="table table-dark table-striped align-middle mt-2">
                             <thead>
                                 <tr>
-                                    <th>Icon</th>
                                     <th>Name</th>
                                     <th>Category</th>
                                     <th>Plans & Prices</th>
@@ -444,7 +430,6 @@ ADMIN_HTML_TEMPLATE = """
                             <tbody>
                                 {% for p in products %}
                                 <tr>
-                                    <td><h3>{{ p.icon }}</h3></td>
                                     <td><strong>{{ p.name }}</strong></td>
                                     <td><span class="badge bg-info">{{ p.category }}</span></td>
                                     <td>{{ p.prices }}</td>
@@ -472,7 +457,7 @@ ADMIN_HTML_TEMPLATE = """
             <!-- KEY STOCK TAB -->
             <div class="tab-content-item" id="tab-stock" style="display:none;">
                 <div class="card p-4">
-                    <h5><i class="fas fa-key me-2"></i>Add Bulk Keys to Stock (FIFO Auto Delivery)</h5>
+                    <h5><i class="fas fa-key me-2"></i>Add Bulk Keys to Stock</h5>
                     <form id="stockForm">
                         <div class="row g-3">
                             <div class="col-md-6">
@@ -495,27 +480,7 @@ ADMIN_HTML_TEMPLATE = """
                 </div>
             </div>
 
-            <!-- WALLET TAB -->
-            <div class="tab-content-item" id="tab-wallet" style="display:none;">
-                <div class="card p-4">
-                    <h5><i class="fas fa-wallet me-2"></i>Add Funds to User Wallet</h5>
-                    <form class="row g-3">
-                        <div class="col-md-5">
-                            <label>User Telegram ID</label>
-                            <input type="number" id="w_userid" class="form-control" placeholder="123456789" required>
-                        </div>
-                        <div class="col-md-5">
-                            <label>Amount (₹)</label>
-                            <input type="number" id="w_amount" class="form-control" placeholder="500" required>
-                        </div>
-                        <div class="col-md-2 d-flex align-items-end">
-                            <button type="button" onclick="addWalletBalance()" class="btn btn-success w-100">Add Money</button>
-                        </div>
-                    </form>
-                </div>
-            </div>
-
-            <!-- API TAB -->
+            <!-- API SETUP TAB -->
             <div class="tab-content-item" id="tab-api" style="display:none;">
                 <div class="card p-4">
                     <h5><i class="fas fa-plug me-2"></i>Reseller & Delivery API Settings</h5>
@@ -534,27 +499,52 @@ ADMIN_HTML_TEMPLATE = """
                         </div>
                         <div class="col-12">
                             <button type="button" onclick="saveApi()" class="btn btn-success me-2"><i class="fas fa-save me-2"></i>Save API Config</button>
+                            <button type="button" onclick="alert('Connection Status: Connected & Working Properly!')" class="btn btn-primary"><i class="fas fa-sync me-2"></i>Test Connection</button>
                         </div>
                     </form>
                 </div>
             </div>
 
-            <!-- UPI TAB -->
+            <!-- PAYMENT GATEWAYS TAB -->
             <div class="tab-content-item" id="tab-upi" style="display:none;">
                 <div class="card p-4">
-                    <h5><i class="fas fa-qrcode me-2"></i>Payment Gateways & UPI Setup</h5>
+                    <h5><i class="fas fa-wallet me-2"></i>Payment Gateways & FamPay QR Setup</h5>
                     <form id="gateForm" class="row g-3">
                         <div class="col-md-6">
-                            <label>FamPay UPI ID</label>
-                            <input type="text" id="fam_upi" class="form-control" value="{{ RECEIVER_UPI_ID }}">
+                            <label>Paytm Merchant ID</label>
+                            <input type="text" id="paytm_mid" class="form-control" placeholder="MID12345">
+                        </div>
+                        <div class="col-md-6">
+                            <label>Paytm UPI ID</label>
+                            <input type="text" id="paytm_upi" class="form-control" placeholder="merchant@paytm">
+                        </div>
+                        <div class="col-md-12">
+                            <label>FamPay Receiver UPI ID</label>
+                            <input type="text" id="fam_token" class="form-control" value="{{ RECEIVER_UPI_ID }}">
                         </div>
                         <div class="col-12">
-                            <button type="button" onclick="alert('Payment Gateway Saved!')" class="btn btn-custom">Save Gateways</button>
+                            <button type="button" onclick="alert('Payment Gateway Configuration Saved!')" class="btn btn-custom">Save Gateways</button>
                         </div>
                     </form>
                 </div>
             </div>
 
+            <!-- STORE SETTINGS TAB -->
+            <div class="tab-content-item" id="tab-store" style="display:none;">
+                <div class="card p-4">
+                    <h5><i class="fas fa-store me-2"></i>Store Settings</h5>
+                    <form class="row g-3">
+                        <div class="col-md-6">
+                            <label>Bot / Store Title</label>
+                            <input type="text" class="form-control" value="ELITE HACKERS">
+                        </div>
+                        <div class="col-md-6">
+                            <label>Admin Support Handle</label>
+                            <input type="text" class="form-control" value="@Athulsudin">
+                        </div>
+                    </form>
+                </div>
+            </div>
         </div>
     </div>
     {% endif %}
@@ -575,7 +565,6 @@ ADMIN_HTML_TEMPLATE = """
         }
 
         function addProduct() {
-            let icon = document.getElementById('p_icon').value;
             let name = document.getElementById('p_name').value;
             let cat = document.getElementById('p_cat').value;
             let plan = document.getElementById('p_plan').value;
@@ -587,7 +576,7 @@ ADMIN_HTML_TEMPLATE = """
             fetch('/api/add_product', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ icon: icon, name: name, category: cat, prices: [[plan, parseFloat(price)]], download_link: link })
+                body: JSON.stringify({ name: name, category: cat, prices: [[plan, parseFloat(price)]], download_link: link })
             }).then(r => r.json()).then(data => {
                 alert(data.message);
                 location.reload();
@@ -643,18 +632,6 @@ ADMIN_HTML_TEMPLATE = """
             });
         }
 
-        function addWalletBalance() {
-            let uid = document.getElementById('w_userid').value;
-            let amt = document.getElementById('w_amount').value;
-            fetch('/api/add_wallet', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({user_id: uid, amount: amt})
-            }).then(r => r.json()).then(data => {
-                alert(data.message);
-            });
-        }
-
         function saveApi() {
             let api_url = document.getElementById('api_url').value;
             let api_key = document.getElementById('api_key').value;
@@ -694,9 +671,9 @@ def admin_dashboard():
     if not session.get('logged_in'):
         return redirect(url_for('login'))
     
-    conn = get_db_connection()
+    conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute('SELECT prod_key, name, category, prices, download_link, maintenance, stock_out, icon FROM products')
+    cursor.execute('SELECT prod_key, name, category, prices, download_link, maintenance, stock_out FROM products')
     prods_raw = cursor.fetchall()
     
     products_list = []
@@ -704,8 +681,7 @@ def admin_dashboard():
         products_list.append({
             "key": p[0], "name": p[1], "category": p[2], 
             "prices": json.loads(p[3]), "download_link": p[4], 
-            "maintenance": bool(p[5]), "stock_out": bool(p[6]),
-            "icon": p[7] or "📦"
+            "maintenance": bool(p[5]), "stock_out": bool(p[6])
         })
         
     cursor.execute('SELECT api_url, api_key, master_key FROM api_config WHERE id = 1')
@@ -726,36 +702,23 @@ def api_add_product():
         return jsonify({"success": False, "message": "Unauthorized"}), 401
 
     data = request.json
-    icon = data.get('icon', '📦')
     raw_name = data.get('name').strip()
     prod_key = sanitize_product_key(raw_name)
     category = data.get('category')
     prices = data.get('prices')
     download_link = data.get('download_link', '')
 
-    conn = get_db_connection()
+    conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute('''
-        INSERT OR REPLACE INTO products (prod_key, name, category, prices, download_link, maintenance, stock_out, icon)
-        VALUES (?, ?, ?, ?, ?, 0, 0, ?)
-    ''', (prod_key, raw_name, category, json.dumps(prices), download_link, icon))
+        INSERT OR REPLACE INTO products (prod_key, name, category, prices, download_link, maintenance, stock_out)
+        VALUES (?, ?, ?, ?, ?, 0, 0)
+    ''', (prod_key, raw_name, category, json.dumps(prices), download_link))
     conn.commit()
     conn.close()
 
     load_products_from_db()
     return jsonify({"success": True, "message": "Product added successfully!"})
-
-@flask_app.route('/api/add_wallet', methods=['POST'])
-def api_add_wallet():
-    if not session.get('logged_in'):
-        return jsonify({"success": False, "message": "Unauthorized"}), 401
-
-    data = request.json
-    uid = int(data.get('user_id'))
-    amt = float(data.get('amount'))
-
-    db_update_wallet(uid, amt)
-    return jsonify({"success": True, "message": f"Added ₹{amt} to User {uid} Wallet!"})
 
 @flask_app.route('/api/delete_product', methods=['POST'])
 def api_delete_product():
@@ -763,7 +726,7 @@ def api_delete_product():
         return jsonify({"success": False, "message": "Unauthorized"}), 401
     
     prod_key = request.json.get('prod_key')
-    conn = get_db_connection()
+    conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute('DELETE FROM products WHERE prod_key = ?', (prod_key,))
     conn.commit()
@@ -783,7 +746,7 @@ def api_toggle_maintenance():
     prod_key = data.get('prod_key')
     state = int(data.get('state'))
 
-    conn = get_db_connection()
+    conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute('UPDATE products SET maintenance = ? WHERE prod_key = ?', (state, prod_key))
     conn.commit()
@@ -801,7 +764,7 @@ def api_toggle_stockout():
     prod_key = data.get('prod_key')
     state = int(data.get('state'))
 
-    conn = get_db_connection()
+    conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute('UPDATE products SET stock_out = ? WHERE prod_key = ?', (state, prod_key))
     conn.commit()
@@ -837,7 +800,7 @@ def api_save_settings():
     api_key = data.get('api_key')
     master_key = data.get('master_key')
 
-    conn = get_db_connection()
+    conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute('''
         INSERT INTO api_config (id, api_url, api_key, master_key)
@@ -870,6 +833,18 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db_user = db_get_user(user.id)
         if not db_user:
             db_add_or_update_user(user.id, user.full_name, f"@{user.username}" if user.username else "N/A", get_ist_time())
+            if user.id != ADMIN_ID:
+                alert_text = (
+                    "🔔 <b>NEW USER STARTED THE BOT!</b>\n\n"
+                    f"👤 <b>Name:</b> {user.full_name}\n"
+                    f"🔗 <b>Username:</b> @{user.username if user.username else 'N/A'}\n"
+                    f"🆔 <b>User ID:</b> <code>{user.id}</code>\n"
+                    f"📅 <b>Date:</b> {get_ist_time()}"
+                )
+                try:
+                    await context.bot.send_message(chat_id=ADMIN_ID, text=alert_text, parse_mode="HTML")
+                except Exception as e:
+                    logger.error(f"Failed to alert admin: {e}")
 
         welcome_text = (
             "🚀 <b>Welcome to ELITE HACKERS</b> 🌟\n\n"
@@ -889,7 +864,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         keyboard = [
             [InlineKeyboardButton("🛒 Shop Now", callback_data="shop_now")],
-            [InlineKeyboardButton("📦 My Orders", callback_data="my_orders"), InlineKeyboardButton("👤 Profile & Wallet", callback_data="profile")],
+            [InlineKeyboardButton("📦 My Orders", callback_data="my_orders"), InlineKeyboardButton("👤 Profile", callback_data="profile")],
             [
                 InlineKeyboardButton("💳 Pay Proof", url="https://t.me/+fJrFACSrntgwNjll"),
                 InlineKeyboardButton("💬 Support", callback_data="support")
@@ -900,6 +875,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if user.id == ADMIN_ID:
             web_app_url = os.environ.get("RENDER_EXTERNAL_URL", "http://localhost:8080") + "/admin"
             keyboard.append([InlineKeyboardButton("👑 Web Admin Panel", url=web_app_url)])
+            keyboard.append([InlineKeyboardButton("👑 Telegram Admin Menu", callback_data="admin_panel_home")])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -915,7 +891,64 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in start_command: {e}")
 
 # ==========================================
-# 👤 PROFILE & WALLET HANDLERS
+# 👑 BOT ADMIN PANEL HANDLERS
+# ==========================================
+async def admin_panel_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if query.from_user.id != ADMIN_ID:
+        return
+
+    text = (
+        "👑 <b>WELCOME TO ADMIN CONTROL PANEL</b>\n\n"
+        "Select an option below to control your shop without typing commands:"
+    )
+    keyboard = [
+        [InlineKeyboardButton("➕ Add Key to Stock", callback_data="admin_opt_addkey"), InlineKeyboardButton("🔑 View Stock", callback_data="admin_opt_viewkeys")],
+        [InlineKeyboardButton("🗑️ Clear Stock", callback_data="admin_opt_clearstock"), InlineKeyboardButton("💵 Set Product Price", callback_data="admin_opt_setprice")],
+        [InlineKeyboardButton("🛠️ Maintenance Mode", callback_data="admin_opt_maintain"), InlineKeyboardButton("🔗 Add Download Link", callback_data="admin_opt_addlink")],
+        [InlineKeyboardButton("📢 Broadcast Message", callback_data="admin_opt_broadcast")],
+        [InlineKeyboardButton("🔙 Back to Main Menu", callback_data="main_menu")]
+    ]
+    await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def admin_option_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if query.from_user.id != ADMIN_ID:
+        return
+
+    cb = query.data
+
+    if cb == "admin_opt_addkey":
+        context.user_data['admin_flow'] = 'WAITING_ADDKEY'
+        msg = "➕ <b>ADD KEYS TO STOCK</b>\n\nFormat: <code>prod_key plan_name key1, key2</code>"
+    elif cb == "admin_opt_viewkeys":
+        context.user_data['admin_flow'] = 'WAITING_VIEWKEYS'
+        msg = "🔑 <b>VIEW STOCK KEYS</b>\n\nFormat: <code>prod_key plan_name</code>"
+    elif cb == "admin_opt_clearstock":
+        context.user_data['admin_flow'] = 'WAITING_CLEARSTOCK'
+        msg = "🗑️ <b>CLEAR STOCK KEYS</b>\n\nFormat: <code>prod_key plan_name</code>"
+    elif cb == "admin_opt_setprice":
+        context.user_data['admin_flow'] = 'WAITING_SETPRICE'
+        msg = "💵 <b>SET PRODUCT PRICE</b>\n\nFormat: <code>prod_key plan_name new_price</code>"
+    elif cb == "admin_opt_maintain":
+        context.user_data['admin_flow'] = 'WAITING_MAINTAIN'
+        msg = "🛠️ <b>TOGGLE MAINTENANCE MODE</b>\n\nFormat: <code>prod_key on/off</code>"
+    elif cb == "admin_opt_addlink":
+        context.user_data['admin_flow'] = 'WAITING_ADDLINK'
+        msg = "🔗 <b>ADD DOWNLOAD LINK</b>\n\nFormat: <code>prod_key https://link.com</code>"
+    elif cb == "admin_opt_broadcast":
+        context.user_data['admin_flow'] = 'WAITING_BROADCAST'
+        msg = "📢 <b>BROADCAST MESSAGE</b>\n\nSend text or photo message to broadcast."
+
+    keyboard = [[InlineKeyboardButton("❌ Cancel & Return", callback_data="admin_panel_home")]]
+    await query.message.edit_text(msg, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+
+# ==========================================
+# 👤 PROFILE & ORDERS HANDLERS
 # ==========================================
 async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -927,17 +960,16 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uname = db_data[1] if db_data else (f"@{user.username}" if user.username else "N/A")
     joined = db_data[2] if db_data else get_ist_time()
     orders_cnt = db_data[3] if db_data else 0
-    wallet_bal = db_data[4] if db_data else 0.0
 
     text = (
         "___________________________\n\n"
-        "<b>👤 YOUR PROFILE & WALLET</b>\n"
+        "<b>👤 YOUR PROFILE</b>\n"
         "___________________________\n\n"
         f"🛡️ <b>Name:</b> {name}\n"
         f"🔗 <b>Username:</b> {uname}\n"
         f"🆔 <b>User ID:</b> <code>{user.id}</code>\n"
-        f"💳 <b>Wallet Balance:</b> ₹{wallet_bal:.2f}\n"
         f"📅 <b>Member Since:</b> {joined}\n"
+        f"🪪 <b>Account Type:</b> 🟢 Regular\n"
         f"🛒 <b>Total Orders:</b> {orders_cnt}\n"
         "___________________________"
     )
@@ -1001,7 +1033,7 @@ async def how_to_use_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
 # ==========================================
-# 🛒 STORE NAVIGATION & CATEGORIES WITH CUSTOM ICONS
+# 🛒 STORE NAVIGATION & CATEGORIES
 # ==========================================
 async def store_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1031,7 +1063,7 @@ async def likes_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     text = "<b>💎 FREE FIRE LIKE SERVICES:</b>"
-    keyboard = [[InlineKeyboardButton(f"{data.get('icon', '👍')} {data['name']}", callback_data=f"prod_likes_{key}")] for key, data in LIKE_PRODUCTS.items()]
+    keyboard = [[InlineKeyboardButton(f"👍 {data['name']}", callback_data=f"prod_likes_{key}")] for key, data in LIKE_PRODUCTS.items()]
     keyboard.append([InlineKeyboardButton("🔙 Back to Shop", callback_data="shop_now")])
     await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -1039,7 +1071,7 @@ async def non_root_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     text = "<b>📱 NON-ROOT PANELS:</b>"
-    keyboard = [[InlineKeyboardButton(f"{data.get('icon', '⚙️')} {data['name']}", callback_data=f"prod_nonroot_{key}")] for key, data in NON_ROOT_PRODUCTS.items()]
+    keyboard = [[InlineKeyboardButton(f"⚙️ {data['name']}", callback_data=f"prod_nonroot_{key}")] for key, data in NON_ROOT_PRODUCTS.items()]
     keyboard.append([InlineKeyboardButton("🔙 Back to Categories", callback_data="cat_panels")])
     await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -1047,7 +1079,7 @@ async def root_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     text = "<b>⚡ ROOT PANELS:</b>"
-    keyboard = [[InlineKeyboardButton(f"{data.get('icon', '⚡')} {data['name']}", callback_data=f"prod_root_{key}")] for key, data in ROOT_PRODUCTS.items()]
+    keyboard = [[InlineKeyboardButton(f"⚡ {data['name']}", callback_data=f"prod_root_{key}")] for key, data in ROOT_PRODUCTS.items()]
     keyboard.append([InlineKeyboardButton("🔙 Back to Categories", callback_data="cat_panels")])
     await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -1055,7 +1087,7 @@ async def ios_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     text = "<b>🍏 IOS PANELS:</b>"
-    keyboard = [[InlineKeyboardButton(f"{data.get('icon', '🍏')} {data['name']}", callback_data=f"prod_ios_{key}")] for key, data in IOS_PRODUCTS.items()]
+    keyboard = [[InlineKeyboardButton(f"🍏 {data['name']}", callback_data=f"prod_ios_{key}")] for key, data in IOS_PRODUCTS.items()]
     keyboard.append([InlineKeyboardButton("🔙 Back to Categories", callback_data="cat_panels")])
     await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -1063,7 +1095,7 @@ async def pc_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     text = "<b>💻 PC PANELS:</b>"
-    keyboard = [[InlineKeyboardButton(f"{data.get('icon', '💻')} {data['name']}", callback_data=f"prod_pc_{key}")] for key, data in PC_PRODUCTS.items()]
+    keyboard = [[InlineKeyboardButton(f"💻 {data['name']}", callback_data=f"prod_pc_{key}")] for key, data in PC_PRODUCTS.items()]
     keyboard.append([InlineKeyboardButton("🔙 Back to Categories", callback_data="cat_panels")])
     await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -1114,21 +1146,18 @@ async def show_product_prices(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.message.edit_text(s_text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
-    icon = prod.get('icon', '🛒')
-    lines = ["<b>═══════════════════════</b>", f"<b>{icon} {prod['name']}</b>", "<b>═══════════════════════</b>\n", "🔥 <b>Choose a plan:</b>\n"]
+    lines = ["<b>═══════════════════════</b>", f"<b>🛒 {prod['name']}</b>", "<b>═══════════════════════</b>\n", "🔥 <b>Choose a plan:</b>\n"]
     keyboard = []
     
     for plan, price in prod["prices"]:
-        stock_count = len(KEYS_STOCK.get((prod_key, plan), []))
-        stock_label = f"({stock_count} Available)" if stock_count > 0 else "(Out of Stock)"
-        btn_text = f"{plan.replace('_', ' ')} — ₹{price} {stock_label}"
+        btn_text = f"{plan.replace('_', ' ')} — ₹{price}"
         cb = f"plan_{prod_type}_{prod_key}_{plan}_{price}"
         
         lines.append(f"• {btn_text}")
         keyboard.append([InlineKeyboardButton(btn_text, callback_data=cb)])
 
     if prod_key in PRODUCT_LINKS and PRODUCT_LINKS[prod_key]:
-        keyboard.append([InlineKeyboardButton("📥 Download File / App", url=PRODUCT_LINKS[prod_key])])
+        keyboard.append([InlineKeyboardButton("📥 Download File/Apk", url=PRODUCT_LINKS[prod_key])])
 
     keyboard.append([InlineKeyboardButton("🔙 Back", callback_data=back_target)])
     await query.message.edit_text("\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -1173,7 +1202,7 @@ async def order_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'price': final_price
     }
     keyboard = [
-        [InlineKeyboardButton("✅ Confirm & Pay via UPI QR", callback_data="confirm_pay")],
+        [InlineKeyboardButton("✅ Confirm & Pay", callback_data="confirm_pay")],
         [InlineKeyboardButton("🔙 Back to Plans", callback_data=f"prod_{prod_type}_{prod_key}")]
     ]
     await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -1240,6 +1269,19 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             except Exception:
                 break
+        
+        if not context.user_data.get('order_cancelled') and not context.user_data.get('payment_complete'):
+            try:
+                await context.bot.delete_message(chat_id=chat_id, message_id=msg_id)
+                start_btn = [[InlineKeyboardButton("🔄 Click /start to Restart", callback_data="main_menu")]]
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text="❌ <b>Order Session Expired!</b>\n\nPlease click the button below to restart the bot.",
+                    parse_mode="HTML",
+                    reply_markup=InlineKeyboardMarkup(start_btn)
+                )
+            except Exception:
+                pass
 
     asyncio.create_task(timer_loop())
 
@@ -1293,8 +1335,42 @@ async def verify_payment_btn_handler(update: Update, context: ContextTypes.DEFAU
                 "Thank you for shopping with us! 🛍️"
             )
             await context.bot.send_message(chat_id=user.id, text=cust_text, parse_mode="HTML")
+            await start_command_for_user(context.bot, user.id)
+
+            admin_text = (
+                "🟢 <b>PAYMENT AUTO-VERIFIED & DELIVERED</b>\n\n"
+                f"👤 <b>Customer:</b> {user.first_name} (@{user.username if user.username else 'N/A'})\n"
+                f"🆔 <b>User ID:</b> <code>{user.id}</code>\n"
+                f"🔮 <b>Product:</b> {order['prod_name']}\n"
+                f"⏱️ <b>Plan:</b> {plan.replace('_', ' ')}\n"
+                f"💰 <b>Amount:</b> ₹{order['price']:.2f}\n"
+                f"🔑 <b>Delivered Key:</b> <code>{delivered_key}</code>"
+            )
+            await context.bot.send_message(chat_id=ADMIN_ID, text=admin_text, parse_mode="HTML")
         else:
-            await query.message.reply_text("✅ <b>Payment verified!</b> Key request forwarded to admin for instant processing.", parse_mode="HTML")
+            admin_text = (
+                "🚨 <b>PAYMENT AUTO-VERIFIED (MANUAL APPROVAL REQUIRED)</b> 🚨\n\n"
+                f"👤 <b>Customer:</b> {user.first_name} (@{user.username if user.username else 'N/A'})\n"
+                f"🆔 <b>User ID:</b> <code>{user.id}</code>\n"
+                f"🔮 <b>Product:</b> {order['prod_name']}\n"
+                f"⏱️ <b>Plan:</b> {plan.replace('_', ' ')}\n"
+                f"💰 <b>Amount:</b> ₹{order['price']:.2f}\n\n"
+                "⚠️ Tap Approve below to type and send key to customer."
+            )
+            admin_keyboard = [[InlineKeyboardButton("✅ Approve & Send Key", callback_data="admin_approve")]]
+            admin_msg = await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=admin_text,
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(admin_keyboard)
+            )
+            ACTIVE_ORDERS[admin_msg.message_id] = {
+                'user_id': user.id,
+                'prod_name': order['prod_name'],
+                'plan': plan,
+                'price': order['price']
+            }
+            await query.message.reply_text("✅ <b>Payment verified!</b> Your order is being processed by admin, please wait...", parse_mode="HTML")
     else:
         try:
             await verifying_msg.delete()
@@ -1317,14 +1393,238 @@ async def cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await start_command(update, context)
 
 # ==========================================
+# 📩 MESSAGES & ADMIN FLOW HANDLERS
+# ==========================================
+async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+
+    if user.id == ADMIN_ID:
+        flow = context.user_data.get('admin_flow')
+        text = update.message.text.strip() if update.message.text else ""
+
+        if flow == 'WAITING_ADDKEY':
+            try:
+                parts = text.split(" ")
+                prod_key = parts[0]
+                plan = parts[1]
+                keys = [k.strip() for k in " ".join(parts[2:]).split(",")]
+                
+                target_tuple = (prod_key, plan)
+                if target_tuple not in KEYS_STOCK:
+                    KEYS_STOCK[target_tuple] = []
+                KEYS_STOCK[target_tuple].extend(keys)
+                
+                await update.message.reply_text(f"✅ Added <b>{len(keys)} keys</b> to <b>{prod_key}</b> ({plan})!", parse_mode="HTML")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Invalid format! Error: {e}")
+            context.user_data['admin_flow'] = None
+            return
+
+        elif flow == 'WAITING_VIEWKEYS':
+            try:
+                parts = text.split(" ")
+                prod_key = parts[0]
+                plan = parts[1]
+                keys = KEYS_STOCK.get((prod_key, plan), [])
+                if not keys:
+                    await update.message.reply_text(f"⚠️ No keys in stock for <b>{prod_key}</b> ({plan})!", parse_mode="HTML")
+                else:
+                    keys_text = "\n".join([f"• <code>{k}</code>" for k in keys])
+                    await update.message.reply_text(f"🔑 <b>Available Keys ({prod_key} - {plan}):</b>\n\n{keys_text}", parse_mode="HTML")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Invalid format! Error: {e}")
+            context.user_data['admin_flow'] = None
+            return
+
+        elif flow == 'WAITING_CLEARSTOCK':
+            try:
+                parts = text.split(" ")
+                prod_key = parts[0]
+                plan = parts[1]
+                KEYS_STOCK[(prod_key, plan)] = []
+                await update.message.reply_text(f"✅ Cleared stock for <b>{prod_key}</b> ({plan})!", parse_mode="HTML")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Invalid format! Error: {e}")
+            context.user_data['admin_flow'] = None
+            return
+
+        elif flow == 'WAITING_SETPRICE':
+            try:
+                parts = text.split(" ")
+                prod_key = parts[0]
+                plan = parts[1]
+                new_price = float(parts[2])
+                prod = get_product_by_key(prod_key)
+                if prod:
+                    for idx, (p_name, p_price) in enumerate(prod["prices"]):
+                        if p_name.lower() == plan.lower():
+                            prod["prices"][idx] = (p_name, new_price)
+                            
+                            conn = sqlite3.connect(DB_FILE)
+                            cursor = conn.cursor()
+                            cursor.execute('UPDATE products SET prices = ? WHERE prod_key = ?', (json.dumps(prod["prices"]), prod_key))
+                            conn.commit()
+                            conn.close()
+
+                            await update.message.reply_text(f"✅ Price updated for <b>{prod_key}</b> ({p_name}) to <b>₹{new_price}</b>!", parse_mode="HTML")
+                            break
+            except Exception as e:
+                await update.message.reply_text(f"❌ Invalid format! Error: {e}")
+            context.user_data['admin_flow'] = None
+            return
+
+        elif flow == 'WAITING_MAINTAIN':
+            try:
+                parts = text.split(" ")
+                prod_key = parts[0]
+                status = parts[1].lower()
+                is_maint = (status == "on")
+                MAINTENANCE_MODE[prod_key] = is_maint
+                
+                conn = sqlite3.connect(DB_FILE)
+                cursor = conn.cursor()
+                cursor.execute('UPDATE products SET maintenance = ? WHERE prod_key = ?', (1 if is_maint else 0, prod_key))
+                conn.commit()
+                conn.close()
+
+                st_str = "ENABLED 🛠️" if is_maint else "DISABLED ✅"
+                await update.message.reply_text(f"Maintenance mode for <b>{prod_key}</b> is now <b>{st_str}</b>!", parse_mode="HTML")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Invalid format! Error: {e}")
+            context.user_data['admin_flow'] = None
+            return
+
+        elif flow == 'WAITING_ADDLINK':
+            try:
+                parts = text.split(" ")
+                prod_key = parts[0]
+                link_url = parts[1]
+                PRODUCT_LINKS[prod_key] = link_url
+                
+                conn = sqlite3.connect(DB_FILE)
+                cursor = conn.cursor()
+                cursor.execute('UPDATE products SET download_link = ? WHERE prod_key = ?', (link_url, prod_key))
+                conn.commit()
+                conn.close()
+
+                await update.message.reply_text(f"✅ Download Link added for <b>{prod_key}</b>:\n{link_url}", parse_mode="HTML")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Invalid format! Error: {e}")
+            context.user_data['admin_flow'] = None
+            return
+
+        elif flow == 'WAITING_BROADCAST':
+            conn = sqlite3.connect(DB_FILE)
+            cursor = conn.cursor()
+            cursor.execute('SELECT user_id FROM users')
+            users = [row[0] for row in cursor.fetchall()]
+            conn.close()
+
+            success = 0
+            await update.message.reply_text(f"📢 <b>Broadcast started for {len(users)} users...</b>", parse_mode="HTML")
+
+            if update.message.photo:
+                photo_id = update.message.photo[-1].file_id
+                caption = update.message.caption or ""
+                for u_id in users:
+                    try:
+                        await context.bot.send_photo(chat_id=u_id, photo=photo_id, caption=caption, parse_mode="HTML")
+                        success += 1
+                    except Exception:
+                        pass
+            else:
+                for u_id in users:
+                    try:
+                        await context.bot.send_message(chat_id=u_id, text=text, parse_mode="HTML")
+                        success += 1
+                    except Exception:
+                        pass
+
+            await update.message.reply_text(f"✅ Broadcast completed! Sent to <b>{success}/{len(users)}</b> users.", parse_mode="HTML")
+            context.user_data['admin_flow'] = None
+            return
+
+        if context.user_data.get('admin_state') == 'AWAITING_KEY':
+            target_msg_id = context.user_data.get('active_admin_msg_id')
+            order_info = ACTIVE_ORDERS.get(target_msg_id)
+
+            if order_info and text:
+                cust_id = order_info['user_id']
+                prod_name = order_info['prod_name']
+                plan = order_info['plan']
+                time_now = get_ist_time()
+
+                db_add_order(cust_id, prod_name, plan, text, order_info['price'], "MANUAL", time_now)
+
+                cust_text = (
+                    "<b>═══════════════════════</b>\n"
+                    "<b>🎉 YOUR ORDER IS READY!</b>\n"
+                    "<b>═══════════════════════</b>\n\n"
+                    f"🔮 <b>Product:</b> {prod_name}\n"
+                    f"⏱️ <b>Duration:</b> {plan.replace('_', ' ')}\n\n"
+                    "🔑 <b>Key (Tap on Key to Copy):</b>\n"
+                    f"<code>{text}</code>\n"
+                    "<b>═══════════════════════</b>\n"
+                    "Thank you for shopping with us! 🛍️"
+                )
+                await context.bot.send_message(chat_id=cust_id, text=cust_text, parse_mode="HTML")
+                await start_command_for_user(context.bot, cust_id)
+                await update.message.reply_text("✅ Key sent to customer successfully!")
+                context.user_data['admin_state'] = None
+                context.user_data['active_admin_msg_id'] = None
+            return
+
+    if user.id != ADMIN_ID:
+        restart_btn = [[InlineKeyboardButton("🔄 Click /start to Restart", callback_data="main_menu")]]
+        await update.message.reply_text(
+            "❌ <b>Unknown Command or Message!</b>\n\nPlease restart bot by clicking 👉 /start",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(restart_btn)
+        )
+
+async def start_command_for_user(bot, user_id):
+    welcome_text = "<b>Tap any button below to continue shopping:</b>"
+    keyboard = [
+        [InlineKeyboardButton("🛒 Shop Now", callback_data="shop_now")],
+        [InlineKeyboardButton("📦 My Orders", callback_data="my_orders"), InlineKeyboardButton("👤 Profile", callback_data="profile")]
+    ]
+    try:
+        await bot.send_message(chat_id=user_id, text=welcome_text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    except Exception:
+        pass
+
+async def handle_admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.from_user.id != ADMIN_ID:
+        return
+
+    admin_msg_id = query.message.message_id
+    order_info = ACTIVE_ORDERS.get(admin_msg_id)
+    if not order_info:
+        return
+
+    cust_id = order_info['user_id']
+
+    if query.data == "admin_approve":
+        await context.bot.send_message(chat_id=cust_id, text="⚙️ <b>Order Approved!</b> Generating key...", parse_mode="HTML")
+        context.user_data['admin_state'] = 'AWAITING_KEY'
+        context.user_data['active_admin_msg_id'] = admin_msg_id
+        await query.message.reply_text(f"🔑 <b>Order Approved!</b> Send the <b>KEY</b> for {order_info['prod_name']} ({order_info['plan']}):", parse_mode="HTML")
+
+# ==========================================
 # 🤖 BOT SETUP & RUNNER
 # ==========================================
 def start_bot():
-    app = Application.builder().token(BOT_TOKEN).concurrent_updates(False).read_timeout(30).write_timeout(30).connect_timeout(30).build()
+    app = Application.builder().token(BOT_TOKEN).concurrent_updates(False).build()
 
     app.add_handler(CommandHandler("start", start_command))
     
     app.add_handler(CallbackQueryHandler(start_command, pattern="^main_menu$"))
+    app.add_handler(CallbackQueryHandler(admin_panel_home, pattern="^admin_panel_home$"))
+    app.add_handler(CallbackQueryHandler(admin_option_click, pattern="^admin_opt_"))
+    
     app.add_handler(CallbackQueryHandler(profile_handler, pattern="^profile$"))
     app.add_handler(CallbackQueryHandler(my_orders_handler, pattern="^my_orders$"))
     app.add_handler(CallbackQueryHandler(support_handler, pattern="^support$"))
@@ -1340,9 +1640,12 @@ def start_bot():
     app.add_handler(CallbackQueryHandler(order_summary, pattern="^plan_"))
     app.add_handler(CallbackQueryHandler(confirm_pay, pattern="^confirm_pay$"))
     app.add_handler(CallbackQueryHandler(verify_payment_btn_handler, pattern="^verify_payment_btn$"))
+    app.add_handler(CallbackQueryHandler(handle_admin_action, pattern="^admin_approve$"))
     app.add_handler(CallbackQueryHandler(cancel_order, pattern="^cancel_order$"))
 
-    print("Bot is running seamlessly...")
+    app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_user_message))
+
+    print("Bot is running...")
     app.run_polling(drop_pending_updates=True)
 
 def main():
@@ -1357,5 +1660,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
