@@ -286,6 +286,13 @@ def db_get_key_count(prod_key, plan):
     conn.close()
     return count
 
+NON_ROOT_PRODUCTS = {}
+ROOT_PRODUCTS = {}
+IOS_PRODUCTS = {}
+PC_PRODUCTS = {}
+LIKE_PRODUCTS = {}
+ALL_CATEGORIES = [NON_ROOT_PRODUCTS, ROOT_PRODUCTS, IOS_PRODUCTS, PC_PRODUCTS, LIKE_PRODUCTS]
+
 def load_products_from_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
@@ -336,18 +343,10 @@ def db_seed_initial_products():
         conn.commit()
     conn.close()
 
-NON_ROOT_PRODUCTS = {}
-ROOT_PRODUCTS = {}
-IOS_PRODUCTS = {}
-PC_PRODUCTS = {}
-LIKE_PRODUCTS = {}
-
 init_db()
 load_store_and_upi_settings()
 db_seed_initial_products()
 load_products_from_db()
-
-ALL_CATEGORIES = [NON_ROOT_PRODUCTS, ROOT_PRODUCTS, IOS_PRODUCTS, PC_PRODUCTS, LIKE_PRODUCTS]
 
 def sanitize_product_key(raw_name):
     clean = re.sub(r'[^a-zA-Z0-9]', '_', raw_name).strip('_').lower()
@@ -434,7 +433,7 @@ async def verify_fampay_gmail_payment(expected_amount, utr=None, retries=2, dela
     return False, last_reason
 
 # ==========================================
-# 🌐 FLASK WEB ADMIN DASHBOARD (DRAWER / SIDEBAR UI)
+# 🌐 FLASK WEB ADMIN DASHBOARD
 # ==========================================
 flask_app = Flask(__name__)
 flask_app.secret_key = os.urandom(24)
@@ -487,10 +486,8 @@ ADMIN_HTML_TEMPLATE = """
     </div>
     {% else %}
     
-    <!-- Sidebar Drawer Overlay -->
     <div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar()"></div>
 
-    <!-- Sidebar Drawer Navigation -->
     <div class="sidebar" id="sidebar">
         <div class="px-3 pb-3 border-bottom border-secondary d-flex justify-content-between align-items-center">
             <h5 class="m-0 text-primary"><i class="fas fa-bolt me-2"></i>Bot Control Center</h5>
@@ -505,15 +502,10 @@ ADMIN_HTML_TEMPLATE = """
             <a class="sidebar-link" onclick="showTab('api', this)"><i class="fas fa-plug"></i> Key Delivery API Setup</a>
             <a class="sidebar-link" onclick="showTab('upi', this)"><i class="fas fa-credit-card"></i> UPI Payment Setup</a>
             <a class="sidebar-link" onclick="showTab('store', this)"><i class="fas fa-cog"></i> Store Settings</a>
-            <a class="sidebar-link" onclick="showTab('members', this)"><i class="fas fa-users"></i> Members & Wallets</a>
-            <a class="sidebar-link" onclick="showTab('resellers', this)"><i class="fas fa-user-shield"></i> Resellers</a>
-            <a class="sidebar-link" onclick="showTab('coupons', this)"><i class="fas fa-ticket"></i> Coupon Manager</a>
-            <a class="sidebar-link" onclick="showTab('topups', this)"><i class="fas fa-wallet"></i> Top-ups</a>
             <a href="/logout" class="sidebar-link text-danger mt-4"><i class="fas fa-sign-out-alt"></i> Logout</a>
         </div>
     </div>
 
-    <!-- Main Content Page -->
     <div class="main-content">
         <div class="top-navbar mb-4">
             <div class="d-flex align-items-center gap-3">
@@ -524,7 +516,6 @@ ADMIN_HTML_TEMPLATE = """
         </div>
 
         <div class="container-fluid px-4">
-            <!-- DASHBOARD TAB -->
             <div class="tab-content-item" id="tab-dashboard">
                 <div class="row g-3 mb-4">
                     <div class="col-md-3">
@@ -555,11 +546,10 @@ ADMIN_HTML_TEMPLATE = """
 
                 <div class="card p-4">
                     <h5><i class="fas fa-info-circle me-2"></i>Welcome to Admin Dashboard</h5>
-                    <p class="text-muted">Use the left menu toggle sidebar to manage products, keys, payments, API integrations, and store settings.</p>
+                    <p class="text-muted">Use the side drawer menu to manage products, keys, payment setups, and store settings.</p>
                 </div>
             </div>
 
-            <!-- PRODUCTS TAB -->
             <div class="tab-content-item" id="tab-products" style="display:none;">
                 <div class="card p-4">
                     <h5><i class="fas fa-plus-circle me-2"></i>Add / Edit Product</h5>
@@ -579,7 +569,7 @@ ADMIN_HTML_TEMPLATE = """
                             </select>
                         </div>
                         <div class="col-md-4">
-                            <label>Custom Sticker / Icon (Emoji/URL)</label>
+                            <label>Custom Sticker / Icon (Emoji or Image URL)</label>
                             <input type="text" id="p_icon" class="form-control" placeholder="⚡ or Sticker URL">
                         </div>
                         <div class="col-md-4">
@@ -649,7 +639,6 @@ ADMIN_HTML_TEMPLATE = """
                 </div>
             </div>
 
-            <!-- KEY STOCK & MANAGE KEYS TAB -->
             <div class="tab-content-item" id="tab-stock" style="display:none;">
                 <div class="card p-4">
                     <h5><i class="fas fa-key me-2"></i>Add Bulk Keys to Stock (Auto-Key Delivery)</h5>
@@ -664,7 +653,7 @@ ADMIN_HTML_TEMPLATE = """
                                 <input type="text" id="s_plan" class="form-control" placeholder="1_Day" required>
                             </div>
                             <div class="col-12">
-                                <label>Paste Keys (One Per Line - Delivered sequentially, 1-by-1 per purchase)</label>
+                                <label>Paste Keys (One Per Line - Delivered sequentially 1-by-1 per purchase)</label>
                                 <textarea id="s_keys_text" class="form-control" rows="5" placeholder="KEY123&#10;KEY456&#10;KEY789"></textarea>
                             </div>
                             <div class="col-12">
@@ -678,18 +667,17 @@ ADMIN_HTML_TEMPLATE = """
             <div class="tab-content-item" id="tab-keys" style="display:none;">
                 <div class="card p-4">
                     <h5><i class="fas fa-key me-2"></i>Manage Stock & Keys</h5>
-                    <p class="text-muted">Manage available inventory keys for sequential delivery.</p>
+                    <p class="text-muted">Manage available inventory keys for automatic delivery.</p>
                 </div>
             </div>
 
             <div class="tab-content-item" id="tab-links" style="display:none;">
                 <div class="card p-4">
                     <h5><i class="fas fa-link me-2"></i>Product Download Links</h5>
-                    <p class="text-muted">Attach files or download channel links directly to products.</p>
+                    <p class="text-muted">Attach files or channel links directly to products.</p>
                 </div>
             </div>
 
-            <!-- API SETUP TAB -->
             <div class="tab-content-item" id="tab-api" style="display:none;">
                 <div class="card p-4">
                     <h5><i class="fas fa-plug me-2"></i>Key Delivery API Setup</h5>
@@ -713,39 +701,37 @@ ADMIN_HTML_TEMPLATE = """
                 </div>
             </div>
 
-            <!-- UPI PAYMENT SETUP TAB -->
             <div class="tab-content-item" id="tab-upi" style="display:none;">
                 <div class="card p-4">
                     <h5><i class="fas fa-credit-card me-2"></i>UPI Payment Gateway Setup</h5>
                     <form id="upiForm" class="row g-3">
-                        <h6 class="text-primary mt-3">Paytm Business Gateway</h6>
+                        <h6 class="text-primary mt-3">Paytm Gateway</h6>
                         <div class="col-md-6">
                             <label>Paytm API Token</label>
                             <input type="text" id="paytm_token" class="form-control" value="{{ upi_cfg.paytm_token }}" placeholder="Paytm API Token">
                         </div>
                         <div class="col-md-6">
-                            <label>Paytm Custom QR Image Link</label>
+                            <label>Paytm Custom QR Link</label>
                             <input type="text" id="paytm_qr" class="form-control" value="{{ upi_cfg.paytm_qr }}" placeholder="https://i.imgur.com/your_paytm_qr.jpg">
                         </div>
 
                         <h6 class="text-primary mt-3">FamPay Gateway</h6>
                         <div class="col-md-6">
-                            <label>FamPay API Token / Receiver UPI</label>
+                            <label>FamPay Receiver UPI ID</label>
                             <input type="text" id="fampay_token" class="form-control" value="{{ upi_cfg.fampay_token or RECEIVER_UPI_ID }}" placeholder="9544113089@fam">
                         </div>
                         <div class="col-md-6">
-                            <label>FamPay Custom QR Image Link</label>
+                            <label>FamPay Custom QR Link</label>
                             <input type="text" id="fampay_qr" class="form-control" value="{{ upi_cfg.fampay_qr }}" placeholder="https://i.imgur.com/your_fampay_qr.jpg">
                         </div>
 
                         <div class="col-12 mt-4">
-                            <button type="button" onclick="saveUpi()" class="btn btn-custom w-100"><i class="fas fa-save me-2"></i>Save UPI Payment Setup</button>
+                            <button type="button" onclick="saveUpi()" class="btn btn-custom w-100"><i class="fas fa-save me-2"></i>Save UPI Settings</button>
                         </div>
                     </form>
                 </div>
             </div>
 
-            <!-- STORE SETTINGS TAB -->
             <div class="tab-content-item" id="tab-store" style="display:none;">
                 <div class="card p-4">
                     <h5><i class="fas fa-cog me-2"></i>Store Settings</h5>
@@ -767,20 +753,6 @@ ADMIN_HTML_TEMPLATE = """
                         </div>
                     </form>
                 </div>
-            </div>
-
-            <!-- DUMMY SECTION TABS FOR UI COMPLETENESS -->
-            <div class="tab-content-item" id="tab-members" style="display:none;">
-                <div class="card p-4"><h5><i class="fas fa-users me-2"></i>Members & Wallets</h5><p class="text-muted">Manage user balances and registered accounts.</p></div>
-            </div>
-            <div class="tab-content-item" id="tab-resellers" style="display:none;">
-                <div class="card p-4"><h5><i class="fas fa-user-shield me-2"></i>Resellers</h5><p class="text-muted">Manage reseller tiers and discount permissions.</p></div>
-            </div>
-            <div class="tab-content-item" id="tab-coupons" style="display:none;">
-                <div class="card p-4"><h5><i class="fas fa-ticket me-2"></i>Coupon Manager</h5><p class="text-muted">Create discount codes and gift cards.</p></div>
-            </div>
-            <div class="tab-content-item" id="tab-topups" style="display:none;">
-                <div class="card p-4"><h5><i class="fas fa-wallet me-2"></i>Top-ups</h5><p class="text-muted">View top-up transactions and user balance additions.</p></div>
             </div>
         </div>
     </div>
@@ -1262,7 +1234,7 @@ async def admin_option_click(update: Update, context: ContextTypes.DEFAULT_TYPE)
         msg = "🔗 <b>ADD DOWNLOAD LINK</b>\n\nFormat: <code>prod_key https://link.com</code>"
     elif cb == "admin_opt_broadcast":
         context.user_data['admin_flow'] = 'WAITING_BROADCAST'
-        msg = "📢 <b>BROADCAST MESSAGE</b>\n\nSend text or photo message to broadcast."
+        msg = "📢 <b>BROADCAST MESSAGE</b>\n\nSend Text, Photo, Video, or Voice message to broadcast."
 
     keyboard = [[InlineKeyboardButton("❌ Cancel & Return", callback_data="admin_panel_home")]]
     await query.message.edit_text(msg, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -1381,16 +1353,11 @@ async def category_selection(update: Update, context: ContextTypes.DEFAULT_TYPE)
     ]
     await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
-def build_product_button(p_key, data):
-    icon = data.get('icon', '⚡')
-    icon_str = icon if not icon.startswith('http') else '⚡'
-    return InlineKeyboardButton(f"{icon_str} {data['name']}", callback_data=f"prod_likes_{p_key}")
-
 async def likes_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     text = "<b>💎 FREE FIRE LIKE SERVICES:</b>"
-    keyboard = [[InlineKeyboardButton(f"{data.get('icon', '💎')} {data['name']}", callback_data=f"prod_likes_{key}")] for key, data in LIKE_PRODUCTS.items()]
+    keyboard = [[InlineKeyboardButton(f"{data.get('icon', '💎') if not data.get('icon', '').startswith('http') else '💎'} {data['name']}", callback_data=f"prod_likes_{key}")] for key, data in LIKE_PRODUCTS.items()]
     keyboard.append([InlineKeyboardButton("🔙 Back to Shop", callback_data="shop_now")])
     await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -1398,7 +1365,7 @@ async def non_root_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     text = "<b>📱 NON-ROOT PANELS:</b>"
-    keyboard = [[InlineKeyboardButton(f"{data.get('icon', '⚙️')} {data['name']}", callback_data=f"prod_nonroot_{key}")] for key, data in NON_ROOT_PRODUCTS.items()]
+    keyboard = [[InlineKeyboardButton(f"{data.get('icon', '⚙️') if not data.get('icon', '').startswith('http') else '⚙️'} {data['name']}", callback_data=f"prod_nonroot_{key}")] for key, data in NON_ROOT_PRODUCTS.items()]
     keyboard.append([InlineKeyboardButton("🔙 Back to Categories", callback_data="cat_panels")])
     await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -1406,7 +1373,7 @@ async def root_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     text = "<b>⚡ ROOT PANELS:</b>"
-    keyboard = [[InlineKeyboardButton(f"{data.get('icon', '⚡')} {data['name']}", callback_data=f"prod_root_{key}")] for key, data in ROOT_PRODUCTS.items()]
+    keyboard = [[InlineKeyboardButton(f"{data.get('icon', '⚡') if not data.get('icon', '').startswith('http') else '⚡'} {data['name']}", callback_data=f"prod_root_{key}")] for key, data in ROOT_PRODUCTS.items()]
     keyboard.append([InlineKeyboardButton("🔙 Back to Categories", callback_data="cat_panels")])
     await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -1414,7 +1381,7 @@ async def ios_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     text = "<b>🍏 IOS PANELS:</b>"
-    keyboard = [[InlineKeyboardButton(f"{data.get('icon', '🍏')} {data['name']}", callback_data=f"prod_ios_{key}")] for key, data in IOS_PRODUCTS.items()]
+    keyboard = [[InlineKeyboardButton(f"{data.get('icon', '🍏') if not data.get('icon', '').startswith('http') else '🍏'} {data['name']}", callback_data=f"prod_ios_{key}")] for key, data in IOS_PRODUCTS.items()]
     keyboard.append([InlineKeyboardButton("🔙 Back to Categories", callback_data="cat_panels")])
     await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -1422,7 +1389,7 @@ async def pc_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     text = "<b>💻 PC PANELS:</b>"
-    keyboard = [[InlineKeyboardButton(f"{data.get('icon', '💻')} {data['name']}", callback_data=f"prod_pc_{key}")] for key, data in PC_PRODUCTS.items()]
+    keyboard = [[InlineKeyboardButton(f"{data.get('icon', '💻') if not data.get('icon', '').startswith('http') else '💻'} {data['name']}", callback_data=f"prod_pc_{key}")] for key, data in PC_PRODUCTS.items()]
     keyboard.append([InlineKeyboardButton("🔙 Back to Categories", callback_data="cat_panels")])
     await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -1719,7 +1686,7 @@ async def cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await start_command(update, context)
 
 # ==========================================
-# 📩 MESSAGES & ADMIN FLOW HANDLERS
+# 📩 MESSAGES & ADVANCED BROADCAST HANDLERS
 # ==========================================
 async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -1845,22 +1812,25 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             success = 0
             await update.message.reply_text(f"📢 <b>Broadcast started for {len(users)} users...</b>", parse_mode="HTML")
 
-            if update.message.photo:
-                photo_id = update.message.photo[-1].file_id
-                caption = update.message.caption or ""
-                for u_id in users:
-                    try:
+            for u_id in users:
+                try:
+                    if update.message.photo:
+                        photo_id = update.message.photo[-1].file_id
+                        caption = update.message.caption or ""
                         await context.bot.send_photo(chat_id=u_id, photo=photo_id, caption=caption, parse_mode="HTML")
-                        success += 1
-                    except Exception:
-                        pass
-            else:
-                for u_id in users:
-                    try:
+                    elif update.message.video:
+                        video_id = update.message.video.file_id
+                        caption = update.message.caption or ""
+                        await context.bot.send_video(chat_id=u_id, video=video_id, caption=caption, parse_mode="HTML")
+                    elif update.message.voice:
+                        voice_id = update.message.voice.file_id
+                        caption = update.message.caption or ""
+                        await context.bot.send_voice(chat_id=u_id, voice=voice_id, caption=caption, parse_mode="HTML")
+                    else:
                         await context.bot.send_message(chat_id=u_id, text=text, parse_mode="HTML")
-                        success += 1
-                    except Exception:
-                        pass
+                    success += 1
+                except Exception:
+                    pass
 
             await update.message.reply_text(f"✅ Broadcast completed! Sent to <b>{success}/{len(users)}</b> users.", parse_mode="HTML")
             context.user_data['admin_flow'] = None
@@ -1965,7 +1935,7 @@ def start_bot():
     app.add_handler(CallbackQueryHandler(handle_admin_action, pattern="^admin_approve$"))
     app.add_handler(CallbackQueryHandler(cancel_order, pattern="^cancel_order$"))
 
-    app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_user_message))
+    app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO | filters.VIDEO | filters.VOICE, handle_user_message))
 
     print("Bot is running...")
     app.run_polling(drop_pending_updates=True)
@@ -1982,5 +1952,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
