@@ -43,7 +43,35 @@ ACTIVE_ORDERS = {}
 MAINTENANCE_MODE = {}    
 STOCK_OUT_MODE = {}      
 PRODUCT_LINKS = {}       
+PRODUCT_ICONS = {}       
 KEYS_STOCK = {}          
+
+# Dynamic Store Config Defaults
+STORE_CONFIG = {
+    "support_username": "@Athulsudin",
+    "how_to_use_link": "https://t.me/chatelitehackers",
+    "welcome_message": (
+        "🚀 <b>Welcome to ELITE HACKERS</b> 🌟\n\n"
+        "🥃 Hey! Thanks for reaching out.\n"
+        "✉️ Please leave your message, and I'll respond as soon as I'm available.\n\n"
+        "⌛ Your patience is greatly appreciated.\n"
+        "____________________________________\n\n"
+        "🏦 — FREE FIRE PANEL SERVICES — 🏦\n\n"
+        "— 🏦 Direct deals with every supplier\n"
+        "— 💧 Instant delivery after payment\n"
+        "— 🪙 Guaranteed discounted prices\n"
+        "— 📞 24/7 admin support\n\n"
+        "<b>Tap any button below to begin.</b>"
+    )
+}
+
+# Dynamic UPI Config Defaults
+UPI_CONFIG = {
+    "paytm_token": "",
+    "paytm_qr": "",
+    "fampay_token": "",
+    "fampay_qr": ""
+}
 
 # ==========================================
 # 🗄️ SQLITE DATABASE MANAGEMENT
@@ -84,11 +112,41 @@ def init_db():
             category TEXT,
             prices TEXT,
             download_link TEXT,
+            icon TEXT DEFAULT '⚡',
             maintenance INTEGER DEFAULT 0,
             stock_out INTEGER DEFAULT 0,
             channel_link TEXT,
             reseller_price REAL DEFAULT 0,
             remap_id TEXT
+        )
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS keys_inventory (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            prod_key TEXT,
+            plan TEXT,
+            item_key TEXT,
+            is_used INTEGER DEFAULT 0
+        )
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS store_settings (
+            id INTEGER PRIMARY KEY DEFAULT 1,
+            support_username TEXT,
+            how_to_use_link TEXT,
+            welcome_message TEXT
+        )
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS upi_settings (
+            id INTEGER PRIMARY KEY DEFAULT 1,
+            paytm_token TEXT,
+            paytm_qr TEXT,
+            fampay_token TEXT,
+            fampay_qr TEXT
         )
     ''')
 
@@ -106,6 +164,38 @@ def init_db():
             support_username TEXT
         )
     ''')
+
+    conn.commit()
+    conn.close()
+
+def load_store_and_upi_settings():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT support_username, how_to_use_link, welcome_message FROM store_settings WHERE id = 1')
+    row = cursor.fetchone()
+    if row:
+        if row[0]: STORE_CONFIG["support_username"] = row[0]
+        if row[1]: STORE_CONFIG["how_to_use_link"] = row[1]
+        if row[2]: STORE_CONFIG["welcome_message"] = row[2]
+    else:
+        cursor.execute('''
+            INSERT INTO store_settings (id, support_username, how_to_use_link, welcome_message)
+            VALUES (1, ?, ?, ?)
+        ''', (STORE_CONFIG["support_username"], STORE_CONFIG["how_to_use_link"], STORE_CONFIG["welcome_message"]))
+
+    cursor.execute('SELECT paytm_token, paytm_qr, fampay_token, fampay_qr FROM upi_settings WHERE id = 1')
+    row_upi = cursor.fetchone()
+    if row_upi:
+        UPI_CONFIG["paytm_token"] = row_upi[0] or ""
+        UPI_CONFIG["paytm_qr"] = row_upi[1] or ""
+        UPI_CONFIG["fampay_token"] = row_upi[2] or ""
+        UPI_CONFIG["fampay_qr"] = row_upi[3] or ""
+    else:
+        cursor.execute('''
+            INSERT INTO upi_settings (id, paytm_token, paytm_qr, fampay_token, fampay_qr)
+            VALUES (1, '', '', '', '')
+        ''')
 
     conn.commit()
     conn.close()
@@ -151,10 +241,55 @@ def db_get_user_history(user_id, limit=5):
     conn.close()
     return rows
 
+def db_add_keys_to_inventory(prod_key, plan, keys_list):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    for k in keys_list:
+        if k.strip():
+            cursor.execute('''
+                INSERT INTO keys_inventory (prod_key, plan, item_key, is_used)
+                VALUES (?, ?, ?, 0)
+            ''', (prod_key, plan, k.strip()))
+    conn.commit()
+    conn.close()
+
+def db_pop_auto_key(prod_key, plan):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT id, item_key FROM keys_inventory 
+        WHERE prod_key = ? AND plan = ? AND is_used = 0 
+        ORDER BY id ASC LIMIT 1
+    ''', (prod_key, plan))
+    row = cursor.fetchone()
+    if row:
+        key_id, item_key = row
+        cursor.execute('UPDATE keys_inventory SET is_used = 1 WHERE id = ?', (key_id,))
+        conn.commit()
+        conn.close()
+        return item_key
+    
+    conn.close()
+    target_tuple = (prod_key, plan)
+    if target_tuple in KEYS_STOCK and KEYS_STOCK[target_tuple]:
+        return KEYS_STOCK[target_tuple].pop(0)
+    return None
+
+def db_get_key_count(prod_key, plan):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT COUNT(*) FROM keys_inventory 
+        WHERE prod_key = ? AND plan = ? AND is_used = 0
+    ''', (prod_key, plan))
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count
+
 def load_products_from_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute('SELECT prod_key, name, category, prices, download_link, maintenance, stock_out FROM products')
+    cursor.execute('SELECT prod_key, name, category, prices, download_link, icon, maintenance, stock_out FROM products')
     rows = cursor.fetchall()
     conn.close()
 
@@ -170,12 +305,14 @@ def load_products_from_db():
         cat.clear()
 
     for row in rows:
-        p_key, name, category, prices_json, d_link, maint, stockout = row
+        p_key, name, category, prices_json, d_link, icon, maint, stockout = row
         prices = json.loads(prices_json)
+        p_icon = icon if icon else "⚡"
         if category in cat_map:
-            cat_map[category][p_key] = {"name": name, "prices": [tuple(p) for p in prices]}
+            cat_map[category][p_key] = {"name": name, "prices": [tuple(p) for p in prices], "icon": p_icon}
         if d_link:
             PRODUCT_LINKS[p_key] = d_link
+        PRODUCT_ICONS[p_key] = p_icon
         MAINTENANCE_MODE[p_key] = bool(maint)
         STOCK_OUT_MODE[p_key] = bool(stockout)
 
@@ -185,17 +322,17 @@ def db_seed_initial_products():
     cursor.execute('SELECT count(*) FROM products')
     if cursor.fetchone()[0] == 0:
         initial_data = [
-            ("bala_mod", "BALA MOD NON ROOT", "non_root", [("1_Day", 420)]),
-            ("rapid_core", "RAPID CORE INJECTOR", "root", [("1_Day", 90)]),
-            ("migul_pro", "MIGUL PRO IOS", "ios", [("1_Day", 200)]),
-            ("br_mod_pc", "BR MOD PC", "pc", [("1_Day", 150)]),
-            ("auto_like", "AUTO LIKE EVERY DAY", "likes", [("7_DAYS", 90)])
+            ("bala_mod", "BALA MOD NON ROOT", "non_root", [("1_Day", 420)], "⚙️"),
+            ("rapid_core", "RAPID CORE INJECTOR", "root", [("1_Day", 90)], "⚡"),
+            ("migul_pro", "MIGUL PRO IOS", "ios", [("1_Day", 200)], "🍏"),
+            ("br_mod_pc", "BR MOD PC", "pc", [("1_Day", 150)], "💻"),
+            ("auto_like", "AUTO LIKE EVERY DAY", "likes", [("7_DAYS", 90)], "💎")
         ]
-        for key, name, cat, prices in initial_data:
+        for key, name, cat, prices, icon in initial_data:
             cursor.execute('''
-                INSERT INTO products (prod_key, name, category, prices, download_link, maintenance, stock_out)
-                VALUES (?, ?, ?, ?, ?, 0, 0)
-            ''', (key, name, cat, json.dumps(prices), ""))
+                INSERT INTO products (prod_key, name, category, prices, download_link, icon, maintenance, stock_out)
+                VALUES (?, ?, ?, ?, ?, ?, 0, 0)
+            ''', (key, name, cat, json.dumps(prices), "", icon))
         conn.commit()
     conn.close()
 
@@ -206,6 +343,7 @@ PC_PRODUCTS = {}
 LIKE_PRODUCTS = {}
 
 init_db()
+load_store_and_upi_settings()
 db_seed_initial_products()
 load_products_from_db()
 
@@ -229,6 +367,8 @@ def get_ist_time():
     return datetime.now(ist).strftime("%d %b %Y, %I:%M %p (IST)")
 
 def generate_dynamic_qr_url(upi_id, amount, note="FF Service"):
+    if UPI_CONFIG.get("fampay_qr"):
+        return UPI_CONFIG["fampay_qr"]
     formatted_amt = f"{amount:.2f}"
     upi_uri = f"upi://pay?pa={upi_id}&pn=ELITE_HACKERS&am={formatted_amt}&cu=INR&tn={urllib.parse.quote(note)}"
     return f"https://api.qrserver.com/v1/create-qr-code/?size=500x500&data={urllib.parse.quote(upi_uri)}"
@@ -309,7 +449,7 @@ ADMIN_HTML_TEMPLATE = """
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <style>
-        :root { --sidebar-width: 260px; }
+        :root { --sidebar-width: 270px; }
         body { background-color: #0f172a; color: #f8fafc; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; overflow-x: hidden; }
         .card { background-color: #1e293b; border: 1px solid #334155; color: #f8fafc; border-radius: 12px; margin-bottom: 20px; }
         .btn-custom { background-color: #6366f1; color: white; border: none; }
@@ -318,7 +458,7 @@ ADMIN_HTML_TEMPLATE = """
         .form-control:focus, .form-select:focus { background-color: #0f172a; color: white; border-color: #6366f1; }
         
         /* Drawer / Sidebar Styles */
-        .sidebar { position: fixed; top: 0; left: -260px; width: var(--sidebar-width); height: 100%; background: #1e293b; border-right: 1px solid #334155; transition: 0.3s; z-index: 1050; padding-top: 20px; }
+        .sidebar { position: fixed; top: 0; left: -270px; width: var(--sidebar-width); height: 100%; background: #1e293b; border-right: 1px solid #334155; transition: 0.3s; z-index: 1050; padding-top: 20px; overflow-y: auto; }
         .sidebar.active { left: 0; }
         .sidebar-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.5); display: none; z-index: 1040; }
         .sidebar-overlay.active { display: block; }
@@ -326,6 +466,7 @@ ADMIN_HTML_TEMPLATE = """
         .sidebar-link:hover, .sidebar-link.active { background: #0f172a; color: #38bdf8; border-left-color: #38bdf8; }
         .top-navbar { background: #1e293b; border-bottom: 1px solid #334155; padding: 12px 20px; display: flex; align-items: center; justify-content: space-between; }
         .menu-toggle-btn { font-size: 24px; color: #f8fafc; cursor: pointer; border: none; background: none; }
+        .stat-card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 20px; }
     </style>
 </head>
 <body>
@@ -352,15 +493,22 @@ ADMIN_HTML_TEMPLATE = """
     <!-- Sidebar Drawer Navigation -->
     <div class="sidebar" id="sidebar">
         <div class="px-3 pb-3 border-bottom border-secondary d-flex justify-content-between align-items-center">
-            <h5 class="m-0 text-primary"><i class="fas fa-shield-halved me-2"></i>ELITE CONTROL</h5>
+            <h5 class="m-0 text-primary"><i class="fas fa-bolt me-2"></i>Bot Control Center</h5>
             <button class="btn-close btn-close-white d-md-none" onclick="toggleSidebar()"></button>
         </div>
         <div class="mt-3">
-            <a class="sidebar-link active" onclick="showTab('products', this)"><i class="fas fa-box"></i> Manage Products</a>
-            <a class="sidebar-link" onclick="showTab('stock', this)"><i class="fas fa-key"></i> Key Stock</a>
-            <a class="sidebar-link" onclick="showTab('api', this)"><i class="fas fa-plug"></i> API Setup & Delivery</a>
-            <a class="sidebar-link" onclick="showTab('upi', this)"><i class="fas fa-wallet"></i> Payment Gateways</a>
-            <a class="sidebar-link" onclick="showTab('store', this)"><i class="fas fa-store"></i> Store Settings</a>
+            <a class="sidebar-link active" onclick="showTab('dashboard', this)"><i class="fas fa-chart-line"></i> Dashboard</a>
+            <a class="sidebar-link" onclick="showTab('products', this)"><i class="fas fa-box"></i> Manage Product</a>
+            <a class="sidebar-link" onclick="showTab('stock', this)"><i class="fas fa-id-badge"></i> ID Stock</a>
+            <a class="sidebar-link" onclick="showTab('links', this)"><i class="fas fa-link"></i> Product Links</a>
+            <a class="sidebar-link" onclick="showTab('keys', this)"><i class="fas fa-key"></i> Manage Keys</a>
+            <a class="sidebar-link" onclick="showTab('api', this)"><i class="fas fa-plug"></i> Key Delivery API Setup</a>
+            <a class="sidebar-link" onclick="showTab('upi', this)"><i class="fas fa-credit-card"></i> UPI Payment Setup</a>
+            <a class="sidebar-link" onclick="showTab('store', this)"><i class="fas fa-cog"></i> Store Settings</a>
+            <a class="sidebar-link" onclick="showTab('members', this)"><i class="fas fa-users"></i> Members & Wallets</a>
+            <a class="sidebar-link" onclick="showTab('resellers', this)"><i class="fas fa-user-shield"></i> Resellers</a>
+            <a class="sidebar-link" onclick="showTab('coupons', this)"><i class="fas fa-ticket"></i> Coupon Manager</a>
+            <a class="sidebar-link" onclick="showTab('topups', this)"><i class="fas fa-wallet"></i> Top-ups</a>
             <a href="/logout" class="sidebar-link text-danger mt-4"><i class="fas fa-sign-out-alt"></i> Logout</a>
         </div>
     </div>
@@ -370,16 +518,51 @@ ADMIN_HTML_TEMPLATE = """
         <div class="top-navbar mb-4">
             <div class="d-flex align-items-center gap-3">
                 <button class="menu-toggle-btn" onclick="toggleSidebar()"><i class="fas fa-bars"></i></button>
-                <h4 class="m-0">⚡ ELITE Admin Dashboard</h4>
+                <h4 class="m-0">⚡ Bot Control Center</h4>
             </div>
             <a href="/logout" class="btn btn-outline-danger btn-sm"><i class="fas fa-lock me-1"></i> Logout</a>
         </div>
 
         <div class="container-fluid px-4">
-            <!-- PRODUCTS TAB -->
-            <div class="tab-content-item" id="tab-products">
+            <!-- DASHBOARD TAB -->
+            <div class="tab-content-item" id="tab-dashboard">
+                <div class="row g-3 mb-4">
+                    <div class="col-md-3">
+                        <div class="stat-card">
+                            <h6 class="text-secondary">TOTAL USERS</h6>
+                            <h2 class="text-primary m-0">{{ stats.total_users }}</h2>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="stat-card">
+                            <h6 class="text-secondary">TOTAL ORDERS</h6>
+                            <h2 class="text-success m-0">{{ stats.total_orders }}</h2>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="stat-card">
+                            <h6 class="text-secondary">REVENUE</h6>
+                            <h2 class="text-warning m-0">₹{{ stats.total_revenue }}</h2>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="stat-card">
+                            <h6 class="text-secondary">ACTIVE KEYS IN STOCK</h6>
+                            <h2 class="text-info m-0">{{ stats.total_keys }}</h2>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="card p-4">
-                    <h5><i class="fas fa-plus-circle me-2"></i>Add / Update Product</h5>
+                    <h5><i class="fas fa-info-circle me-2"></i>Welcome to Admin Dashboard</h5>
+                    <p class="text-muted">Use the left menu toggle sidebar to manage products, keys, payments, API integrations, and store settings.</p>
+                </div>
+            </div>
+
+            <!-- PRODUCTS TAB -->
+            <div class="tab-content-item" id="tab-products" style="display:none;">
+                <div class="card p-4">
+                    <h5><i class="fas fa-plus-circle me-2"></i>Add / Edit Product</h5>
                     <form id="prodForm" class="row g-3">
                         <div class="col-md-4">
                             <label>Product Name</label>
@@ -396,6 +579,10 @@ ADMIN_HTML_TEMPLATE = """
                             </select>
                         </div>
                         <div class="col-md-4">
+                            <label>Custom Sticker / Icon (Emoji/URL)</label>
+                            <input type="text" id="p_icon" class="form-control" placeholder="⚡ or Sticker URL">
+                        </div>
+                        <div class="col-md-4">
                             <label>Duration / Plan Name</label>
                             <input type="text" id="p_plan" class="form-control" placeholder="e.g. 1_Day" required>
                         </div>
@@ -407,7 +594,7 @@ ADMIN_HTML_TEMPLATE = """
                             <label>Channel / Download Link</label>
                             <input type="text" id="p_link" class="form-control" placeholder="https://t.me/...">
                         </div>
-                        <div class="col-md-4 d-flex align-items-end">
+                        <div class="col-md-12 d-flex align-items-end">
                             <button type="button" onclick="addProduct()" class="btn btn-custom w-100"><i class="fas fa-save me-2"></i>Save Product</button>
                         </div>
                     </form>
@@ -419,6 +606,7 @@ ADMIN_HTML_TEMPLATE = """
                         <table class="table table-dark table-striped align-middle mt-2">
                             <thead>
                                 <tr>
+                                    <th>Sticker / Icon</th>
                                     <th>Name</th>
                                     <th>Category</th>
                                     <th>Plans & Prices</th>
@@ -430,6 +618,13 @@ ADMIN_HTML_TEMPLATE = """
                             <tbody>
                                 {% for p in products %}
                                 <tr>
+                                    <td>
+                                        {% if p.icon.startswith('http') %}
+                                            <img src="{{ p.icon }}" style="width: 30px; height: 30px; object-fit: contain;">
+                                        {% else %}
+                                            <span style="font-size: 20px;">{{ p.icon }}</span>
+                                        {% endif %}
+                                    </td>
                                     <td><strong>{{ p.name }}</strong></td>
                                     <td><span class="badge bg-info">{{ p.category }}</span></td>
                                     <td>{{ p.prices }}</td>
@@ -454,10 +649,10 @@ ADMIN_HTML_TEMPLATE = """
                 </div>
             </div>
 
-            <!-- KEY STOCK TAB -->
+            <!-- KEY STOCK & MANAGE KEYS TAB -->
             <div class="tab-content-item" id="tab-stock" style="display:none;">
                 <div class="card p-4">
-                    <h5><i class="fas fa-key me-2"></i>Add Bulk Keys to Stock</h5>
+                    <h5><i class="fas fa-key me-2"></i>Add Bulk Keys to Stock (Auto-Key Delivery)</h5>
                     <form id="stockForm">
                         <div class="row g-3">
                             <div class="col-md-6">
@@ -469,21 +664,35 @@ ADMIN_HTML_TEMPLATE = """
                                 <input type="text" id="s_plan" class="form-control" placeholder="1_Day" required>
                             </div>
                             <div class="col-12">
-                                <label>Paste Keys (One Per Line)</label>
-                                <textarea id="s_keys_text" class="form-control" rows="5" placeholder="KEY123&#10;KEY456"></textarea>
+                                <label>Paste Keys (One Per Line - Delivered sequentially, 1-by-1 per purchase)</label>
+                                <textarea id="s_keys_text" class="form-control" rows="5" placeholder="KEY123&#10;KEY456&#10;KEY789"></textarea>
                             </div>
                             <div class="col-12">
-                                <button type="button" onclick="addStock()" class="btn btn-custom"><i class="fas fa-upload me-2"></i>Upload Stock Keys</button>
+                                <button type="button" onclick="addStock()" class="btn btn-custom"><i class="fas fa-upload me-2"></i>Upload Keys to Stock</button>
                             </div>
                         </div>
                     </form>
                 </div>
             </div>
 
+            <div class="tab-content-item" id="tab-keys" style="display:none;">
+                <div class="card p-4">
+                    <h5><i class="fas fa-key me-2"></i>Manage Stock & Keys</h5>
+                    <p class="text-muted">Manage available inventory keys for sequential delivery.</p>
+                </div>
+            </div>
+
+            <div class="tab-content-item" id="tab-links" style="display:none;">
+                <div class="card p-4">
+                    <h5><i class="fas fa-link me-2"></i>Product Download Links</h5>
+                    <p class="text-muted">Attach files or download channel links directly to products.</p>
+                </div>
+            </div>
+
             <!-- API SETUP TAB -->
             <div class="tab-content-item" id="tab-api" style="display:none;">
                 <div class="card p-4">
-                    <h5><i class="fas fa-plug me-2"></i>Reseller & Delivery API Settings</h5>
+                    <h5><i class="fas fa-plug me-2"></i>Key Delivery API Setup</h5>
                     <form id="apiForm" class="row g-3">
                         <div class="col-md-6">
                             <label>API Key</label>
@@ -499,31 +708,38 @@ ADMIN_HTML_TEMPLATE = """
                         </div>
                         <div class="col-12">
                             <button type="button" onclick="saveApi()" class="btn btn-success me-2"><i class="fas fa-save me-2"></i>Save API Config</button>
-                            <button type="button" onclick="alert('Connection Status: Connected & Working Properly!')" class="btn btn-primary"><i class="fas fa-sync me-2"></i>Test Connection</button>
                         </div>
                     </form>
                 </div>
             </div>
 
-            <!-- PAYMENT GATEWAYS TAB -->
+            <!-- UPI PAYMENT SETUP TAB -->
             <div class="tab-content-item" id="tab-upi" style="display:none;">
                 <div class="card p-4">
-                    <h5><i class="fas fa-wallet me-2"></i>Payment Gateways & FamPay QR Setup</h5>
-                    <form id="gateForm" class="row g-3">
+                    <h5><i class="fas fa-credit-card me-2"></i>UPI Payment Gateway Setup</h5>
+                    <form id="upiForm" class="row g-3">
+                        <h6 class="text-primary mt-3">Paytm Business Gateway</h6>
                         <div class="col-md-6">
-                            <label>Paytm Merchant ID</label>
-                            <input type="text" id="paytm_mid" class="form-control" placeholder="MID12345">
+                            <label>Paytm API Token</label>
+                            <input type="text" id="paytm_token" class="form-control" value="{{ upi_cfg.paytm_token }}" placeholder="Paytm API Token">
                         </div>
                         <div class="col-md-6">
-                            <label>Paytm UPI ID</label>
-                            <input type="text" id="paytm_upi" class="form-control" placeholder="merchant@paytm">
+                            <label>Paytm Custom QR Image Link</label>
+                            <input type="text" id="paytm_qr" class="form-control" value="{{ upi_cfg.paytm_qr }}" placeholder="https://i.imgur.com/your_paytm_qr.jpg">
                         </div>
-                        <div class="col-md-12">
-                            <label>FamPay Receiver UPI ID</label>
-                            <input type="text" id="fam_token" class="form-control" value="{{ RECEIVER_UPI_ID }}">
+
+                        <h6 class="text-primary mt-3">FamPay Gateway</h6>
+                        <div class="col-md-6">
+                            <label>FamPay API Token / Receiver UPI</label>
+                            <input type="text" id="fampay_token" class="form-control" value="{{ upi_cfg.fampay_token or RECEIVER_UPI_ID }}" placeholder="9544113089@fam">
                         </div>
-                        <div class="col-12">
-                            <button type="button" onclick="alert('Payment Gateway Configuration Saved!')" class="btn btn-custom">Save Gateways</button>
+                        <div class="col-md-6">
+                            <label>FamPay Custom QR Image Link</label>
+                            <input type="text" id="fampay_qr" class="form-control" value="{{ upi_cfg.fampay_qr }}" placeholder="https://i.imgur.com/your_fampay_qr.jpg">
+                        </div>
+
+                        <div class="col-12 mt-4">
+                            <button type="button" onclick="saveUpi()" class="btn btn-custom w-100"><i class="fas fa-save me-2"></i>Save UPI Payment Setup</button>
                         </div>
                     </form>
                 </div>
@@ -532,18 +748,39 @@ ADMIN_HTML_TEMPLATE = """
             <!-- STORE SETTINGS TAB -->
             <div class="tab-content-item" id="tab-store" style="display:none;">
                 <div class="card p-4">
-                    <h5><i class="fas fa-store me-2"></i>Store Settings</h5>
-                    <form class="row g-3">
+                    <h5><i class="fas fa-cog me-2"></i>Store Settings</h5>
+                    <form id="storeForm" class="row g-3">
                         <div class="col-md-6">
-                            <label>Bot / Store Title</label>
-                            <input type="text" class="form-control" value="ELITE HACKERS">
+                            <label>Support Username</label>
+                            <input type="text" id="supp_user" class="form-control" value="{{ store_cfg.support_username }}" placeholder="@Athulsudin">
                         </div>
                         <div class="col-md-6">
-                            <label>Admin Support Handle</label>
-                            <input type="text" class="form-control" value="@Athulsudin">
+                            <label>How to Use Channel Link</label>
+                            <input type="text" id="how_link" class="form-control" value="{{ store_cfg.how_to_use_link }}" placeholder="https://t.me/...">
+                        </div>
+                        <div class="col-12">
+                            <label>Welcome Message Text</label>
+                            <textarea id="welc_msg" class="form-control" rows="6">{{ store_cfg.welcome_message }}</textarea>
+                        </div>
+                        <div class="col-12">
+                            <button type="button" onclick="saveStoreSettings()" class="btn btn-custom"><i class="fas fa-save me-2"></i>Save Store Settings</button>
                         </div>
                     </form>
                 </div>
+            </div>
+
+            <!-- DUMMY SECTION TABS FOR UI COMPLETENESS -->
+            <div class="tab-content-item" id="tab-members" style="display:none;">
+                <div class="card p-4"><h5><i class="fas fa-users me-2"></i>Members & Wallets</h5><p class="text-muted">Manage user balances and registered accounts.</p></div>
+            </div>
+            <div class="tab-content-item" id="tab-resellers" style="display:none;">
+                <div class="card p-4"><h5><i class="fas fa-user-shield me-2"></i>Resellers</h5><p class="text-muted">Manage reseller tiers and discount permissions.</p></div>
+            </div>
+            <div class="tab-content-item" id="tab-coupons" style="display:none;">
+                <div class="card p-4"><h5><i class="fas fa-ticket me-2"></i>Coupon Manager</h5><p class="text-muted">Create discount codes and gift cards.</p></div>
+            </div>
+            <div class="tab-content-item" id="tab-topups" style="display:none;">
+                <div class="card p-4"><h5><i class="fas fa-wallet me-2"></i>Top-ups</h5><p class="text-muted">View top-up transactions and user balance additions.</p></div>
             </div>
         </div>
     </div>
@@ -558,7 +795,8 @@ ADMIN_HTML_TEMPLATE = """
 
         function showTab(tabId, element) {
             document.querySelectorAll('.tab-content-item').forEach(el => el.style.display = 'none');
-            document.getElementById('tab-' + tabId).style.display = 'block';
+            let target = document.getElementById('tab-' + tabId);
+            if(target) target.style.display = 'block';
             document.querySelectorAll('.sidebar-link').forEach(el => el.classList.remove('active'));
             if(element) element.classList.add('active');
             if(window.innerWidth < 768) toggleSidebar();
@@ -567,6 +805,7 @@ ADMIN_HTML_TEMPLATE = """
         function addProduct() {
             let name = document.getElementById('p_name').value;
             let cat = document.getElementById('p_cat').value;
+            let icon = document.getElementById('p_icon').value;
             let plan = document.getElementById('p_plan').value;
             let price = document.getElementById('p_price').value;
             let link = document.getElementById('p_link').value;
@@ -576,7 +815,7 @@ ADMIN_HTML_TEMPLATE = """
             fetch('/api/add_product', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ name: name, category: cat, prices: [[plan, parseFloat(price)]], download_link: link })
+                body: JSON.stringify({ name: name, category: cat, icon: icon, prices: [[plan, parseFloat(price)]], download_link: link })
             }).then(r => r.json()).then(data => {
                 alert(data.message);
                 location.reload();
@@ -645,6 +884,35 @@ ADMIN_HTML_TEMPLATE = """
                 alert(data.message);
             });
         }
+
+        function saveUpi() {
+            let paytm_token = document.getElementById('paytm_token').value;
+            let paytm_qr = document.getElementById('paytm_qr').value;
+            let fampay_token = document.getElementById('fampay_token').value;
+            let fampay_qr = document.getElementById('fampay_qr').value;
+
+            fetch('/api/save_upi_settings', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({paytm_token: paytm_token, paytm_qr: paytm_qr, fampay_token: fampay_token, fampay_qr: fampay_qr})
+            }).then(r => r.json()).then(data => {
+                alert(data.message);
+            });
+        }
+
+        function saveStoreSettings() {
+            let supp_user = document.getElementById('supp_user').value;
+            let how_link = document.getElementById('how_link').value;
+            let welc_msg = document.getElementById('welc_msg').value;
+
+            fetch('/api/save_store_settings', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({support_username: supp_user, how_to_use_link: how_link, welcome_message: welc_msg})
+            }).then(r => r.json()).then(data => {
+                alert(data.message);
+            });
+        }
     </script>
 </body>
 </html>
@@ -673,26 +941,48 @@ def admin_dashboard():
     
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute('SELECT prod_key, name, category, prices, download_link, maintenance, stock_out FROM products')
+    
+    cursor.execute('SELECT COUNT(*) FROM users')
+    tot_users = cursor.fetchone()[0]
+    
+    cursor.execute('SELECT COUNT(*), SUM(amount) FROM order_history')
+    row_ord = cursor.fetchone()
+    tot_orders = row_ord[0] or 0
+    tot_revenue = row_ord[1] or 0.0
+
+    cursor.execute('SELECT COUNT(*) FROM keys_inventory WHERE is_used = 0')
+    tot_keys = cursor.fetchone()[0]
+
+    cursor.execute('SELECT prod_key, name, category, prices, download_link, icon, maintenance, stock_out FROM products')
     prods_raw = cursor.fetchall()
     
     products_list = []
     for p in prods_raw:
         products_list.append({
             "key": p[0], "name": p[1], "category": p[2], 
-            "prices": json.loads(p[3]), "download_link": p[4], 
-            "maintenance": bool(p[5]), "stock_out": bool(p[6])
+            "prices": json.loads(p[3]), "download_link": p[4], "icon": p[5] or "⚡",
+            "maintenance": bool(p[6]), "stock_out": bool(p[7])
         })
         
     cursor.execute('SELECT api_url, api_key, master_key FROM api_config WHERE id = 1')
     api_cfg = cursor.fetchone() or ("", "", "")
     conn.close()
 
+    stats = {
+        "total_users": tot_users,
+        "total_orders": tot_orders,
+        "total_revenue": f"{tot_revenue:,.2f}",
+        "total_keys": tot_keys
+    }
+
     return render_template_string(
         ADMIN_HTML_TEMPLATE,
         auth_only=False,
+        stats=stats,
         products=products_list,
         api_cfg=api_cfg,
+        upi_cfg=UPI_CONFIG,
+        store_cfg=STORE_CONFIG,
         RECEIVER_UPI_ID=RECEIVER_UPI_ID
     )
 
@@ -705,15 +995,16 @@ def api_add_product():
     raw_name = data.get('name').strip()
     prod_key = sanitize_product_key(raw_name)
     category = data.get('category')
+    icon = data.get('icon', '⚡')
     prices = data.get('prices')
     download_link = data.get('download_link', '')
 
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute('''
-        INSERT OR REPLACE INTO products (prod_key, name, category, prices, download_link, maintenance, stock_out)
-        VALUES (?, ?, ?, ?, ?, 0, 0)
-    ''', (prod_key, raw_name, category, json.dumps(prices), download_link))
+        INSERT OR REPLACE INTO products (prod_key, name, category, prices, download_link, icon, maintenance, stock_out)
+        VALUES (?, ?, ?, ?, ?, ?, 0, 0)
+    ''', (prod_key, raw_name, category, json.dumps(prices), download_link, icon))
     conn.commit()
     conn.close()
 
@@ -783,12 +1074,8 @@ def api_add_stock():
     plan = data.get('plan')
     keys = [k.strip() for k in data.get('keys').split("\n") if k.strip()]
 
-    target_tuple = (prod_key, plan)
-    if target_tuple not in KEYS_STOCK:
-        KEYS_STOCK[target_tuple] = []
-    KEYS_STOCK[target_tuple].extend(keys)
-
-    return jsonify({"success": True, "message": f"Added {len(keys)} keys successfully!"})
+    db_add_keys_to_inventory(prod_key, plan, keys)
+    return jsonify({"success": True, "message": f"Added {len(keys)} keys successfully to inventory!"})
 
 @flask_app.route('/api/save_api_settings', methods=['POST'])
 def api_save_settings():
@@ -811,6 +1098,53 @@ def api_save_settings():
     conn.close()
 
     return jsonify({"success": True, "message": "API Configuration saved!"})
+
+@flask_app.route('/api/save_upi_settings', methods=['POST'])
+def api_save_upi():
+    if not session.get('logged_in'):
+        return jsonify({"success": False, "message": "Unauthorized"}), 401
+
+    data = request.json
+    UPI_CONFIG["paytm_token"] = data.get('paytm_token', '')
+    UPI_CONFIG["paytm_qr"] = data.get('paytm_qr', '')
+    UPI_CONFIG["fampay_token"] = data.get('fampay_token', '')
+    UPI_CONFIG["fampay_qr"] = data.get('fampay_qr', '')
+
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO upi_settings (id, paytm_token, paytm_qr, fampay_token, fampay_qr)
+        VALUES (1, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET paytm_token=?, paytm_qr=?, fampay_token=?, fampay_qr=?
+    ''', (UPI_CONFIG["paytm_token"], UPI_CONFIG["paytm_qr"], UPI_CONFIG["fampay_token"], UPI_CONFIG["fampay_qr"],
+          UPI_CONFIG["paytm_token"], UPI_CONFIG["paytm_qr"], UPI_CONFIG["fampay_token"], UPI_CONFIG["fampay_qr"]))
+    conn.commit()
+    conn.close()
+
+    return jsonify({"success": True, "message": "UPI Gateways settings saved successfully!"})
+
+@flask_app.route('/api/save_store_settings', methods=['POST'])
+def api_save_store():
+    if not session.get('logged_in'):
+        return jsonify({"success": False, "message": "Unauthorized"}), 401
+
+    data = request.json
+    STORE_CONFIG["support_username"] = data.get('support_username', STORE_CONFIG["support_username"])
+    STORE_CONFIG["how_to_use_link"] = data.get('how_to_use_link', STORE_CONFIG["how_to_use_link"])
+    STORE_CONFIG["welcome_message"] = data.get('welcome_message', STORE_CONFIG["welcome_message"])
+
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO store_settings (id, support_username, how_to_use_link, welcome_message)
+        VALUES (1, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET support_username=?, how_to_use_link=?, welcome_message=?
+    ''', (STORE_CONFIG["support_username"], STORE_CONFIG["how_to_use_link"], STORE_CONFIG["welcome_message"],
+          STORE_CONFIG["support_username"], STORE_CONFIG["how_to_use_link"], STORE_CONFIG["welcome_message"]))
+    conn.commit()
+    conn.close()
+
+    return jsonify({"success": True, "message": "Store settings saved successfully!"})
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
@@ -846,21 +1180,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception as e:
                     logger.error(f"Failed to alert admin: {e}")
 
-        welcome_text = (
-            "🚀 <b>Welcome to ELITE HACKERS</b> 🌟\n\n"
-            "🥃 Hey! Thanks for reaching out.\n"
-            "✉️ Please leave your message, and I'll respond as soon as I'm available.\n\n"
-            "⌛ Your patience is greatly appreciated.\n"
-            "____________________________________\n\n"
-            "🏦 — FREE FIRE PANEL SERVICES — 🏦\n\n"
-            f"🎉 <b>Hello, {user.first_name}!</b>\n"
-            "🔑 <b>Power By ELITE HACKERS</b>\n\n"
-            "— 🏦 Direct deals with every supplier\n"
-            "— 💧 Instant delivery after payment\n"
-            "— 🪙 Guaranteed discounted prices\n"
-            "— 📞 24/7 admin support\n\n"
-            "<b>Tap any button below to begin.</b>"
-        )
+        welcome_text = STORE_CONFIG["welcome_message"]
 
         keyboard = [
             [InlineKeyboardButton("🛒 Shop Now", callback_data="shop_now")],
@@ -1007,7 +1327,8 @@ async def my_orders_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def support_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    text = "📩 <b>Contact support:</b> @Athulsudin"
+    supp_user = STORE_CONFIG.get("support_username", "@Athulsudin")
+    text = f"📩 <b>Contact support:</b> {supp_user}"
     keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="main_menu")]]
     await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -1026,8 +1347,9 @@ async def how_to_use_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "6️⃣ Tap <b>[ VERIFY PAYMENT ]</b> button after paying.\n"
         "7️⃣ System auto-verifies payment & key is delivered instantly! 🚀"
     )
+    how_url = STORE_CONFIG.get("how_to_use_link", "https://t.me/chatelitehackers")
     keyboard = [
-        [InlineKeyboardButton("🎬 Watch Tutorial Video", url="https://t.me/chatelitehackers")],
+        [InlineKeyboardButton("🎬 Watch Tutorial Video", url=how_url)],
         [InlineKeyboardButton("🔙 Back", callback_data="main_menu")]
     ]
     await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -1059,11 +1381,16 @@ async def category_selection(update: Update, context: ContextTypes.DEFAULT_TYPE)
     ]
     await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
+def build_product_button(p_key, data):
+    icon = data.get('icon', '⚡')
+    icon_str = icon if not icon.startswith('http') else '⚡'
+    return InlineKeyboardButton(f"{icon_str} {data['name']}", callback_data=f"prod_likes_{p_key}")
+
 async def likes_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     text = "<b>💎 FREE FIRE LIKE SERVICES:</b>"
-    keyboard = [[InlineKeyboardButton(f"👍 {data['name']}", callback_data=f"prod_likes_{key}")] for key, data in LIKE_PRODUCTS.items()]
+    keyboard = [[InlineKeyboardButton(f"{data.get('icon', '💎')} {data['name']}", callback_data=f"prod_likes_{key}")] for key, data in LIKE_PRODUCTS.items()]
     keyboard.append([InlineKeyboardButton("🔙 Back to Shop", callback_data="shop_now")])
     await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -1071,7 +1398,7 @@ async def non_root_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     text = "<b>📱 NON-ROOT PANELS:</b>"
-    keyboard = [[InlineKeyboardButton(f"⚙️ {data['name']}", callback_data=f"prod_nonroot_{key}")] for key, data in NON_ROOT_PRODUCTS.items()]
+    keyboard = [[InlineKeyboardButton(f"{data.get('icon', '⚙️')} {data['name']}", callback_data=f"prod_nonroot_{key}")] for key, data in NON_ROOT_PRODUCTS.items()]
     keyboard.append([InlineKeyboardButton("🔙 Back to Categories", callback_data="cat_panels")])
     await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -1079,7 +1406,7 @@ async def root_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     text = "<b>⚡ ROOT PANELS:</b>"
-    keyboard = [[InlineKeyboardButton(f"⚡ {data['name']}", callback_data=f"prod_root_{key}")] for key, data in ROOT_PRODUCTS.items()]
+    keyboard = [[InlineKeyboardButton(f"{data.get('icon', '⚡')} {data['name']}", callback_data=f"prod_root_{key}")] for key, data in ROOT_PRODUCTS.items()]
     keyboard.append([InlineKeyboardButton("🔙 Back to Categories", callback_data="cat_panels")])
     await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -1087,7 +1414,7 @@ async def ios_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     text = "<b>🍏 IOS PANELS:</b>"
-    keyboard = [[InlineKeyboardButton(f"🍏 {data['name']}", callback_data=f"prod_ios_{key}")] for key, data in IOS_PRODUCTS.items()]
+    keyboard = [[InlineKeyboardButton(f"{data.get('icon', '🍏')} {data['name']}", callback_data=f"prod_ios_{key}")] for key, data in IOS_PRODUCTS.items()]
     keyboard.append([InlineKeyboardButton("🔙 Back to Categories", callback_data="cat_panels")])
     await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -1095,7 +1422,7 @@ async def pc_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     text = "<b>💻 PC PANELS:</b>"
-    keyboard = [[InlineKeyboardButton(f"💻 {data['name']}", callback_data=f"prod_pc_{key}")] for key, data in PC_PRODUCTS.items()]
+    keyboard = [[InlineKeyboardButton(f"{data.get('icon', '💻')} {data['name']}", callback_data=f"prod_pc_{key}")] for key, data in PC_PRODUCTS.items()]
     keyboard.append([InlineKeyboardButton("🔙 Back to Categories", callback_data="cat_panels")])
     await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -1218,7 +1545,8 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     formatted_price = format_amt_simple(order['price'])
-    qr_image_url = generate_dynamic_qr_url(RECEIVER_UPI_ID, order['price'], f"Order_{order['prod_key']}")
+    fampay_upi = UPI_CONFIG.get("fampay_token") or RECEIVER_UPI_ID
+    qr_image_url = generate_dynamic_qr_url(fampay_upi, order['price'], f"Order_{order['prod_key']}")
 
     context.user_data['order_cancelled'] = False
     context.user_data['payment_complete'] = False
@@ -1314,13 +1642,11 @@ async def verify_payment_btn_handler(update: Update, context: ContextTypes.DEFAU
 
         prod_key = order['prod_key']
         plan = order['plan']
-        keys_list = KEYS_STOCK.get((prod_key, plan), [])
+        
+        delivered_key = db_pop_auto_key(prod_key, plan)
 
-        if keys_list:
-            delivered_key = keys_list.pop(0)
-            KEYS_STOCK[(prod_key, plan)] = keys_list
+        if delivered_key:
             time_now = get_ist_time()
-
             db_add_order(user.id, order['prod_name'], plan, delivered_key, order['price'], "AUTO_VERIFIED", time_now)
 
             cust_text = (
@@ -1349,7 +1675,7 @@ async def verify_payment_btn_handler(update: Update, context: ContextTypes.DEFAU
             await context.bot.send_message(chat_id=ADMIN_ID, text=admin_text, parse_mode="HTML")
         else:
             admin_text = (
-                "🚨 <b>PAYMENT AUTO-VERIFIED (MANUAL APPROVAL REQUIRED)</b> 🚨\n\n"
+                "🚨 <b>PAYMENT AUTO-VERIFIED (MANUAL APPROVAL REQUIRED - NO KEYS IN STOCK)</b> 🚨\n\n"
                 f"👤 <b>Customer:</b> {user.first_name} (@{user.username if user.username else 'N/A'})\n"
                 f"🆔 <b>User ID:</b> <code>{user.id}</code>\n"
                 f"🔮 <b>Product:</b> {order['prod_name']}\n"
@@ -1409,11 +1735,7 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 plan = parts[1]
                 keys = [k.strip() for k in " ".join(parts[2:]).split(",")]
                 
-                target_tuple = (prod_key, plan)
-                if target_tuple not in KEYS_STOCK:
-                    KEYS_STOCK[target_tuple] = []
-                KEYS_STOCK[target_tuple].extend(keys)
-                
+                db_add_keys_to_inventory(prod_key, plan, keys)
                 await update.message.reply_text(f"✅ Added <b>{len(keys)} keys</b> to <b>{prod_key}</b> ({plan})!", parse_mode="HTML")
             except Exception as e:
                 await update.message.reply_text(f"❌ Invalid format! Error: {e}")
@@ -1425,12 +1747,8 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 parts = text.split(" ")
                 prod_key = parts[0]
                 plan = parts[1]
-                keys = KEYS_STOCK.get((prod_key, plan), [])
-                if not keys:
-                    await update.message.reply_text(f"⚠️ No keys in stock for <b>{prod_key}</b> ({plan})!", parse_mode="HTML")
-                else:
-                    keys_text = "\n".join([f"• <code>{k}</code>" for k in keys])
-                    await update.message.reply_text(f"🔑 <b>Available Keys ({prod_key} - {plan}):</b>\n\n{keys_text}", parse_mode="HTML")
+                cnt = db_get_key_count(prod_key, plan)
+                await update.message.reply_text(f"🔑 <b>Available Stock Keys for {prod_key} ({plan}):</b> {cnt}", parse_mode="HTML")
             except Exception as e:
                 await update.message.reply_text(f"❌ Invalid format! Error: {e}")
             context.user_data['admin_flow'] = None
@@ -1441,7 +1759,11 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 parts = text.split(" ")
                 prod_key = parts[0]
                 plan = parts[1]
-                KEYS_STOCK[(prod_key, plan)] = []
+                conn = sqlite3.connect(DB_FILE)
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM keys_inventory WHERE prod_key = ? AND plan = ?', (prod_key, plan))
+                conn.commit()
+                conn.close()
                 await update.message.reply_text(f"✅ Cleared stock for <b>{prod_key}</b> ({plan})!", parse_mode="HTML")
             except Exception as e:
                 await update.message.reply_text(f"❌ Invalid format! Error: {e}")
@@ -1660,4 +1982,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
