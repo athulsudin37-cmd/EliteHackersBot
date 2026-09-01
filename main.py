@@ -46,7 +46,6 @@ def init_db():
         c.execute('CREATE TABLE IF NOT EXISTS keys_inventory (id INTEGER PRIMARY KEY AUTOINCREMENT, prod_key TEXT, plan TEXT, item_key TEXT, is_used INTEGER DEFAULT 0)')
         c.execute('CREATE TABLE IF NOT EXISTS store_settings (id INTEGER PRIMARY KEY DEFAULT 1, support_username TEXT, how_to_use_link TEXT, welcome_message TEXT)')
         c.execute('CREATE TABLE IF NOT EXISTS upi_settings (id INTEGER PRIMARY KEY DEFAULT 1, paytm_token TEXT, paytm_qr TEXT, fampay_token TEXT, fampay_qr TEXT)')
-        c.execute('CREATE TABLE IF NOT EXISTS api_config (id INTEGER PRIMARY KEY DEFAULT 1, api_url TEXT, api_key TEXT, master_key TEXT, active_payment_gateway TEXT DEFAULT "paytm", fampay_token TEXT, paytm_merchant_id TEXT, paytm_upi_id TEXT, bot_name TEXT, support_username TEXT)')
         conn.commit()
 
 def load_store_and_upi_settings():
@@ -100,7 +99,7 @@ def db_pop_auto_key(prod_key, plan):
             c.execute('UPDATE keys_inventory SET is_used = 1 WHERE id = ?', (row[0],))
             conn.commit()
             return row[1]
-    return KEYS_STOCK.get((prod_key, plan), []).pop(0) if KEYS_STOCK.get((prod_key, plan)) else None
+    return None
 
 def db_get_key_count(prod_key, plan):
     with sqlite3.connect(DB_FILE) as conn:
@@ -147,7 +146,6 @@ def get_product_by_key(prod_key):
         if prod_key in cat: return cat[prod_key]
     return None
 
-def format_amt_simple(amount): return f"{amount:,.2f}"
 def get_ist_time(): return datetime.now(pytz.timezone('Asia/Kolkata')).strftime("%d %b %Y, %I:%M %p (IST)")
 def generate_dynamic_qr_url(upi_id, amount, note="FF Service"):
     if UPI_CONFIG.get("fampay_qr"): return UPI_CONFIG["fampay_qr"]
@@ -186,7 +184,7 @@ async def verify_fampay_gmail_payment(expected_amount, utr=None, retries=2, dela
         if attempt < retries - 1: await asyncio.sleep(delay)
     return False, "Payment notification not received."
 
-# Flask Dashboard & Web Setup
+# Flask Dashboard Setup
 flask_app = Flask(__name__)
 flask_app.secret_key = os.urandom(24)
 
@@ -203,106 +201,16 @@ ADMIN_HTML_TEMPLATE = """
         .card { background-color: #1e293b; border: 1px solid #334155; color: #f8fafc; border-radius: 12px; margin-bottom: 20px; }
         .btn-custom { background-color: #6366f1; color: white; border: none; }
         .form-control, .form-select { background-color: #0f172a; border: 1px solid #334155; color: white; }
-        .sidebar { position: fixed; top: 0; left: -270px; width: 270px; height: 100%; background: #1e293b; border-right: 1px solid #334155; transition: 0.3s; z-index: 1050; padding-top: 20px; overflow-y: auto; }
-        .sidebar.active { left: 0; }
-        .sidebar-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.5); display: none; z-index: 1040; }
-        .sidebar-overlay.active { display: block; }
-        .sidebar-link { padding: 12px 20px; color: #94a3b8; display: flex; align-items: center; gap: 12px; text-decoration: none; }
-        .sidebar-link:hover, .sidebar-link.active { background: #0f172a; color: #38bdf8; }
-        .top-navbar { background: #1e293b; border-bottom: 1px solid #334155; padding: 12px 20px; display: flex; align-items: center; justify-content: space-between; }
-        .stat-card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 20px; }
     </style>
 </head>
-<body>
-    {% if auth_only %}
-    <div class="row justify-content-center mt-5"><div class="col-md-4"><div class="card p-4 text-center">
-        <h3 class="mb-4">ADMIN UNLOCK</h3>
-        {% if error %}<div class="alert alert-danger">{{ error }}</div>{% endif %}
-        <form method="POST" action="/login"><div class="mb-3"><input type="password" name="password" class="form-control" placeholder="Password" required></div><button type="submit" class="btn btn-custom w-100">Login</button></form>
-    </div></div></div>
-    {% else %}
-    <div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar()"></div>
-    <div class="sidebar" id="sidebar">
-        <div class="px-3 pb-3 border-bottom border-secondary d-flex justify-content-between align-items-center"><h5 class="m-0 text-primary">Control Center</h5><button class="btn-close btn-close-white d-md-none" onclick="toggleSidebar()"></button></div>
-        <div class="mt-3">
-            <a class="sidebar-link active" onclick="showTab('dashboard', this)"><i class="fas fa-chart-line"></i> Dashboard</a>
-            <a class="sidebar-link" onclick="showTab('products', this)"><i class="fas fa-box"></i> Products</a>
-            <a class="sidebar-link" onclick="showTab('stock', this)"><i class="fas fa-id-badge"></i> ID Stock</a>
-            <a class="sidebar-link" onclick="showTab('broadcast', this)"><i class="fas fa-bullhorn"></i> Broadcast</a>
-            <a class="sidebar-link" onclick="showTab('upi', this)"><i class="fas fa-credit-card"></i> UPI Setup</a>
-            <a class="sidebar-link" onclick="showTab('store', this)"><i class="fas fa-cog"></i> Store Settings</a>
-            <a href="/logout" class="sidebar-link text-danger mt-4"><i class="fas fa-sign-out-alt"></i> Logout</a>
+<body class="p-4">
+    <div class="container">
+        <h2 class="text-primary mb-4">👑 ELITE HACKERS Admin Dashboard</h2>
+        <div class="card p-4">
+            <h4 class="mb-3">Quick Actions</h4>
+            <a href="/logout" class="btn btn-outline-danger btn-sm">Logout</a>
         </div>
     </div>
-    <div class="main-content">
-        <div class="top-navbar mb-4"><div class="d-flex align-items-center gap-3"><button class="btn text-white" onclick="toggleSidebar()"><i class="fas fa-bars"></i></button><h4 class="m-0">Admin Panel</h4></div><a href="/logout" class="btn btn-outline-danger btn-sm">Logout</a></div>
-        <div class="container-fluid px-4">
-            <div class="tab-content-item" id="tab-dashboard">
-                <div class="row g-3 mb-4">
-                    <div class="col-md-3"><div class="stat-card"><h6>TOTAL USERS</h6><h2 class="text-primary m-0">{{ stats.total_users }}</h2></div></div>
-                    <div class="col-md-3"><div class="stat-card"><h6>TOTAL ORDERS</h6><h2 class="text-success m-0">{{ stats.total_orders }}</h2></div></div>
-                    <div class="col-md-3"><div class="stat-card"><h6>REVENUE</h6><h2 class="text-warning m-0">₹{{ stats.total_revenue }}</h2></div></div>
-                    <div class="col-md-3"><div class="stat-card"><h6>ACTIVE KEYS</h6><h2 class="text-info m-0">{{ stats.total_keys }}</h2></div></div>
-                </div>
-            </div>
-            <div class="tab-content-item" id="tab-products" style="display:none;">
-                <div class="card p-4"><h5>Add / Edit Product</h5><form class="row g-3" onsubmit="event.preventDefault(); addProduct();">
-                    <div class="col-md-4"><label>Name</label><input type="text" id="p_name" class="form-control" required></div>
-                    <div class="col-md-4"><label>Category</label><select id="p_cat" class="form-select"><option value="non_root">Non-Root</option><option value="root">Root</option><option value="ios">iOS</option><option value="pc">PC</option><option value="likes">Likes</option></select></div>
-                    <div class="col-md-4"><label>Icon</label><input type="text" id="p_icon" class="form-control" value="⚡"></div>
-                    <div class="col-md-4"><label>Plan</label><input type="text" id="p_plan" class="form-control" value="1_Day" required></div>
-                    <div class="col-md-4"><label>Price (₹)</label><input type="number" id="p_price" class="form-control" required></div>
-                    <div class="col-md-4"><label>Link</label><input type="text" id="p_link" class="form-control"></div>
-                    <div class="col-12"><button type="submit" class="btn btn-custom w-100">Save Product</button></div>
-                </form></div>
-                <div class="card p-4 mt-3"><h5>Product List</h5><table class="table table-dark table-striped align-middle"><thead><tr><th>Icon</th><th>Name</th><th>Category</th><th>Prices</th><th>Actions</th></tr></thead><tbody>
-                    {% for p in products %}<tr><td>{{ p.icon }}</td><td>{{ p.name }}</td><td><span class="badge bg-info">{{ p.category }}</span></td><td>{{ p.prices }}</td><td><button onclick="deleteProduct('{{ p.key }}')" class="btn btn-danger btn-sm"><i class="fas fa-trash"></i></button></td></tr>{% endfor %}
-                </tbody></table></div>
-            </div>
-            <div class="tab-content-item" id="tab-stock" style="display:none;"><div class="card p-4"><h5>Add Bulk Keys</h5>
-                <div class="row g-3"><div class="col-md-6"><label>Product Key</label><input type="text" id="s_key" class="form-control" placeholder="bala_mod"></div>
-                <div class="col-md-6"><label>Plan</label><input type="text" id="s_plan" class="form-control" placeholder="1_Day"></div>
-                <div class="col-12"><label>Keys (One per line)</label><textarea id="s_keys_text" class="form-control" rows="5"></textarea></div>
-                <div class="col-12"><button onclick="addStock()" class="btn btn-custom">Upload Keys</button></div></div>
-            </div></div>
-            <div class="tab-content-item" id="tab-broadcast" style="display:none;"><div class="card p-4"><h5>Broadcast</h5><textarea id="bc_message" class="form-control mb-3" rows="5" placeholder="Message..."></textarea><button onclick="sendBroadcast()" class="btn btn-custom">Send Broadcast</button></div></div>
-            <div class="tab-content-item" id="tab-upi" style="display:none;"><div class="card p-4"><h5>UPI Setup</h5><form class="row g-3" onsubmit="event.preventDefault(); saveUpi();">
-                <div class="col-md-6"><label>Paytm Token</label><input type="text" id="paytm_token" class="form-control" value="{{ upi_cfg.paytm_token }}"></div>
-                <div class="col-md-6"><label>Paytm QR</label><input type="text" id="paytm_qr" class="form-control" value="{{ upi_cfg.paytm_qr }}"></div>
-                <div class="col-md-6"><label>FamPay UPI</label><input type="text" id="fampay_token" class="form-control" value="{{ upi_cfg.fampay_token }}"></div>
-                <div class="col-md-6"><label>FamPay QR</label><input type="text" id="fampay_qr" class="form-control" value="{{ upi_cfg.fampay_qr }}"></div>
-                <div class="col-12"><button type="submit" class="btn btn-custom w-100">Save UPI Settings</button></div>
-            </form></div></div>
-            <div class="tab-content-item" id="tab-store" style="display:none;"><div class="card p-4"><h5>Store Settings</h5><form class="row g-3" onsubmit="event.preventDefault(); saveStore();">
-                <div class="col-md-6"><label>Support Username</label><input type="text" id="supp_user" class="form-control" value="{{ store_cfg.support_username }}"></div>
-                <div class="col-md-6"><label>How to Use Link</label><input type="text" id="how_link" class="form-control" value="{{ store_cfg.how_to_use_link }}"></div>
-                <div class="col-12"><label>Welcome Message</label><textarea id="welc_msg" class="form-control" rows="5">{{ store_cfg.welcome_message }}</textarea></div>
-                <div class="col-12"><button type="submit" class="btn btn-custom">Save Settings</button></div>
-            </form></div></div>
-        </div>
-    </div>
-    {% endif %}
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    <script>
-        function toggleSidebar() { document.getElementById('sidebar').classList.toggle('active'); document.getElementById('sidebarOverlay').classList.toggle('active'); }
-        function showTab(id, el) {
-            document.querySelectorAll('.tab-content-item').forEach(e => e.style.display = 'none');
-            document.getElementById('tab-' + id).style.display = 'block';
-            document.querySelectorAll('.sidebar-link').forEach(e => e.classList.remove('active'));
-            if(el) el.classList.add('active');
-            if(window.innerWidth < 768) toggleSidebar();
-        }
-        function apiCall(url, data, cb) {
-            fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)})
-            .then(r => r.json()).then(res => { alert(res.message); if(cb) cb(res); else location.reload(); });
-        }
-        function addProduct() { apiCall('/api/add_product', {name: document.getElementById('p_name').value, category: document.getElementById('p_cat').value, icon: document.getElementById('p_icon').value, prices: [[document.getElementById('p_plan').value, parseFloat(document.getElementById('p_price').value)]], download_link: document.getElementById('p_link').value}); }
-        function deleteProduct(prod_key) { if(confirm('Delete product?')) apiCall('/api/delete_product', {prod_key}); }
-        function addStock() { apiCall('/api/add_stock', {prod_key: document.getElementById('s_key').value, plan: document.getElementById('s_plan').value, keys: document.getElementById('s_keys_text').value}); }
-        function sendBroadcast() { apiCall('/api/send_broadcast', {message: document.getElementById('bc_message').value}); }
-        function saveUpi() { apiCall('/api/save_upi_settings', {paytm_token: document.getElementById('paytm_token').value, paytm_qr: document.getElementById('paytm_qr').value, fampay_token: document.getElementById('fampay_token').value, fampay_qr: document.getElementById('fampay_qr').value}); }
-        function saveStore() { apiCall('/api/save_store_settings', {support_username: document.getElementById('supp_user').value, how_to_use_link: document.getElementById('how_link').value, welcome_message: document.getElementById('welc_msg').value}); }
-    </script>
 </body>
 </html>
 """
@@ -313,8 +221,8 @@ def login():
         if request.form.get('password') == ADMIN_PASSWORD:
             session['logged_in'] = True
             return redirect('/admin')
-        return render_template_string(ADMIN_HTML_TEMPLATE, auth_only=True, error="Invalid Password!")
-    return render_template_string(ADMIN_HTML_TEMPLATE, auth_only=True)
+        return "Invalid Password! <a href='/login'>Try Again</a>"
+    return '<form method="POST">Password: <input type="password" name="password"><button type="submit">Login</button></form>'
 
 @flask_app.route('/logout')
 def logout():
@@ -330,99 +238,26 @@ def admin_dashboard():
         tot_users = c.execute('SELECT COUNT(*) FROM users').fetchone()[0]
         ord_info = c.execute('SELECT COUNT(*), SUM(amount) FROM order_history').fetchone()
         tot_keys = c.execute('SELECT COUNT(*) FROM keys_inventory WHERE is_used = 0').fetchone()[0]
-        prods = [{"key": r[0], "name": r[1], "category": r[2], "prices": json.loads(r[3]), "icon": r[5] or "⚡"} for r in c.execute('SELECT * FROM products').fetchall()]
-    return render_template_string(ADMIN_HTML_TEMPLATE, auth_only=False, stats={"total_users": tot_users, "total_orders": ord_info[0] or 0, "total_revenue": f"{ord_info[1] or 0.0:,.2f}", "total_keys": tot_keys}, products=prods, upi_cfg=UPI_CONFIG, store_cfg=STORE_CONFIG)
-
-@flask_app.route('/api/add_product', methods=['POST'])
-def api_add_product():
-    if not session.get('logged_in'): return jsonify({"success": False}), 401
-    d = request.json
-    pkey = sanitize_product_key(d.get('name'))
-    with sqlite3.connect(DB_FILE) as conn:
-        conn.cursor().execute('INSERT OR REPLACE INTO products VALUES (?, ?, ?, ?, ?, ?, 0, 0, NULL, 0, NULL)', (pkey, d.get('name').strip(), d.get('category'), json.dumps(d.get('prices')), d.get('download_link', ''), d.get('icon', '⚡')))
-        conn.commit()
-    load_products_from_db()
-    return jsonify({"success": True, "message": "Product saved!"})
-
-@flask_app.route('/api/delete_product', methods=['POST'])
-def api_delete_product():
-    if not session.get('logged_in'): return jsonify({"success": False}), 401
-    pkey = request.json.get('prod_key')
-    with sqlite3.connect(DB_FILE) as conn:
-        conn.cursor().execute('DELETE FROM products WHERE prod_key = ?', (pkey,))
-        conn.commit()
-    for cat in ALL_CATEGORIES: cat.pop(pkey, None)
-    return jsonify({"success": True, "message": "Deleted!"})
-
-@flask_app.route('/api/add_stock', methods=['POST'])
-def api_add_stock():
-    if not session.get('logged_in'): return jsonify({"success": False}), 401
-    d = request.json
-    keys = [k.strip() for k in d.get('keys', '').split("\n") if k.strip()]
-    db_add_keys_to_inventory(d.get('prod_key'), d.get('plan'), keys)
-    return jsonify({"success": True, "message": f"Added {len(keys)} keys!"})
-
-@flask_app.route('/api/send_broadcast', methods=['POST'])
-def api_send_broadcast():
-    if not session.get('logged_in'): return jsonify({"success": False}), 401
-    msg = request.json.get('message', '').strip()
-    if not msg: return jsonify({"success": False, "message": "Empty message!"})
-    def run_bc():
-        try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            with sqlite3.connect(DB_FILE) as conn: users = [r[0] for r in conn.cursor().execute('SELECT user_id FROM users').fetchall()]
-            bot = Application.builder().token(BOT_TOKEN).build().bot
-            for uid in users:
-                try: loop.run_until_complete(bot.send_message(chat_id=uid, text=msg, parse_mode="HTML"))
-                except: pass
-        except: pass
-    Thread(target=run_bc).start()
-    return jsonify({"success": True, "message": "Broadcast started!"})
-
-@flask_app.route('/api/save_upi_settings', methods=['POST'])
-def api_save_upi():
-    if not session.get('logged_in'): return jsonify({"success": False}), 401
-    d = request.json
-    UPI_CONFIG.update({"paytm_token": d.get('paytm_token', ''), "paytm_qr": d.get('paytm_qr', ''), "fampay_token": d.get('fampay_token', ''), "fampay_qr": d.get('fampay_qr', '')})
-    with sqlite3.connect(DB_FILE) as conn:
-        conn.cursor().execute('INSERT INTO upi_settings VALUES (1, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET paytm_token=?, paytm_qr=?, fampay_token=?, fampay_qr=?', tuple(UPI_CONFIG.values()) * 2)
-        conn.commit()
-    return jsonify({"success": True, "message": "UPI settings saved!"})
-
-@flask_app.route('/api/save_store_settings', methods=['POST'])
-def api_save_store():
-    if not session.get('logged_in'): return jsonify({"success": False}), 401
-    d = request.json
-    STORE_CONFIG.update({"support_username": d.get('support_username', STORE_CONFIG["support_username"]), "how_to_use_link": d.get('how_to_use_link', STORE_CONFIG["how_to_use_link"]), "welcome_message": d.get('welcome_message', STORE_CONFIG["welcome_message"])})
-    with sqlite3.connect(DB_FILE) as conn:
-        conn.cursor().execute('INSERT INTO store_settings VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET support_username=?, how_to_use_link=?, welcome_message=?', tuple(STORE_CONFIG.values()) * 2)
-        conn.commit()
-    return jsonify({"success": True, "message": "Store settings saved!"})
+    return f"Admin Panel Active! Total Users: {tot_users}, Total Orders: {ord_info[0] or 0}, Total Revenue: ₹{ord_info[1] or 0.0}, Active Keys: {tot_keys}. <a href='/logout'>Logout</a>"
 
 def keep_alive():
     Thread(target=lambda: flask_app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080))), daemon=True).start()
 
-# Telegram Bot Logic
+# Telegram Bot Handlers
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user = update.effective_user
         if not user: return
         if not db_get_user(user.id):
             db_add_or_update_user(user.id, user.full_name, f"@{user.username}" if user.username else "N/A", get_ist_time())
-            if user.id != ADMIN_ID:
-                try: await context.bot.send_message(chat_id=ADMIN_ID, text=f"🔔 <b>New User:</b> {user.full_name} (<code>{user.id}</code>)", parse_mode="HTML")
-                except: pass
         
         keyboard = [
             [InlineKeyboardButton("🛒 Shop Now", callback_data="shop_now")],
             [InlineKeyboardButton("📦 My Orders", callback_data="my_orders"), InlineKeyboardButton("👤 Profile", callback_data="profile")],
-            [InlineKeyboardButton("💳 Pay Proof", url="https://t.me/+fJrFACSrntgwNjll"), InlineKeyboardButton("💬 Support", callback_data="support")],
-            [InlineKeyboardButton("ℹ️ How to Use", callback_data="how_to_use")]
+            [InlineKeyboardButton("💬 Support", callback_data="support"), InlineKeyboardButton("ℹ️ How to Use", callback_data="how_to_use")]
         ]
         if user.id == ADMIN_ID:
-            keyboard.append([InlineKeyboardButton("👑 Web Admin Panel", url=os.environ.get("RENDER_EXTERNAL_URL", "http://localhost:8080") + "/admin")])
-            keyboard.append([InlineKeyboardButton("👑 Telegram Admin Menu", callback_data="admin_panel_home")])
+            keyboard.append([InlineKeyboardButton("👑 Admin Panel", callback_data="admin_panel_home")])
         
         markup = InlineKeyboardMarkup(keyboard)
         if update.message: await update.message.reply_text(STORE_CONFIG["welcome_message"], parse_mode="HTML", reply_markup=markup)
@@ -438,7 +273,6 @@ async def admin_panel_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.from_user.id != ADMIN_ID: return
     keyboard = [
         [InlineKeyboardButton("➕ Add Key", callback_data="admin_opt_addkey"), InlineKeyboardButton("🔑 View Stock", callback_data="admin_opt_viewkeys")],
-        [InlineKeyboardButton("🗑️ Clear Stock", callback_data="admin_opt_clearstock"), InlineKeyboardButton("📢 Broadcast", callback_data="admin_opt_broadcast")],
         [InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")]
     ]
     await query.message.edit_text("👑 <b>Admin Control Panel</b>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -447,7 +281,7 @@ async def admin_option_click(update: Update, context: ContextTypes.DEFAULT_TYPE)
     query = update.callback_query
     await query.answer()
     if query.from_user.id != ADMIN_ID: return
-    flows = {"admin_opt_addkey": ("WAITING_ADDKEY", "Format: <code>prod_key plan_name key1, key2</code>"), "admin_opt_viewkeys": ("WAITING_VIEWKEYS", "Format: <code>prod_key plan_name</code>"), "admin_opt_clearstock": ("WAITING_CLEARSTOCK", "Format: <code>prod_key plan_name</code>"), "admin_opt_broadcast": ("WAITING_BROADCAST", "Send broadcast message:")}
+    flows = {"admin_opt_addkey": ("WAITING_ADDKEY", "Format: <code>prod_key plan_name key1, key2</code>"), "admin_opt_viewkeys": ("WAITING_VIEWKEYS", "Format: <code>prod_key plan_name</code>")}
     if query.data in flows:
         context.user_data['admin_flow'] = flows[query.data][0]
         await query.message.edit_text(flows[query.data][1], parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="admin_panel_home")]]))
@@ -458,7 +292,7 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     u = db_get_user(user.id)
     text = f"👤 <b>PROFILE</b>\n\nName: {u[0] if u else user.full_name}\nID: <code>{user.id}</code>\nOrders: {u[3] if u else 0}"
-    await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🛒 Shop", callback_data="shop_now"), InlineKeyboardButton("🔙 Back", callback_data="main_menu")]]))
+    await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="main_menu")]]))
 
 async def my_orders_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -475,7 +309,7 @@ async def support_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def how_to_use_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    await query.message.edit_text("📖 <b>How to Use:</b> Select item, scan QR, pay exact amount, and tap Verify!", parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎬 Tutorial", url=STORE_CONFIG['how_to_use_link']), InlineKeyboardButton("🔙 Back", callback_data="main_menu")]]))
+    await query.message.edit_text("📖 <b>How to Use:</b> Select item, scan QR, pay exact amount, and tap Verify!", parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="main_menu")]]))
 
 async def store_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -500,9 +334,6 @@ async def show_product_prices(update: Update, context: ContextTypes.DEFAULT_TYPE
     pkey = query.data.replace("prod_", "")
     prod = get_product_by_key(pkey)
     if not prod: return
-    if MAINTENANCE_MODE.get(pkey) or STOCK_OUT_MODE.get(pkey):
-        await query.message.edit_text("⚠️ Product unavailable or under maintenance.", parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="shop_now")]]))
-        return
     keyboard = [[InlineKeyboardButton(f"{plan.replace('_', ' ')} — ₹{price}", callback_data=f"plan_{pkey}_{plan}_{price}")] for plan, price in prod["prices"]]
     if PRODUCT_LINKS.get(pkey): keyboard.append([InlineKeyboardButton("📥 Download", url=PRODUCT_LINKS[pkey])])
     keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="shop_now")])
@@ -512,7 +343,7 @@ async def order_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     _, pkey, plan, price = query.data.split("_", 3)
-    base_price, final_price = float(price), round(float(price) + random.randint(1, 99) / 100.0, 2)
+    final_price = round(float(price) + random.randint(1, 99) / 100.0, 2)
     prod = get_product_by_key(pkey)
     context.user_data['pending_order'] = {'prod_key': pkey, 'prod_name': prod['name'] if prod else pkey, 'plan': plan, 'price': final_price}
     await query.message.edit_text(f"<b>📋 ORDER SUMMARY</b>\n\nProduct: {prod['name'] if prod else pkey}\nPlan: {plan}\nTotal: <b>₹{final_price:.2f}</b>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Confirm & Pay", callback_data="confirm_pay")], [InlineKeyboardButton("🔙 Back", callback_data=f"prod_{pkey}")]]))
@@ -531,15 +362,6 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sent = await context.bot.send_photo(chat_id=query.message.chat_id, photo=generate_dynamic_qr_url(UPI_CONFIG.get("fampay_token") or RECEIVER_UPI_ID, order['price']), caption=f"Scan & Pay: <b>₹{order['price']:.2f}</b>\nExpires in 5 mins.", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
     context.user_data['qr_msg_id'] = sent.message_id
 
-    async def timer():
-        for _ in range(60):
-            await asyncio.sleep(5)
-            if context.user_data.get('order_cancelled') or context.user_data.get('payment_complete'): return
-        if not context.user_data.get('payment_complete'):
-            try: await context.bot.delete_message(chat_id=sent.chat_id, message_id=sent.message_id)
-            except: pass
-    asyncio.create_task(timer())
-
 async def verify_payment_btn_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer("Checking payment...")
@@ -548,7 +370,6 @@ async def verify_payment_btn_handler(update: Update, context: ContextTypes.DEFAU
     
     v_msg = await query.message.reply_text("🔄 Verifying payment...", parse_mode="HTML")
     verified, _ = await verify_fampay_gmail_payment(order['price'])
-    
     try: await v_msg.delete()
     except: pass
     
@@ -561,7 +382,6 @@ async def verify_payment_btn_handler(update: Update, context: ContextTypes.DEFAU
         if key:
             db_add_order(update.effective_user.id, order['prod_name'], order['plan'], key, order['price'], "AUTO", get_ist_time())
             await context.bot.send_message(chat_id=update.effective_user.id, text=f"🎉 <b>Success!</b>\nKey: <code>{key}</code>", parse_mode="HTML")
-            await start_command_for_user(context.bot, update.effective_user.id)
         else:
             await query.message.reply_text("✅ Payment verified! Admin will send your key shortly.", parse_mode="HTML")
     else:
@@ -585,25 +405,8 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 await update.message.reply_text("✅ Keys added!")
             elif flow == 'WAITING_VIEWKEYS':
                 await update.message.reply_text(f"🔑 Stock: {db_get_key_count(parts[0], parts[1])}")
-            elif flow == 'WAITING_CLEARSTOCK':
-                with sqlite3.connect(DB_FILE) as conn:
-                    conn.cursor().execute('DELETE FROM keys_inventory WHERE prod_key = ? AND plan = ?', (parts[0], parts[1]))
-                    conn.commit()
-                await update.message.reply_text("✅ Cleared stock!")
-            elif flow == 'WAITING_BROADCAST':
-                with sqlite3.connect(DB_FILE) as conn: users = [r[0] for r in conn.cursor().execute('SELECT user_id FROM users').fetchall()]
-                for uid in users:
-                    try: await context.bot.send_message(chat_id=uid, text=text, parse_mode="HTML")
-                    except: pass
-                await update.message.reply_text("✅ Broadcast sent!")
         except Exception as e: await update.message.reply_text(f"❌ Error: {e}")
         context.user_data['admin_flow'] = None
-    else:
-        await update.message.reply_text("❌ Use /start to restart.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Start", callback_data="main_menu")]]))
-
-async def start_command_for_user(bot, user_id):
-    try: await bot.send_message(chat_id=user_id, text="<b>Choose option:</b>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🛒 Shop", callback_data="shop_now")], [InlineKeyboardButton("📦 Orders", callback_data="my_orders")]]))
-    except: pass
 
 def start_bot():
     app = Application.builder().token(BOT_TOKEN).concurrent_updates(False).build()
@@ -616,7 +419,6 @@ def start_bot():
     app.add_handler(CallbackQueryHandler(support_handler, pattern="^support$"))
     app.add_handler(CallbackQueryHandler(how_to_use_handler, pattern="^how_to_use$"))
     app.add_handler(CallbackQueryHandler(store_menu, pattern="^shop_now$"))
-    app.add_handler(CallbackCode := lambda u, c: category_selection(u, c), pattern="^cat_panels$") if False else None # Filler
     app.add_handler(CallbackQueryHandler(category_selection, pattern="^cat_panels$"))
     app.add_handler(CallbackQueryHandler(lambda u, c: make_list_handler(u, c, LIKE_PRODUCTS, "shop_now"), pattern="^cat_likes$"))
     app.add_handler(CallbackQueryHandler(lambda u, c: make_list_handler(u, c, NON_ROOT_PRODUCTS, "cat_panels"), pattern="^non_root_list$"))
