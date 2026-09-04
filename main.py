@@ -171,13 +171,36 @@ async def buy_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.message.edit_text(f"📋 <b>ORDER SUMMARY</b>\n\nProduct: {name}\nPlan: {plan}\nTotal: ₹{final:.2f}", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(kb))
 
 async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer(); o = context.user_data.get('order'); load_settings()
-    if not o: return
-    upi = UPI_CONFIG.get("fampay_token") or "9544113089@fam"
-    qr_url = UPI_CONFIG.get("fampay_qr") or f"https://api.qrserver.com/v1/create-qr-code/?size=500x500&data={urllib.parse.quote(f'upi://pay?pa={upi}&pn=ELITE&am={o[\"price\"]:.2f}&cu=INR')}"
-    kb = [[InlineKeyboardButton("VERIFY PAYMENT", callback_data="verify_pay")], [InlineKeyboardButton("❌ Cancel", callback_data="main_menu")]]
-    await q.message.delete()
-    await context.bot.send_photo(chat_id=q.message.chat_id, photo=qr_url, caption=f"💰 <b>Scan & Pay ₹{o['price']:.2f}</b>\n\nTap Verify below after paying.", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(kb))
+    query = update.callback_query
+    await query.answer()
+    order = context.user_data.get('order')
+    load_settings()
+    if not order:
+        return
+
+    upi_target = UPI_CONFIG.get("fampay_token") or "9544113089@fam"
+    order_amount = order['price']
+    
+    # 🛠️ Fixed line (No syntax/backslash error)
+    upi_payment_uri = f"upi://pay?pa={upi_target}&pn=ELITE&am={order_amount:.2f}&cu=INR"
+    qr_image_url = UPI_CONFIG.get("fampay_qr") or f"https://api.qrserver.com/v1/create-qr-code/?size=500x500&data={urllib.parse.quote(upi_payment_uri)}"
+    
+    keyboard = [
+        [InlineKeyboardButton("VERIFY PAYMENT", callback_data="verify_pay")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="main_menu")]
+    ]
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+
+    await context.bot.send_photo(
+        chat_id=query.message.chat_id,
+        photo=qr_image_url,
+        caption=f"💰 <b>Scan & Pay ₹{order_amount:.2f}</b>\n\nTap Verify below after completing payment.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
 async def verify_btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer("Checking payment..."); u = update.effective_user; o = context.user_data.get('order')
@@ -218,7 +241,7 @@ def start_bot_polling():
 
 if __name__ == "__main__":
     # 1. വെബ് അഡ്മിൻ പാനൽ ബാക്ക്ഗ്രൗണ്ടിൽ ഓൺ ആക്കുന്നു
-    print("🌐 Launching Web Admin Panel in Background Thread...")
+    print("🌐 Launching Web Admin Panel in Background...")
     web_thread = Thread(target=web_admin.run_web)
     web_thread.daemon = True
     web_thread.start()
