@@ -2,9 +2,9 @@ import os
 import json
 import sqlite3
 import re
+import urllib.request
 import urllib.parse
 from threading import Thread
-import requests
 from flask import Flask, render_template_string, request, jsonify, redirect, session
 
 DB_FILE = "bot_database.db"
@@ -263,11 +263,11 @@ def api_bc():
         conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute('SELECT user_id FROM users'); users = [r[0] for r in c.fetchall()]; conn.close()
         for u in users:
             try:
-                requests.post(
-                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                    json={"chat_id": u, "text": msg, "parse_mode": "HTML"},
-                    timeout=5
-                )
+                url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+                data = json.dumps({"chat_id": u, "text": msg, "parse_mode": "HTML"}).encode("utf-8")
+                req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    pass
             except Exception:
                 pass
     Thread(target=_send).start()
