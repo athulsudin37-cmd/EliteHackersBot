@@ -487,9 +487,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("ℹ️ How to Use", callback_data="how_to_use")]
         ]
 
-        if user.id == ADMIN_ID:
-            keyboard.append([InlineKeyboardButton("👑 Telegram Admin Menu", callback_data="admin_panel_home")])
-
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         if update.message:
@@ -502,63 +499,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.callback_query.message.reply_text(welcome_text, parse_mode="HTML", reply_markup=reply_markup)
     except Exception as e:
         logger.error(f"Error in start_command: {e}")
-
-# ==========================================
-# 👑 BOT ADMIN PANEL HANDLERS (TELEGRAM IN-APP)
-# ==========================================
-async def admin_panel_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    if query.from_user.id != ADMIN_ID:
-        return
-
-    text = (
-        "👑 <b>WELCOME TO ADMIN CONTROL PANEL</b>\n\n"
-        "Select an option below to control your shop directly from Telegram:"
-    )
-    keyboard = [
-        [InlineKeyboardButton("➕ Add Key to Stock", callback_data="admin_opt_addkey"), InlineKeyboardButton("🔑 View Stock", callback_data="admin_opt_viewkeys")],
-        [InlineKeyboardButton("🗑️ Clear Stock", callback_data="admin_opt_clearstock"), InlineKeyboardButton("💵 Set Product Price", callback_data="admin_opt_setprice")],
-        [InlineKeyboardButton("🛠️ Maintenance Mode", callback_data="admin_opt_maintain"), InlineKeyboardButton("🔗 Add Download Link", callback_data="admin_opt_addlink")],
-        [InlineKeyboardButton("📢 Broadcast Message", callback_data="admin_opt_broadcast")],
-        [InlineKeyboardButton("🔙 Back to Main Menu", callback_data="main_menu")]
-    ]
-    await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def admin_option_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    if query.from_user.id != ADMIN_ID:
-        return
-
-    cb = query.data
-
-    if cb == "admin_opt_addkey":
-        context.user_data['admin_flow'] = 'WAITING_ADDKEY'
-        msg = "➕ <b>ADD KEYS TO STOCK</b>\n\nFormat: <code>prod_key plan_name key1, key2</code>"
-    elif cb == "admin_opt_viewkeys":
-        context.user_data['admin_flow'] = 'WAITING_VIEWKEYS'
-        msg = "🔑 <b>VIEW STOCK KEYS</b>\n\nFormat: <code>prod_key plan_name</code>"
-    elif cb == "admin_opt_clearstock":
-        context.user_data['admin_flow'] = 'WAITING_CLEARSTOCK'
-        msg = "🗑️ <b>CLEAR STOCK KEYS</b>\n\nFormat: <code>prod_key plan_name</code>"
-    elif cb == "admin_opt_setprice":
-        context.user_data['admin_flow'] = 'WAITING_SETPRICE'
-        msg = "💵 <b>SET PRODUCT PRICE</b>\n\nFormat: <code>prod_key plan_name new_price</code>"
-    elif cb == "admin_opt_maintain":
-        context.user_data['admin_flow'] = 'WAITING_MAINTAIN'
-        msg = "🛠️ <b>TOGGLE MAINTENANCE MODE</b>\n\nFormat: <code>prod_key on/off</code>"
-    elif cb == "admin_opt_addlink":
-        context.user_data['admin_flow'] = 'WAITING_ADDLINK'
-        msg = "🔗 <b>ADD DOWNLOAD LINK</b>\n\nFormat: <code>prod_key https://link.com</code>"
-    elif cb == "admin_opt_broadcast":
-        context.user_data['admin_flow'] = 'WAITING_BROADCAST'
-        msg = "📢 <b>BROADCAST MESSAGE</b>\n\nSend Text, Photo, Video, or Voice message to broadcast."
-
-    keyboard = [[InlineKeyboardButton("❌ Cancel & Return", callback_data="admin_panel_home")]]
-    await query.message.edit_text(msg, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
 # ==========================================
 # 👤 PROFILE & ORDERS HANDLERS
@@ -1007,193 +947,48 @@ async def cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await start_command(update, context)
 
 # ==========================================
-# 📩 MESSAGES & BROADCAST HANDLERS
+# 📩 MESSAGES & KEY DISPATCH HANDLERS
 # ==========================================
 async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    text = update.message.text.strip() if update.message.text else ""
 
-    if user.id == ADMIN_ID:
-        flow = context.user_data.get('admin_flow')
-        text = update.message.text.strip() if update.message.text else ""
+    if user.id == ADMIN_ID and context.user_data.get('admin_state') == 'AWAITING_KEY':
+        target_msg_id = context.user_data.get('active_admin_msg_id')
+        order_info = ACTIVE_ORDERS.get(target_msg_id)
 
-        if flow == 'WAITING_ADDKEY':
-            try:
-                parts = text.split(" ")
-                prod_key = parts[0]
-                plan = parts[1]
-                keys = [k.strip() for k in " ".join(parts[2:]).split(",")]
-                
-                db_add_keys_to_inventory(prod_key, plan, keys)
-                await update.message.reply_text(f"✅ Added <b>{len(keys)} keys</b> to <b>{prod_key}</b> ({plan})!", parse_mode="HTML")
-            except Exception as e:
-                await update.message.reply_text(f"❌ Invalid format! Error: {e}")
-            context.user_data['admin_flow'] = None
+        if order_info and text:
+            cust_id = order_info['user_id']
+            prod_name = order_info['prod_name']
+            plan = order_info['plan']
+            time_now = get_ist_time()
+
+            db_add_order(cust_id, prod_name, plan, text, order_info['price'], "MANUAL", time_now)
+
+            cust_text = (
+                "<b>═══════════════════════</b>\n"
+                "<b>🎉 YOUR ORDER IS READY!</b>\n"
+                "<b>═══════════════════════</b>\n\n"
+                f"🔮 <b>Product:</b> {prod_name}\n"
+                f"⏱️ <b>Duration:</b> {plan.replace('_', ' ')}\n\n"
+                "🔑 <b>Key (Tap on Key to Copy):</b>\n"
+                f"<code>{text}</code>\n"
+                "<b>═══════════════════════</b>\n"
+                "Thank you for shopping with us! 🛍️"
+            )
+            await context.bot.send_message(chat_id=cust_id, text=cust_text, parse_mode="HTML")
+            await start_command_for_user(context.bot, cust_id)
+            await update.message.reply_text("✅ Key sent to customer successfully!")
+            context.user_data['admin_state'] = None
+            context.user_data['active_admin_msg_id'] = None
             return
 
-        elif flow == 'WAITING_VIEWKEYS':
-            try:
-                parts = text.split(" ")
-                prod_key = parts[0]
-                plan = parts[1]
-                cnt = db_get_key_count(prod_key, plan)
-                await update.message.reply_text(f"🔑 <b>Available Stock Keys for {prod_key} ({plan}):</b> {cnt}", parse_mode="HTML")
-            except Exception as e:
-                await update.message.reply_text(f"❌ Invalid format! Error: {e}")
-            context.user_data['admin_flow'] = None
-            return
-
-        elif flow == 'WAITING_CLEARSTOCK':
-            try:
-                parts = text.split(" ")
-                prod_key = parts[0]
-                plan = parts[1]
-                conn = sqlite3.connect(DB_FILE)
-                cursor = conn.cursor()
-                cursor.execute('DELETE FROM keys_inventory WHERE prod_key = ? AND plan = ?', (prod_key, plan))
-                conn.commit()
-                conn.close()
-                await update.message.reply_text(f"✅ Cleared stock for <b>{prod_key}</b> ({plan})!", parse_mode="HTML")
-            except Exception as e:
-                await update.message.reply_text(f"❌ Invalid format! Error: {e}")
-            context.user_data['admin_flow'] = None
-            return
-
-        elif flow == 'WAITING_SETPRICE':
-            try:
-                parts = text.split(" ")
-                prod_key = parts[0]
-                plan = parts[1]
-                new_price = float(parts[2])
-                prod = get_product_by_key(prod_key)
-                if prod:
-                    for idx, (p_name, p_price) in enumerate(prod["prices"]):
-                        if p_name.lower() == plan.lower():
-                            prod["prices"][idx] = (p_name, new_price)
-                            
-                            conn = sqlite3.connect(DB_FILE)
-                            cursor = conn.cursor()
-                            cursor.execute('UPDATE products SET prices = ? WHERE prod_key = ?', (json.dumps(prod["prices"]), prod_key))
-                            conn.commit()
-                            conn.close()
-
-                            await update.message.reply_text(f"✅ Price updated for <b>{prod_key}</b> ({p_name}) to <b>₹{new_price}</b>!", parse_mode="HTML")
-                            break
-            except Exception as e:
-                await update.message.reply_text(f"❌ Invalid format! Error: {e}")
-            context.user_data['admin_flow'] = None
-            return
-
-        elif flow == 'WAITING_MAINTAIN':
-            try:
-                parts = text.split(" ")
-                prod_key = parts[0]
-                status = parts[1].lower()
-                is_maint = (status == "on")
-                MAINTENANCE_MODE[prod_key] = is_maint
-                
-                conn = sqlite3.connect(DB_FILE)
-                cursor = conn.cursor()
-                cursor.execute('UPDATE products SET maintenance = ? WHERE prod_key = ?', (1 if is_maint else 0, prod_key))
-                conn.commit()
-                conn.close()
-
-                st_str = "ENABLED 🛠️" if is_maint else "DISABLED ✅"
-                await update.message.reply_text(f"Maintenance mode for <b>{prod_key}</b> is now <b>{st_str}</b>!", parse_mode="HTML")
-            except Exception as e:
-                await update.message.reply_text(f"❌ Invalid format! Error: {e}")
-            context.user_data['admin_flow'] = None
-            return
-
-        elif flow == 'WAITING_ADDLINK':
-            try:
-                parts = text.split(" ")
-                prod_key = parts[0]
-                link_url = parts[1]
-                PRODUCT_LINKS[prod_key] = link_url
-                
-                conn = sqlite3.connect(DB_FILE)
-                cursor = conn.cursor()
-                cursor.execute('UPDATE products SET download_link = ? WHERE prod_key = ?', (link_url, prod_key))
-                conn.commit()
-                conn.close()
-
-                await update.message.reply_text(f"✅ Download Link added for <b>{prod_key}</b>:\n{link_url}", parse_mode="HTML")
-            except Exception as e:
-                await update.message.reply_text(f"❌ Invalid format! Error: {e}")
-            context.user_data['admin_flow'] = None
-            return
-
-        elif flow == 'WAITING_BROADCAST':
-            conn = sqlite3.connect(DB_FILE)
-            cursor = conn.cursor()
-            cursor.execute('SELECT user_id FROM users')
-            users = [row[0] for row in cursor.fetchall()]
-            conn.close()
-
-            success = 0
-            await update.message.reply_text(f"📢 <b>Broadcast started for {len(users)} users...</b>", parse_mode="HTML")
-
-            for u_id in users:
-                try:
-                    if update.message.photo:
-                        photo_id = update.message.photo[-1].file_id
-                        caption = update.message.caption or ""
-                        await context.bot.send_photo(chat_id=u_id, photo=photo_id, caption=caption, parse_mode="HTML")
-                    elif update.message.video:
-                        video_id = update.message.video.file_id
-                        caption = update.message.caption or ""
-                        await context.bot.send_video(chat_id=u_id, video=video_id, caption=caption, parse_mode="HTML")
-                    elif update.message.voice:
-                        voice_id = update.message.voice.file_id
-                        caption = update.message.caption or ""
-                        await context.bot.send_voice(chat_id=u_id, voice=voice_id, caption=caption, parse_mode="HTML")
-                    else:
-                        await context.bot.send_message(chat_id=u_id, text=text, parse_mode="HTML")
-                    success += 1
-                except Exception:
-                    pass
-
-            await update.message.reply_text(f"✅ Broadcast completed! Sent to <b>{success}/{len(users)}</b> users.", parse_mode="HTML")
-            context.user_data['admin_flow'] = None
-            return
-
-        if context.user_data.get('admin_state') == 'AWAITING_KEY':
-            target_msg_id = context.user_data.get('active_admin_msg_id')
-            order_info = ACTIVE_ORDERS.get(target_msg_id)
-
-            if order_info and text:
-                cust_id = order_info['user_id']
-                prod_name = order_info['prod_name']
-                plan = order_info['plan']
-                time_now = get_ist_time()
-
-                db_add_order(cust_id, prod_name, plan, text, order_info['price'], "MANUAL", time_now)
-
-                cust_text = (
-                    "<b>═══════════════════════</b>\n"
-                    "<b>🎉 YOUR ORDER IS READY!</b>\n"
-                    "<b>═══════════════════════</b>\n\n"
-                    f"🔮 <b>Product:</b> {prod_name}\n"
-                    f"⏱️ <b>Duration:</b> {plan.replace('_', ' ')}\n\n"
-                    "🔑 <b>Key (Tap on Key to Copy):</b>\n"
-                    f"<code>{text}</code>\n"
-                    "<b>═══════════════════════</b>\n"
-                    "Thank you for shopping with us! 🛍️"
-                )
-                await context.bot.send_message(chat_id=cust_id, text=cust_text, parse_mode="HTML")
-                await start_command_for_user(context.bot, cust_id)
-                await update.message.reply_text("✅ Key sent to customer successfully!")
-                context.user_data['admin_state'] = None
-                context.user_data['active_admin_msg_id'] = None
-            return
-
-    if user.id != ADMIN_ID:
-        restart_btn = [[InlineKeyboardButton("🔄 Click /start to Restart", callback_data="main_menu")]]
-        await update.message.reply_text(
-            "❌ <b>Unknown Command or Message!</b>\n\nPlease restart bot by clicking 👉 /start",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(restart_btn)
-        )
+    restart_btn = [[InlineKeyboardButton("🔄 Click /start to Restart", callback_data="main_menu")]]
+    await update.message.reply_text(
+        "❌ <b>Unknown Command or Message!</b>\n\nPlease restart bot by clicking 👉 /start",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(restart_btn)
+    )
 
 async def start_command_for_user(bot, user_id):
     welcome_text = "<b>Tap any button below to continue shopping:</b>"
@@ -1235,8 +1030,6 @@ def start_bot():
     app.add_handler(CommandHandler("start", start_command))
     
     app.add_handler(CallbackQueryHandler(start_command, pattern="^main_menu$"))
-    app.add_handler(CallbackQueryHandler(admin_panel_home, pattern="^admin_panel_home$"))
-    app.add_handler(CallbackQueryHandler(admin_option_click, pattern="^admin_opt_"))
     
     app.add_handler(CallbackQueryHandler(profile_handler, pattern="^profile$"))
     app.add_handler(CallbackQueryHandler(my_orders_handler, pattern="^my_orders$"))
