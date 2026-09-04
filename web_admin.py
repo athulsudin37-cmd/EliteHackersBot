@@ -2,10 +2,10 @@ import os
 import json
 import sqlite3
 import re
-import asyncio
+import urllib.parse
 from threading import Thread
+import requests
 from flask import Flask, render_template_string, request, jsonify, redirect, session
-from telegram import Application
 
 DB_FILE = "bot_database.db"
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "athulsudin1234")
@@ -260,12 +260,16 @@ def api_stock():
 def api_bc():
     msg = request.json.get('message', '')
     def _send():
-        loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
         conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute('SELECT user_id FROM users'); users = [r[0] for r in c.fetchall()]; conn.close()
-        bot_app = Application.builder().token(BOT_TOKEN).build().bot
         for u in users:
-            try: loop.run_until_complete(bot_app.send_message(chat_id=u, text=msg, parse_mode="HTML"))
-            except Exception: pass
+            try:
+                requests.post(
+                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                    json={"chat_id": u, "text": msg, "parse_mode": "HTML"},
+                    timeout=5
+                )
+            except Exception:
+                pass
     Thread(target=_send).start()
     return jsonify({"message": "Broadcast started in background!"})
 
