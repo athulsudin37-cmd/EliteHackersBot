@@ -3,12 +3,8 @@ import asyncio
 import os
 import time
 import json
-import imaplib
-import email
 import re
-import random
 import sqlite3
-import urllib.parse
 from threading import Thread
 from datetime import datetime
 import pytz
@@ -36,9 +32,6 @@ logger = logging.getLogger(__name__)
 # ==========================================
 BOT_TOKEN = "8892856619:AAGZhdOv389_AaKvbcbInlJAiDMOwQxOeHc"
 ADMIN_ID = 7616127905
-RECEIVER_UPI_ID = "9544113089@fam"
-GMAIL_USER = os.environ.get("GMAIL_USER", "athulsudin37@gmail.com")
-GMAIL_APP_PASS = os.environ.get("GMAIL_APP_PASS", "")
 
 ACTIVE_ORDERS = {}       
 MAINTENANCE_MODE = {}    
@@ -59,19 +52,11 @@ STORE_CONFIG = {
         "____________________________________\n\n"
         "🏦 — FREE FIRE PANEL SERVICES — 🏦\n\n"
         "— 🏦 Direct deals with every supplier\n"
-        "— 💧 Instant delivery after payment\n"
+        "— 💧 Instant delivery\n"
         "— 🪙 Guaranteed discounted prices\n"
         "— 📞 24/7 admin support\n\n"
         "<b>Tap any button below to begin.</b>"
     )
-}
-
-# Dynamic UPI Config Defaults
-UPI_CONFIG = {
-    "paytm_token": "",
-    "paytm_qr": "",
-    "fampay_token": "",
-    "fampay_qr": ""
 }
 
 # ==========================================
@@ -184,19 +169,6 @@ def load_store_and_upi_settings():
             INSERT INTO store_settings (id, support_username, how_to_use_link, welcome_message)
             VALUES (1, ?, ?, ?)
         ''', (STORE_CONFIG["support_username"], STORE_CONFIG["how_to_use_link"], STORE_CONFIG["welcome_message"]))
-
-    cursor.execute('SELECT paytm_token, paytm_qr, fampay_token, fampay_qr FROM upi_settings WHERE id = 1')
-    row_upi = cursor.fetchone()
-    if row_upi:
-        UPI_CONFIG["paytm_token"] = row_upi[0] or ""
-        UPI_CONFIG["paytm_qr"] = row_upi[1] or ""
-        UPI_CONFIG["fampay_token"] = row_upi[2] or ""
-        UPI_CONFIG["fampay_qr"] = row_upi[3] or ""
-    else:
-        cursor.execute('''
-            INSERT INTO upi_settings (id, paytm_token, paytm_qr, fampay_token, fampay_qr)
-            VALUES (1, '', '', '', '')
-        ''')
 
     conn.commit()
     conn.close()
@@ -366,75 +338,8 @@ def get_ist_time():
     ist = pytz.timezone('Asia/Kolkata')
     return datetime.now(ist).strftime("%d %b %Y, %I:%M %p (IST)")
 
-def generate_dynamic_qr_url(upi_id, amount, note="FF Service"):
-    if UPI_CONFIG.get("fampay_qr"):
-        return UPI_CONFIG["fampay_qr"]
-    formatted_amt = f"{amount:.2f}"
-    upi_uri = f"upi://pay?pa={upi_id}&pn=ELITE_HACKERS&am={formatted_amt}&cu=INR&tn={urllib.parse.quote(note)}"
-    return f"https://api.qrserver.com/v1/create-qr-code/?size=500x500&data={urllib.parse.quote(upi_uri)}"
-
-def clean_html_text(text):
-    clean = re.sub(r'<[^>]+>', ' ', text)
-    return ' '.join(clean.split())
-
-async def check_email_once(expected_amount, utr=None):
-    def _imap_check():
-        try:
-            mail = imaplib.IMAP4_SSL("imap.gmail.com")
-            mail.login(GMAIL_USER, GMAIL_APP_PASS)
-            mail.select("inbox")
-
-            status, messages = mail.search(None, "ALL")
-            if status != "OK" or not messages[0]:
-                mail.logout()
-                return False, "Unable to access inbox or no emails found."
-
-            msg_ids = messages[0].split()[-40:]
-            expected_str = f"{float(expected_amount):.2f}"
-            
-            for msg_id in reversed(msg_ids):
-                res, msg_data = mail.fetch(msg_id, "(RFC822)")
-                for response_part in msg_data:
-                    if isinstance(response_part, tuple):
-                        msg = email.message_from_bytes(response_part[1])
-                        body = ""
-                        if msg.is_multipart():
-                            for part in msg.walk():
-                                c_type = part.get_content_type()
-                                if c_type in ["text/plain", "text/html"]:
-                                    part_str = part.get_payload(decode=True).decode('utf-8', errors='ignore')
-                                    body += " " + clean_html_text(part_str)
-                        else:
-                            part_str = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
-                            body = clean_html_text(part_str)
-
-                        if expected_str in body:
-                            mail.logout()
-                            return True, "SUCCESS"
-                        if utr and str(utr).strip() in body:
-                            mail.logout()
-                            return True, "SUCCESS"
-            mail.logout()
-            return False, "Payment statement not found in bank email notifications yet."
-        except Exception as e:
-            logger.error(f"Gmail Verification Error: {e}")
-            return False, f"Server error checking bank statement: {str(e)}"
-
-    return await asyncio.to_thread(_imap_check)
-
-async def verify_fampay_gmail_payment(expected_amount, utr=None, retries=2, delay=2):
-    last_reason = "Payment notification not received."
-    for attempt in range(retries):
-        status, reason = await check_email_once(expected_amount, utr)
-        if status:
-            return True, "SUCCESS"
-        last_reason = reason
-        if attempt < retries - 1:
-            await asyncio.sleep(delay)
-    return False, last_reason
-
 # ==========================================
-# 🌐 LAUNCH WEB ADMIN PANEL (NO PORT CLASH)
+# 🌐 LAUNCH WEB ADMIN PANEL
 # ==========================================
 def keep_alive():
     t = Thread(target=web_admin.run_web)
@@ -478,7 +383,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("ℹ️ How to Use", callback_data="how_to_use")]
         ]
 
-        # അഡ്മിനാണെങ്കിൽ വെബ് അഡ്മിൻ പാനൽ ബട്ടൺ കാണിക്കുന്നു
         if user.id == ADMIN_ID:
             render_url = os.environ.get("RENDER_EXTERNAL_URL", "http://localhost:8080")
             keyboard.append([InlineKeyboardButton("👑 Web Admin Panel", url=render_url)])
@@ -571,10 +475,8 @@ async def how_to_use_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "1️⃣ Tap <b>🛒 Shop Now</b> to view store.\n"
         "2️⃣ Choose your product category.\n"
         "3️⃣ Pick your desired product and duration.\n"
-        "4️⃣ Scan UPI QR Code provided.\n"
-        "5️⃣ Pay the exact dynamic total amount shown.\n"
-        "6️⃣ Tap <b>[ VERIFY PAYMENT ]</b> button after paying.\n"
-        "7️⃣ System auto-verifies payment & key is delivered instantly! 🚀"
+        "4️⃣ Confirm your order.\n"
+        "5️⃣ Key is delivered instantly! 🚀"
     )
     how_url = STORE_CONFIG.get("how_to_use_link", "https://t.me/chatelitehackers")
     keyboard = [
@@ -714,7 +616,7 @@ async def show_product_prices(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.message.edit_text("\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
 # ==========================================
-# 📋 ORDER SUMMARY & DYNAMIC QR PAYMENT
+# 📋 ORDER SUMMARY & DIRECT CONFIRMATION
 # ==========================================
 async def order_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -727,9 +629,6 @@ async def order_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     base_price = float(parts[-1])
     plan = "_".join(parts[2:-1])
 
-    random_paisa = round(random.randint(1, 99) / 100.0, 2)
-    final_price = round(base_price + random_paisa, 2)
-
     prod = get_product_by_key(prod_key)
     prod_name = prod['name'] if prod else prod_key
 
@@ -739,10 +638,9 @@ async def order_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "<b>═══════════════════════</b>\n\n"
         f"🔑 <b>Product:</b> {prod_name}\n"
         f"📄 <b>Plan:</b> {plan.replace('_', ' ')}\n"
-        f"💵 <b>Base Price:</b> ₹{base_price:.2f}\n"
+        f"💵 <b>Price:</b> ₹{base_price:.2f}\n"
         "_______________________\n\n"
-        f"💰 <b>Final Dynamic Total:</b> ₹{final_price:.2f}\n"
-        "<i>(Unique paisa added for instant automatic verification)</i>"
+        "<b>Tap below to confirm your order.</b>"
     )
 
     context.user_data['pending_order'] = {
@@ -750,96 +648,17 @@ async def order_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'prod_key': prod_key, 
         'prod_name': prod_name, 
         'plan': plan, 
-        'price': final_price
+        'price': base_price
     }
     keyboard = [
-        [InlineKeyboardButton("✅ Confirm & Pay", callback_data="confirm_pay")],
+        [InlineKeyboardButton("✅ Confirm Order", callback_data="confirm_order_btn")],
         [InlineKeyboardButton("🔙 Back to Plans", callback_data=f"prod_{prod_type}_{prod_key}")]
     ]
     await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# ==========================================
-# ⏳ DYNAMIC LIVE COUNTDOWN PAYMENT SYSTEM
-# ==========================================
-async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def confirm_order_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    order = context.user_data.get('pending_order')
-    if not order:
-        return
-
-    formatted_price = format_amt_simple(order['price'])
-    fampay_upi = UPI_CONFIG.get("fampay_token") or RECEIVER_UPI_ID
-    qr_image_url = generate_dynamic_qr_url(fampay_upi, order['price'], f"Order_{order['prod_key']}")
-
-    context.user_data['order_cancelled'] = False
-    context.user_data['payment_complete'] = False
-
-    def get_caption(seconds):
-        m, s = divmod(max(0, seconds), 60)
-        return (
-            "👇 <b>Merchant Name: ELITE HACKERS</b>\n\n"
-            f"💰 <b>Scan & pay exactly 🤑 ₹{formatted_price}</b>\n\n"
-            "<b>Tap verify below after completing payment.</b>\n\n"
-            f"<b>BUY | Session expires in {m:02d}:{s:02d} minutes.</b>"
-        )
-
-    keyboard = [
-        [InlineKeyboardButton("VERIFY PAYMENT", callback_data="verify_payment_btn")],
-        [InlineKeyboardButton("➡️ Cancel Order", callback_data="cancel_order")]
-    ]
-
-    try:
-        await query.message.delete()
-    except Exception:
-        pass
-
-    sent_msg = await context.bot.send_photo(
-        chat_id=query.message.chat_id,
-        photo=qr_image_url,
-        caption=get_caption(300),
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-    context.user_data['qr_msg_id'] = sent_msg.message_id
-
-    async def timer_loop():
-        msg_id = sent_msg.message_id
-        chat_id = sent_msg.chat_id
-        
-        for remaining in range(300, 0, -5):
-            await asyncio.sleep(5)
-            if context.user_data.get('order_cancelled') or context.user_data.get('payment_complete'):
-                break
-            try:
-                await context.bot.edit_message_caption(
-                    chat_id=chat_id,
-                    message_id=msg_id,
-                    caption=get_caption(remaining - 5),
-                    parse_mode="HTML",
-                    reply_markup=InlineKeyboardMarkup(keyboard)
-                )
-            except Exception:
-                break
-        
-        if not context.user_data.get('order_cancelled') and not context.user_data.get('payment_complete'):
-            try:
-                await context.bot.delete_message(chat_id=chat_id, message_id=msg_id)
-                start_btn = [[InlineKeyboardButton("🔄 Click /start to Restart", callback_data="main_menu")]]
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text="❌ <b>Order Session Expired!</b>\n\nPlease click the button below to restart the bot.",
-                    parse_mode="HTML",
-                    reply_markup=InlineKeyboardMarkup(start_btn)
-                )
-            except Exception:
-                pass
-
-    asyncio.create_task(timer_loop())
-
-async def verify_payment_btn_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer("Checking payment status...", show_alert=False)
     user = update.effective_user
     order = context.user_data.get('pending_order')
 
@@ -847,100 +666,67 @@ async def verify_payment_btn_handler(update: Update, context: ContextTypes.DEFAU
         await query.message.reply_text("⚠️ No active order found. Please start over.")
         return
 
-    verifying_msg = await query.message.reply_text("🔄 <b>Verifying your payment automatically...</b>", parse_mode="HTML")
+    prod_key = order['prod_key']
+    plan = order['plan']
+    
+    # കസ്റ്റമർക്ക് ഓട്ടോമാറ്റിക് ആയി കീ ലഭ്യമാക്കുന്നു
+    delivered_key = db_pop_auto_key(prod_key, plan)
 
-    is_verified, failure_reason = await verify_fampay_gmail_payment(order['price'])
+    if delivered_key:
+        time_now = get_ist_time()
+        db_add_order(user.id, order['prod_name'], plan, delivered_key, order['price'], "CONFIRMED", time_now)
 
-    if is_verified:
-        context.user_data['payment_complete'] = True
-        
-        try:
-            await verifying_msg.edit_text("✅ <b>Payment Received & Verified Successfully!</b>", parse_mode="HTML")
-            await asyncio.sleep(1)
-            await verifying_msg.delete()
-            qr_msg_id = context.user_data.get('qr_msg_id')
-            if qr_msg_id:
-                await context.bot.delete_message(chat_id=query.message.chat_id, message_id=qr_msg_id)
-        except Exception:
-            pass
-
-        prod_key = order['prod_key']
-        plan = order['plan']
-        
-        delivered_key = db_pop_auto_key(prod_key, plan)
-
-        if delivered_key:
-            time_now = get_ist_time()
-            db_add_order(user.id, order['prod_name'], plan, delivered_key, order['price'], "AUTO_VERIFIED", time_now)
-
-            cust_text = (
-                "<b>═══════════════════════</b>\n"
-                "<b>🎉 YOUR ORDER IS READY!</b>\n"
-                "<b>═══════════════════════</b>\n\n"
-                f"🔮 <b>Product:</b> {order['prod_name']}\n"
-                f"⏱️ <b>Duration:</b> {plan.replace('_', ' ')}\n\n"
-                "🔑 <b>Key (Tap on Key to Copy):</b>\n"
-                f"<code>{delivered_key}</code>\n"
-                "<b>═══════════════════════</b>\n"
-                "Thank you for shopping with us! 🛍️"
-            )
-            await context.bot.send_message(chat_id=user.id, text=cust_text, parse_mode="HTML")
-            await start_command_for_user(context.bot, user.id)
-
-            admin_text = (
-                "🟢 <b>PAYMENT AUTO-VERIFIED & DELIVERED</b>\n\n"
-                f"👤 <b>Customer:</b> {user.first_name} (@{user.username if user.username else 'N/A'})\n"
-                f"🆔 <b>User ID:</b> <code>{user.id}</code>\n"
-                f"🔮 <b>Product:</b> {order['prod_name']}\n"
-                f"⏱️ <b>Plan:</b> {plan.replace('_', ' ')}\n"
-                f"💰 <b>Amount:</b> ₹{order['price']:.2f}\n"
-                f"🔑 <b>Delivered Key:</b> <code>{delivered_key}</code>"
-            )
-            await context.bot.send_message(chat_id=ADMIN_ID, text=admin_text, parse_mode="HTML")
-        else:
-            admin_text = (
-                "🚨 <b>PAYMENT AUTO-VERIFIED (MANUAL APPROVAL REQUIRED - NO KEYS IN STOCK)</b> 🚨\n\n"
-                f"👤 <b>Customer:</b> {user.first_name} (@{user.username if user.username else 'N/A'})\n"
-                f"🆔 <b>User ID:</b> <code>{user.id}</code>\n"
-                f"🔮 <b>Product:</b> {order['prod_name']}\n"
-                f"⏱️ <b>Plan:</b> {plan.replace('_', ' ')}\n"
-                f"💰 <b>Amount:</b> ₹{order['price']:.2f}\n\n"
-                "⚠️ Tap Approve below to type and send key to customer."
-            )
-            admin_keyboard = [[InlineKeyboardButton("✅ Approve & Send Key", callback_data="admin_approve")]]
-            admin_msg = await context.bot.send_message(
-                chat_id=ADMIN_ID,
-                text=admin_text,
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup(admin_keyboard)
-            )
-            ACTIVE_ORDERS[admin_msg.message_id] = {
-                'user_id': user.id,
-                'prod_name': order['prod_name'],
-                'plan': plan,
-                'price': order['price']
-            }
-            await query.message.reply_text("✅ <b>Payment verified!</b> Your order is being processed by admin, please wait...", parse_mode="HTML")
-    else:
-        try:
-            await verifying_msg.delete()
-        except Exception:
-            pass
-        fail_text = (
-            "❌ <b>Payment Not Received Yet!</b>\n\n"
-            "Please complete payment on your UPI App and try tapping <b>VERIFY PAYMENT</b> again."
+        cust_text = (
+            "<b>═══════════════════════</b>\n"
+            "<b>🎉 YOUR ORDER IS READY!</b>\n"
+            "<b>═══════════════════════</b>\n\n"
+            f"🔮 <b>Product:</b> {order['prod_name']}\n"
+            f"⏱️ <b>Duration:</b> {plan.replace('_', ' ')}\n\n"
+            "🔑 <b>Key (Tap on Key to Copy):</b>\n"
+            f"<code>{delivered_key}</code>\n"
+            "<b>═══════════════════════</b>\n"
+            "Thank you for shopping with us! 🛍️"
         )
-        await query.message.reply_text(fail_text, parse_mode="HTML")
+        await query.message.edit_text(cust_text, parse_mode="HTML")
+        await start_command_for_user(context.bot, user.id)
 
-async def cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    context.user_data['order_cancelled'] = True
-    try:
-        await query.message.delete()
-    except Exception:
-        pass
-    await start_command(update, context)
+        admin_text = (
+            "🟢 <b>NEW ORDER DELIVERED</b>\n\n"
+            f"👤 <b>Customer:</b> {user.first_name} (@{user.username if user.username else 'N/A'})\n"
+            f"🆔 <b>User ID:</b> <code>{user.id}</code>\n"
+            f"🔮 <b>Product:</b> {order['prod_name']}\n"
+            f"⏱️ <b>Plan:</b> {plan.replace('_', ' ')}\n"
+            f"💰 <b>Amount:</b> ₹{order['price']:.2f}\n"
+            f"🔑 <b>Delivered Key:</b> <code>{delivered_key}</code>"
+        )
+        try:
+            await context.bot.send_message(chat_id=ADMIN_ID, text=admin_text, parse_mode="HTML")
+        except Exception:
+            pass
+    else:
+        admin_text = (
+            "🚨 <b>NEW ORDER (MANUAL APPROVAL REQUIRED - NO KEYS IN STOCK)</b> 🚨\n\n"
+            f"👤 <b>Customer:</b> {user.first_name} (@{user.username if user.username else 'N/A'})\n"
+            f"🆔 <b>User ID:</b> <code>{user.id}</code>\n"
+            f"🔮 <b>Product:</b> {order['prod_name']}\n"
+            f"⏱️ <b>Plan:</b> {plan.replace('_', ' ')}\n"
+            f"💰 <b>Amount:</b> ₹{order['price']:.2f}\n\n"
+            "⚠️ Tap Approve below to send key to customer."
+        )
+        admin_keyboard = [[InlineKeyboardButton("✅ Approve & Send Key", callback_data="admin_approve")]]
+        admin_msg = await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=admin_text,
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(admin_keyboard)
+        )
+        ACTIVE_ORDERS[admin_msg.message_id] = {
+            'user_id': user.id,
+            'prod_name': order['prod_name'],
+            'plan': plan,
+            'price': order['price']
+        }
+        await query.message.edit_text("✅ <b>Order Placed!</b> Your order is being processed by admin, please wait...", parse_mode="HTML")
 
 # ==========================================
 # 📩 MESSAGES & KEY DISPATCH HANDLERS
@@ -1040,10 +826,8 @@ def start_bot():
     app.add_handler(CallbackQueryHandler(pc_list, pattern="^pc_list$"))
     app.add_handler(CallbackQueryHandler(show_product_prices, pattern="^prod_"))
     app.add_handler(CallbackQueryHandler(order_summary, pattern="^plan_"))
-    app.add_handler(CallbackQueryHandler(confirm_pay, pattern="^confirm_pay$"))
-    app.add_handler(CallbackQueryHandler(verify_payment_btn_handler, pattern="^verify_payment_btn$"))
+    app.add_handler(CallbackQueryHandler(confirm_order_handler, pattern="^confirm_order_btn$"))
     app.add_handler(CallbackQueryHandler(handle_admin_action, pattern="^admin_approve$"))
-    app.add_handler(CallbackQueryHandler(cancel_order, pattern="^cancel_order$"))
 
     app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO | filters.VIDEO | filters.VOICE, handle_user_message))
 
@@ -1065,7 +849,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
 
 
