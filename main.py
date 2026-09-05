@@ -40,23 +40,11 @@ PRODUCT_LINKS = {}
 PRODUCT_ICONS = {}       
 KEYS_STOCK = {}          
 
-# Dynamic Store Config Defaults
+# Dynamic Store Config Defaults (ലളിതമായ വെൽക്കം മെസ്സേജ്)
 STORE_CONFIG = {
     "support_username": "@Athulsudin",
     "how_to_use_link": "https://t.me/chatelitehackers",
-    "welcome_message": (
-        "🚀 <b>Welcome to ELITE HACKERS</b> 🌟\n\n"
-        "🥃 Hey! Thanks for reaching out.\n"
-        "✉️ Please leave your message, and I'll respond as soon as I'm available.\n\n"
-        "⌛ Your patience is greatly appreciated.\n"
-        "____________________________________\n\n"
-        "🏦 — FREE FIRE PANEL SERVICES — 🏦\n\n"
-        "— 🏦 Direct deals with every supplier\n"
-        "— 💧 Instant delivery\n"
-        "— 🪙 Guaranteed discounted prices\n"
-        "— 📞 24/7 admin support\n\n"
-        "<b>Tap any button below to begin.</b>"
-    )
+    "welcome_message": "👋 <b>Welcome!</b>\n\nTap any button below to begin:"
 }
 
 # ==========================================
@@ -296,25 +284,9 @@ def load_products_from_db():
         MAINTENANCE_MODE[p_key] = bool(maint)
         STOCK_OUT_MODE[p_key] = bool(stockout)
 
+# സാമ്പിൾ ഡമ്മി പ്രൊഡക്റ്റുകൾ ഒഴിവാക്കി (Empty Seeding)
 def db_seed_initial_products():
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute('SELECT count(*) FROM products')
-    if cursor.fetchone()[0] == 0:
-        initial_data = [
-            ("bala_mod", "BALA MOD NON ROOT", "non_root", [("1_Day", 420)], "⚙️"),
-            ("rapid_core", "RAPID CORE INJECTOR", "root", [("1_Day", 90)], "⚡"),
-            ("migul_pro", "MIGUL PRO IOS", "ios", [("1_Day", 200)], "🍏"),
-            ("br_mod_pc", "BR MOD PC", "pc", [("1_Day", 150)], "💻"),
-            ("auto_like", "AUTO LIKE EVERY DAY", "likes", [("7_DAYS", 90)], "💎")
-        ]
-        for key, name, cat, prices, icon in initial_data:
-            cursor.execute('''
-                INSERT INTO products (prod_key, name, category, prices, download_link, icon, maintenance, stock_out)
-                VALUES (?, ?, ?, ?, ?, ?, 0, 0)
-            ''', (key, name, cat, json.dumps(prices), "", icon))
-        conn.commit()
-    conn.close()
+    pass
 
 init_db()
 load_store_and_upi_settings()
@@ -358,18 +330,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db_user = db_get_user(user.id)
         if not db_user:
             db_add_or_update_user(user.id, user.full_name, f"@{user.username}" if user.username else "N/A", get_ist_time())
-            if user.id != ADMIN_ID:
-                alert_text = (
-                    "🔔 <b>NEW USER STARTED THE BOT!</b>\n\n"
-                    f"👤 <b>Name:</b> {user.full_name}\n"
-                    f"🔗 <b>Username:</b> @{user.username if user.username else 'N/A'}\n"
-                    f"🆔 <b>User ID:</b> <code>{user.id}</code>\n"
-                    f"📅 <b>Date:</b> {get_ist_time()}"
-                )
-                try:
-                    await context.bot.send_message(chat_id=ADMIN_ID, text=alert_text, parse_mode="HTML")
-                except Exception as e:
-                    logger.error(f"Failed to alert admin: {e}")
 
         welcome_text = STORE_CONFIG["welcome_message"]
 
@@ -383,6 +343,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("ℹ️ How to Use", callback_data="how_to_use")]
         ]
 
+        # അഡ്മിനാണെങ്കിൽ മാത്രം വെബ് അഡ്മിൻ പാനൽ ബട്ടൺ കാണിക്കുന്നു
         if user.id == ADMIN_ID:
             render_url = os.environ.get("RENDER_EXTERNAL_URL", "http://localhost:8080")
             keyboard.append([InlineKeyboardButton("👑 Web Admin Panel", url=render_url)])
@@ -616,7 +577,7 @@ async def show_product_prices(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.message.edit_text("\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
 # ==========================================
-# 📋 ORDER SUMMARY & DIRECT CONFIRMATION
+# 📋 ORDER SUMMARY & DIRECT CONFIRMATION (NO ADMIN ALERT)
 # ==========================================
 async def order_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -669,7 +630,7 @@ async def confirm_order_handler(update: Update, context: ContextTypes.DEFAULT_TY
     prod_key = order['prod_key']
     plan = order['plan']
     
-    # കസ്റ്റമർക്ക് ഓട്ടോമാറ്റിക് ആയി കീ ലഭ്യമാക്കുന്നു
+    # കസ്റ്റമർക്ക് കീ ലഭ്യമാക്കുന്നു (അഡ്മിനിലേക്ക് മെസ്സേജ് പോകുന്നില്ല)
     delivered_key = db_pop_auto_key(prod_key, plan)
 
     if delivered_key:
@@ -689,82 +650,13 @@ async def confirm_order_handler(update: Update, context: ContextTypes.DEFAULT_TY
         )
         await query.message.edit_text(cust_text, parse_mode="HTML")
         await start_command_for_user(context.bot, user.id)
-
-        admin_text = (
-            "🟢 <b>NEW ORDER DELIVERED</b>\n\n"
-            f"👤 <b>Customer:</b> {user.first_name} (@{user.username if user.username else 'N/A'})\n"
-            f"🆔 <b>User ID:</b> <code>{user.id}</code>\n"
-            f"🔮 <b>Product:</b> {order['prod_name']}\n"
-            f"⏱️ <b>Plan:</b> {plan.replace('_', ' ')}\n"
-            f"💰 <b>Amount:</b> ₹{order['price']:.2f}\n"
-            f"🔑 <b>Delivered Key:</b> <code>{delivered_key}</code>"
-        )
-        try:
-            await context.bot.send_message(chat_id=ADMIN_ID, text=admin_text, parse_mode="HTML")
-        except Exception:
-            pass
     else:
-        admin_text = (
-            "🚨 <b>NEW ORDER (MANUAL APPROVAL REQUIRED - NO KEYS IN STOCK)</b> 🚨\n\n"
-            f"👤 <b>Customer:</b> {user.first_name} (@{user.username if user.username else 'N/A'})\n"
-            f"🆔 <b>User ID:</b> <code>{user.id}</code>\n"
-            f"🔮 <b>Product:</b> {order['prod_name']}\n"
-            f"⏱️ <b>Plan:</b> {plan.replace('_', ' ')}\n"
-            f"💰 <b>Amount:</b> ₹{order['price']:.2f}\n\n"
-            "⚠️ Tap Approve below to send key to customer."
-        )
-        admin_keyboard = [[InlineKeyboardButton("✅ Approve & Send Key", callback_data="admin_approve")]]
-        admin_msg = await context.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=admin_text,
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(admin_keyboard)
-        )
-        ACTIVE_ORDERS[admin_msg.message_id] = {
-            'user_id': user.id,
-            'prod_name': order['prod_name'],
-            'plan': plan,
-            'price': order['price']
-        }
-        await query.message.edit_text("✅ <b>Order Placed!</b> Your order is being processed by admin, please wait...", parse_mode="HTML")
+        await query.message.edit_text("⚠️ <b>Out of Stock!</b>\n\nCurrently no keys are available in stock. Please check back later or contact support.", parse_mode="HTML")
 
 # ==========================================
-# 📩 MESSAGES & KEY DISPATCH HANDLERS
+# 📩 MESSAGES & RESTART HANDLERS
 # ==========================================
 async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    text = update.message.text.strip() if update.message.text else ""
-
-    if user.id == ADMIN_ID and context.user_data.get('admin_state') == 'AWAITING_KEY':
-        target_msg_id = context.user_data.get('active_admin_msg_id')
-        order_info = ACTIVE_ORDERS.get(target_msg_id)
-
-        if order_info and text:
-            cust_id = order_info['user_id']
-            prod_name = order_info['prod_name']
-            plan = order_info['plan']
-            time_now = get_ist_time()
-
-            db_add_order(cust_id, prod_name, plan, text, order_info['price'], "MANUAL", time_now)
-
-            cust_text = (
-                "<b>═══════════════════════</b>\n"
-                "<b>🎉 YOUR ORDER IS READY!</b>\n"
-                "<b>═══════════════════════</b>\n\n"
-                f"🔮 <b>Product:</b> {prod_name}\n"
-                f"⏱️ <b>Duration:</b> {plan.replace('_', ' ')}\n\n"
-                "🔑 <b>Key (Tap on Key to Copy):</b>\n"
-                f"<code>{text}</code>\n"
-                "<b>═══════════════════════</b>\n"
-                "Thank you for shopping with us! 🛍️"
-            )
-            await context.bot.send_message(chat_id=cust_id, text=cust_text, parse_mode="HTML")
-            await start_command_for_user(context.bot, cust_id)
-            await update.message.reply_text("✅ Key sent to customer successfully!")
-            context.user_data['admin_state'] = None
-            context.user_data['active_admin_msg_id'] = None
-            return
-
     restart_btn = [[InlineKeyboardButton("🔄 Click /start to Restart", callback_data="main_menu")]]
     await update.message.reply_text(
         "❌ <b>Unknown Command or Message!</b>\n\nPlease restart bot by clicking 👉 /start",
@@ -782,26 +674,6 @@ async def start_command_for_user(bot, user_id):
         await bot.send_message(chat_id=user_id, text=welcome_text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
     except Exception:
         pass
-
-async def handle_admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    if query.from_user.id != ADMIN_ID:
-        return
-
-    admin_msg_id = query.message.message_id
-    order_info = ACTIVE_ORDERS.get(admin_msg_id)
-    if not order_info:
-        return
-
-    cust_id = order_info['user_id']
-
-    if query.data == "admin_approve":
-        await context.bot.send_message(chat_id=cust_id, text="⚙️ <b>Order Approved!</b> Generating key...", parse_mode="HTML")
-        context.user_data['admin_state'] = 'AWAITING_KEY'
-        context.user_data['active_admin_msg_id'] = admin_msg_id
-        await query.message.reply_text(f"🔑 <b>Order Approved!</b> Send the <b>KEY</b> for {order_info['prod_name']} ({order_info['plan']}):", parse_mode="HTML")
 
 # ==========================================
 # 🤖 BOT SETUP & RUNNER
@@ -827,7 +699,6 @@ def start_bot():
     app.add_handler(CallbackQueryHandler(show_product_prices, pattern="^prod_"))
     app.add_handler(CallbackQueryHandler(order_summary, pattern="^plan_"))
     app.add_handler(CallbackQueryHandler(confirm_order_handler, pattern="^confirm_order_btn$"))
-    app.add_handler(CallbackQueryHandler(handle_admin_action, pattern="^admin_approve$"))
 
     app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO | filters.VIDEO | filters.VOICE, handle_user_message))
 
