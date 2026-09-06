@@ -78,6 +78,21 @@ def init_admin_database():
             status TEXT DEFAULT 'Pending'
         )
     ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS gateway_config (
+            id INTEGER PRIMARY KEY DEFAULT 1,
+            active_gateway TEXT DEFAULT 'fampay',
+            fampay_api_key TEXT DEFAULT '',
+            fampay_upi_id TEXT DEFAULT '9544113089@fam',
+            fampay_base_url TEXT DEFAULT 'https://xyzcheats.com/gateway',
+            paytm_base_url TEXT DEFAULT 'https://xyzcheats.com',
+            paytm_upi_id TEXT DEFAULT '',
+            paytm_merchant_id TEXT DEFAULT ''
+        )
+    ''')
+    c.execute('SELECT id FROM gateway_config WHERE id = 1')
+    if not c.fetchone():
+        c.execute('INSERT INTO gateway_config VALUES (1, "fampay", "", "9544113089@fam", "https://xyzcheats.com/gateway", "https://xyzcheats.com", "", "")')
     conn.commit()
     conn.close()
 
@@ -117,7 +132,7 @@ def refresh_bot_meta():
 Thread(target=refresh_bot_meta, daemon=True).start()
 
 # ==========================================
-# 🎨 MASTER ADMIN PANEL HTML TEMPLATE
+# 🎨 COMPLETE CYBER ADMIN DASHBOARD HTML
 # ==========================================
 ADMIN_HTML = """
 <!DOCTYPE html>
@@ -129,28 +144,12 @@ ADMIN_HTML = """
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <style>
-        :root {
-            --bg-deep: #080318;
-            --card-glass: rgba(22, 13, 44, 0.92);
-            --neon-border: rgba(147, 51, 234, 0.35);
-            --accent-purple: #8b5cf6;
-            --accent-cyan: #38bdf8;
-            --sidebar-w: 270px;
-        }
-        body {
-            background: radial-gradient(circle at top center, #1b0c3f 0%, #0c051d 60%, #05020c 100%);
-            background-attachment: fixed; color: #f8fafc; font-family: -apple-system, system-ui, sans-serif;
-            min-height: 100vh; margin: 0; overflow-x: hidden;
-        }
-        body::before {
-            content: ''; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-            background-image: linear-gradient(rgba(147, 51, 234, 0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(147, 51, 234, 0.05) 1px, transparent 1px);
-            background-size: 36px 36px; pointer-events: none; z-index: 0;
-        }
-
-        /* 🔐 LOGIN SCREEN */
-        .login-box { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; position: relative; z-index: 10; }
-        .login-card { background: var(--card-glass); backdrop-filter: blur(25px); border: 1px solid var(--neon-border); border-radius: 28px; padding: 42px 32px; width: 100%; max-width: 400px; text-align: center; box-shadow: 0 0 50px rgba(139, 92, 246, 0.25); }
+        :root { --bg: #080318; --card: rgba(22, 13, 44, 0.94); --neon: rgba(147, 51, 234, 0.35); --sidebar: 270px; }
+        body { background: radial-gradient(circle at top center, #1b0c3f 0%, #0c051d 60%, #05020c 100%); color: #f8fafc; font-family: -apple-system, system-ui, sans-serif; min-height: 100vh; margin: 0; overflow-x: hidden; }
+        body::before { content: ''; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-image: linear-gradient(rgba(147, 51, 234, 0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(147, 51, 234, 0.05) 1px, transparent 1px); background-size: 36px 36px; pointer-events: none; }
+        
+        .login-box { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
+        .login-card { background: var(--card); backdrop-filter: blur(25px); border: 1px solid var(--neon); border-radius: 28px; padding: 42px 32px; width: 100%; max-width: 400px; text-align: center; box-shadow: 0 0 50px rgba(139, 92, 246, 0.25); }
         .avatar-ring { width: 88px; height: 88px; margin: 0 auto 20px; border-radius: 50%; padding: 3px; background: linear-gradient(135deg, #06b6d4, #a855f7, #f59e0b); display: flex; align-items: center; justify-content: center; }
         .avatar-inner { width: 100%; height: 100%; background: #0d0622; border-radius: 50%; display: flex; align-items: center; justify-content: center; overflow: hidden; }
         .title-grad { font-size: 1.65rem; font-weight: 800; background: linear-gradient(90deg, #a78bfa, #38bdf8, #facc15); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
@@ -159,26 +158,27 @@ ADMIN_HTML = """
         .eye-btn { position: absolute; right: 15px; top: 50%; transform: translateY(-50%); color: #a78bfa; cursor: pointer; }
         .btn-unlock { width: 100%; padding: 13px; border: none; border-radius: 14px; background: linear-gradient(135deg, #7c3aed, #6366f1); color: white; font-weight: 700; cursor: pointer; }
 
-        /* 💻 DASHBOARD LAYOUT */
-        .sidebar { position: fixed; top: 0; left: -270px; width: var(--sidebar-w); height: 100vh; background: #0f0724; border-right: 1px solid var(--neon-border); padding-top: 20px; z-index: 1050; transition: 0.3s; overflow-y: auto; }
+        .sidebar { position: fixed; top: 0; left: -270px; width: var(--sidebar); height: 100vh; background: #0f0724; border-right: 1px solid var(--neon); padding-top: 20px; z-index: 1050; transition: 0.3s; overflow-y: auto; }
         .sidebar.active { left: 0; }
         .sidebar-link { padding: 12px 20px; color: #94a3b8; display: flex; align-items: center; gap: 12px; cursor: pointer; text-decoration: none; border-left: 4px solid transparent; }
         .sidebar-link:hover, .sidebar-link.active { background: #1a0b3b; color: #38bdf8; border-left-color: #38bdf8; }
         .main-content { padding: 25px; transition: 0.3s; position: relative; z-index: 10; }
-        @media (min-width: 769px) { .sidebar { left: 0; } .main-content { margin-left: var(--sidebar-w); } }
+        @media (min-width: 769px) { .sidebar { left: 0; } .main-content { margin-left: var(--sidebar); } }
         
-        .stat-card { background: var(--card-glass); border: 1px solid var(--neon-border); border-radius: 16px; padding: 20px; border-left: 4px solid #8b5cf6; }
-        .card { background: var(--card-glass); border: 1px solid var(--neon-border); border-radius: 18px; margin-bottom: 20px; }
+        .stat-card { background: var(--card); border: 1px solid var(--neon); border-radius: 16px; padding: 20px; border-left: 4px solid #8b5cf6; }
+        .card { background: var(--card); border: 1px solid var(--neon); border-radius: 18px; margin-bottom: 20px; }
         .btn-custom { background: linear-gradient(135deg, #7c3aed, #6366f1); color: white; border: none; border-radius: 10px; padding: 10px 18px; font-weight: 600; }
-        .form-control, .form-select { background-color: #0d0622; border: 1px solid var(--neon-border); color: white; border-radius: 10px; padding: 10px; }
+        .form-control, .form-select { background-color: #0d0622; border: 1px solid var(--neon); color: white; border-radius: 10px; padding: 10px; }
         .form-control:focus { background-color: #0d0622; color: white; border-color: #a855f7; box-shadow: none; }
-        .badge-pill { border-radius: 20px; padding: 4px 12px; font-size: 0.78rem; font-weight: 600; }
+        .gold-box { border: 1px solid rgba(250, 204, 21, 0.4); border-radius: 16px; padding: 20px; background: rgba(22, 13, 44, 0.95); margin-bottom: 20px; }
+        .cyan-box { border: 1px solid rgba(56, 189, 248, 0.4); border-radius: 16px; padding: 20px; background: rgba(22, 13, 44, 0.95); margin-bottom: 20px; }
+        .modal-bg { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0, 0, 0, 0.75); backdrop-filter: blur(10px); z-index: 2000; display: none; align-items: center; justify-content: center; padding: 20px; }
+        .modal-card { background: #13072e; border: 1px solid #8b5cf6; border-radius: 24px; padding: 30px; width: 100%; max-width: 600px; max-height: 90vh; overflow-y: auto; box-shadow: 0 0 50px rgba(139, 92, 246, 0.4); }
     </style>
 </head>
 <body>
 
     {% if not session.get('admin_logged') %}
-    <!-- 🔐 LOGIN SCREEN -->
     <div class="login-box">
         <div class="login-card">
             <div class="avatar-ring">
@@ -228,10 +228,49 @@ ADMIN_HTML = """
             <a class="sidebar-link" onclick="showTab('coupons', this)"><i class="fas fa-ticket"></i> Coupon Manager</a>
             <a class="sidebar-link" onclick="showTab('upi', this)"><i class="fas fa-credit-card"></i> UPI Payment Setup</a>
             <a class="sidebar-link" onclick="showTab('topups', this)"><i class="fas fa-wallet"></i> Top-ups Queue</a>
-            <a class="sidebar-link" onclick="showTab('links', this)"><i class="fas fa-link"></i> Product Links</a>
             <a class="sidebar-link" onclick="showTab('security', this)"><i class="fas fa-shield-halved"></i> Security & Sessions</a>
             <a class="sidebar-link" onclick="showTab('store', this)"><i class="fas fa-sliders"></i> Store Settings</a>
             <a href="/logout" class="sidebar-link text-danger mt-4"><i class="fas fa-lock"></i> Logout</a>
+        </div>
+    </div>
+
+    <!-- 🌟 1️⃣ USER PROFILE INSPECTOR MODAL (കിണ്ണം ഫീച്ചർ!) -->
+    <div class="modal-bg" id="userModal">
+        <div class="modal-card">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h5 class="fw-bold m-0 text-info"><i class="fas fa-user-shield me-2"></i>Customer Profile Inspector</h5>
+                <button class="btn-close btn-close-white" onclick="document.getElementById('userModal').style.display='none'"></button>
+            </div>
+            <div class="card p-3 mb-3" style="background:#1a0c3d;">
+                <div class="row g-2 small">
+                    <div class="col-6"><strong>Name:</strong> <span id="m_name"></span></div>
+                    <div class="col-6"><strong>Telegram ID:</strong> <code id="m_id"></code></div>
+                    <div class="col-6"><strong>Username:</strong> <span id="m_user"></span></div>
+                    <div class="col-6"><strong>Account Role:</strong> <span id="m_role" class="badge bg-warning text-dark"></span></div>
+                    <div class="col-12"><strong>Joined:</strong> <span id="m_joined"></span></div>
+                </div>
+            </div>
+            <div class="card p-3 mb-3" style="background:#1a0c3d;">
+                <h6 class="text-success fw-bold">💰 Financials & Balance</h6>
+                <div class="row g-2 mb-3">
+                    <div class="col-6">Current Balance: <h4 class="text-warning m-0">₹<span id="m_bal"></span></h4></div>
+                    <div class="col-6">Lifetime Spent: <h5 class="text-muted m-0">₹<span id="m_spent"></span></h5></div>
+                </div>
+                <div class="d-flex gap-2 mb-2">
+                    <button class="btn btn-sm btn-outline-success" onclick="quickAddBal(50)">+₹50</button>
+                    <button class="btn btn-sm btn-outline-success" onclick="quickAddBal(100)">+₹100</button>
+                    <button class="btn btn-sm btn-outline-success" onclick="quickAddBal(500)">+₹500</button>
+                    <button class="btn btn-sm btn-outline-danger" onclick="quickAddBal(-50)">-₹50</button>
+                </div>
+                <div class="d-flex gap-2">
+                    <input type="number" id="m_custom_bal" class="form-control form-control-sm" placeholder="Custom amount (+150 or -50)">
+                    <button class="btn btn-sm btn-custom" onclick="applyCustomBal()">Apply</button>
+                </div>
+            </div>
+            <div class="d-flex justify-content-between">
+                <a id="m_dm_link" href="#" target="_blank" class="btn btn-primary btn-sm"><i class="fab fa-telegram me-1"></i> Send DM on Telegram</a>
+                <button class="btn btn-secondary btn-sm" onclick="document.getElementById('userModal').style.display='none'">Close</button>
+            </div>
         </div>
     </div>
 
@@ -244,7 +283,7 @@ ADMIN_HTML = """
             <a href="/logout" class="btn btn-outline-danger btn-sm"><i class="fas fa-arrow-right-from-bracket"></i></a>
         </div>
 
-        <!-- 1️⃣ 📊 DASHBOARD -->
+        <!-- 📊 DASHBOARD -->
         <div class="tab-pane-content" id="tab-dashboard">
             <div class="card p-4 mb-4" style="background:linear-gradient(135deg,#1f1042,#110729);">
                 <small class="text-info fw-bold">⚡ BOT CONTROL CENTER</small>
@@ -261,7 +300,106 @@ ADMIN_HTML = """
             </div>
         </div>
 
-        <!-- 2️⃣ 📦 MANAGE PRODUCTS -->
+        <!-- 👥 MEMBERS & WALLETS (INSPECTOR LINKED) -->
+        <div class="tab-pane-content" id="tab-members" style="display:none;">
+            <div class="card p-4">
+                <h5>👥 Members & Wallets Management</h5>
+                <p class="text-muted small">Click <strong>Inspect Profile</strong> to view customer dossier, adjust balances, and send direct Telegram DMs.</p>
+                <input type="text" id="memSearch" class="form-control mt-2 mb-3" placeholder="🔍 Search by name, @username, or Telegram ID..." onkeyup="filterTable('memSearch', 'memTable')">
+                <div class="table-responsive">
+                    <table class="table table-dark align-middle" id="memTable">
+                        <thead><tr><th>Telegram ID</th><th>Name</th><th>Role</th><th>Balance</th><th>Orders</th><th>Action</th></tr></thead>
+                        <tbody>
+                            {% for u in users_list %}
+                            <tr>
+                                <td><code>{{ u[0] }}</code></td>
+                                <td>{{ u[1] }} <small class="text-muted">({{ u[2] }})</small></td>
+                                <td><span class="badge {{ 'bg-warning text-dark' if u[9]=='Reseller' else 'bg-secondary' }}">{{ u[9] }}</span></td>
+                                <td><strong>₹{{ u[5] }}</strong></td>
+                                <td>{{ u[4] }}</td>
+                                <td>
+                                    <button class="btn btn-sm btn-custom" onclick='openInspector({{ u[0] }}, {{ u[1]|tojson }}, {{ u[2]|tojson }}, {{ u[3]|tojson }}, {{ u[5] }}, {{ u[6] }}, {{ u[9]|tojson }})'><i class="fas fa-eye me-1"></i> Inspect Profile</button>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- 💳 2️⃣ UPI PAYMENT SETUP (FAMPAY ANTI-FRAUD & PAYTM GATEWAY UI) -->
+        <div class="tab-pane-content" id="tab-upi" style="display:none;">
+            <!-- Active Gateway Card -->
+            <div class="card p-4 mb-4">
+                <h5 class="text-success fw-bold mb-3"><i class="fas fa-toggle-on me-2"></i>Active Payment Gateway</h5>
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="small text-muted">Select Primary Gateway</label>
+                        <select id="gw_select" class="form-select">
+                            <option value="fampay" {% if gw_cfg.active_gateway == 'fampay' %}selected{% endif %}>FamPay Anti-Fraud Gateway</option>
+                            <option value="paytm" {% if gw_cfg.active_gateway == 'paytm' %}selected{% endif %}>Paytm Gateway</option>
+                        </select>
+                    </div>
+                    <div class="col-md-6 d-flex align-items-end">
+                        <button class="btn btn-custom w-100" onclick="saveGatewaySelection()"><i class="fas fa-save me-1"></i> Set Active Gateway</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- FamPay Anti-Fraud Card -->
+            <div class="cyan-box">
+                <h5 class="text-info fw-bold mb-3"><i class="fas fa-shield-halved me-2"></i>UPI Auto-Payment (FamPay Anti-Fraud Gateway)</h5>
+                <a href="https://xyzcheats.com/gateway" target="_blank" class="btn btn-outline-warning w-100 mb-3 fw-bold"><i class="fas fa-link me-2"></i> Go to FamPay Setup / Get API Key ↗️</a>
+                <div class="row g-3">
+                    <div class="col-md-12">
+                        <label class="small text-muted">API Key</label>
+                        <div class="pwd-field m-0">
+                            <input type="password" id="fp_api_key" class="form-control" value="{{ gw_cfg.fampay_api_key }}" placeholder="FP_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx">
+                            <span class="eye-btn" onclick="let x=document.getElementById('fp_api_key'); x.type = x.type==='password'?'text':'password';"><i class="fa-regular fa-eye"></i></span>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="small text-muted">FamPay UPI ID Endpoint</label>
+                        <input type="text" id="fp_upi_id" class="form-control" value="{{ gw_cfg.fampay_upi_id }}" placeholder="9544113089@fam">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="small text-muted">API Base URL (locked — cannot be changed)</label>
+                        <input type="text" class="form-control text-muted" value="{{ gw_cfg.fampay_base_url }}" readonly>
+                    </div>
+                    <div class="col-12">
+                        <div class="small text-warning"><i class="fas fa-lock me-1"></i> <strong>Bank Alert Cross-Match & Strict UTR Double Verification Active.</strong></div>
+                    </div>
+                    <div class="col-12">
+                        <button class="btn btn-custom w-100" onclick="saveFamPayGateway()"><i class="fas fa-save me-1"></i> Save FamPay Settings</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Paytm Gateway Card -->
+            <div class="gold-box">
+                <h5 class="text-warning fw-bold mb-3"><i class="fas fa-wallet me-2"></i>UPI Auto-Payment (Paytm Gateway)</h5>
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="small text-muted">API Base URL</label>
+                        <input type="text" id="pt_url" class="form-control" value="{{ gw_cfg.paytm_base_url }}" placeholder="https://xyzcheats.com">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="small text-muted">Paytm UPI ID</label>
+                        <input type="text" id="pt_upi" class="form-control" value="{{ gw_cfg.paytm_upi_id }}" placeholder="yourname@upi">
+                    </div>
+                    <div class="col-12">
+                        <label class="small text-muted">Merchant / API Key</label>
+                        <input type="text" id="pt_merchant" class="form-control" value="{{ gw_cfg.paytm_merchant_id }}" placeholder="Merchant ID">
+                    </div>
+                    <div class="col-12">
+                        <button class="btn btn-custom w-100" onclick="savePaytmGateway()"><i class="fas fa-save me-1"></i> Save Paytm Settings</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 📦 MANAGE PRODUCTS -->
         <div class="tab-pane-content" id="tab-products" style="display:none;">
             <div class="card p-4">
                 <div class="d-flex justify-content-between align-items-center mb-3">
@@ -269,23 +407,23 @@ ADMIN_HTML = """
                     <button class="btn btn-custom btn-sm" onclick="document.getElementById('addProdBox').style.display='block'"><i class="fas fa-plus me-1"></i> Add Product</button>
                 </div>
                 <div id="addProdBox" class="p-3 mb-4 card" style="display:none;background:#13082e;">
-                    <h6>➕ Add New Product Specification</h6>
+                    <h6>➕ Add Product Specification</h6>
                     <div class="row g-3 mt-1">
-                        <div class="col-md-4"><label class="small text-muted">Product Name</label><input type="text" id="ap_name" class="form-control" placeholder="BALA MOD NON ROOT"></div>
+                        <div class="col-md-4"><label class="small">Product Name</label><input type="text" id="ap_name" class="form-control" placeholder="BALA MOD NON ROOT"></div>
                         <div class="col-md-4">
-                            <label class="small text-muted">Category</label>
+                            <label class="small">Category</label>
                             <select id="ap_cat" class="form-select">
                                 <option value="non_root">Non-Root Mobile</option><option value="root">Root Mobile</option>
                                 <option value="ios">iOS Panels</option><option value="pc">PC Panels</option><option value="likes">8 Level ID / Likes</option>
                             </select>
                         </div>
-                        <div class="col-md-4"><label class="small text-muted">Icon / Sticker</label><input type="text" id="ap_icon" class="form-control" placeholder="⚡"></div>
-                        <div class="col-md-4"><label class="small text-muted">Plan Name</label><input type="text" id="ap_plan" class="form-control" placeholder="10_Days"></div>
-                        <div class="col-md-4"><label class="small text-muted">Regular Price (₹)</label><input type="number" id="ap_price" class="form-control" placeholder="400"></div>
-                        <div class="col-md-4"><label class="small text-muted">Reseller Price (₹)</label><input type="number" id="ap_rprice" class="form-control" placeholder="250"></div>
-                        <div class="col-12"><label class="small text-muted">Download / Demo Preview Link</label><input type="text" id="ap_link" class="form-control" placeholder="https://t.me/..."></div>
-                        <div class="col-12"><label class="small text-muted">Bulk Serial Keys (One per line)</label><textarea id="ap_keys" class="form-control" rows="3" placeholder="KEY-001&#10;KEY-002"></textarea></div>
-                        <div class="col-12"><button class="btn btn-custom w-100" onclick="saveProduct()"><i class="fas fa-floppy-disk me-2"></i> Save Product to Store</button></div>
+                        <div class="col-md-4"><label class="small">Icon / Emoji</label><input type="text" id="ap_icon" class="form-control" placeholder="⚡"></div>
+                        <div class="col-md-4"><label class="small">Plan Name</label><input type="text" id="ap_plan" class="form-control" placeholder="10_Days"></div>
+                        <div class="col-md-4"><label class="small">Regular Price (₹)</label><input type="number" id="ap_price" class="form-control" placeholder="400"></div>
+                        <div class="col-md-4"><label class="small">Reseller Price (₹)</label><input type="number" id="ap_rprice" class="form-control" placeholder="250"></div>
+                        <div class="col-12"><label class="small">Download Link</label><input type="text" id="ap_link" class="form-control"></div>
+                        <div class="col-12"><label class="small">Bulk Keys (One per line)</label><textarea id="ap_keys" class="form-control" rows="3" placeholder="KEY1&#10;KEY2"></textarea></div>
+                        <div class="col-12"><button class="btn btn-custom w-100" onclick="saveProduct()">Save Product</button></div>
                     </div>
                 </div>
                 <div class="row g-3">
@@ -308,38 +446,11 @@ ADMIN_HTML = """
             </div>
         </div>
 
-        <!-- 3️⃣ 🗝️ MANAGE KEYS (ANALYTICS & SEARCH) -->
-        <div class="tab-pane-content" id="tab-keys" style="display:none;">
-            <div class="card p-4">
-                <h5>🗝️ Manage Keys & Sales Analytics</h5>
-                <input type="text" id="keySearch" class="form-control mt-3 mb-3" placeholder="🔍 Search by Telegram ID, User, Product, Key..." onkeyup="filterTable('keySearch', 'keysTable')">
-                <div class="table-responsive">
-                    <table class="table table-dark align-middle" id="keysTable">
-                        <thead><tr><th>User ID</th><th>Product</th><th>Plan</th><th>Paid</th><th>Delivered Key</th><th>Date (IST)</th></tr></thead>
-                        <tbody>
-                            {% for o in all_orders %}
-                            <tr>
-                                <td><code>{{ o[1] }}</code></td>
-                                <td>{{ o[2] }}</td>
-                                <td>{{ o[3] }}</td>
-                                <td>₹{{ o[5] }}</td>
-                                <td><code>{{ o[4] }}</code></td>
-                                <td>{{ o[7] }}</td>
-                            </tr>
-                            {% else %}
-                            <tr><td colspan="6" class="text-center text-muted">No key delivery history logged yet.</td></tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-
-        <!-- 4️⃣ ⏳ PENDING KEYS (MANUAL DISPATCH QUEUE) -->
+        <!-- ⏳ PENDING KEYS QUEUE -->
         <div class="tab-pane-content" id="tab-pending_keys" style="display:none;">
             <div class="card p-4">
                 <h5>⏳ Pending Keys Queue (Out-of-Stock Dispatch)</h5>
-                <p class="text-muted small">Orders waiting for stock. Enter fresh key and click send to dispatch directly to customer Telegram!</p>
+                <p class="text-muted small">Orders waiting for stock. Enter key and click send to dispatch directly to customer Telegram!</p>
                 <div class="table-responsive">
                     <table class="table table-dark">
                         <thead><tr><th>User ID</th><th>Product</th><th>Plan</th><th>Paid</th><th>Action</th></tr></thead>
@@ -352,8 +463,8 @@ ADMIN_HTML = """
                                 <td>₹{{ pk[5] }}</td>
                                 <td>
                                     <div class="d-flex gap-2">
-                                        <input type="text" id="key_disp_{{ pk[0] }}" class="form-control form-control-sm" placeholder="Paste Fresh Key">
-                                        <button class="btn btn-success btn-sm" onclick="dispatchKey({{ pk[0] }}, '{{ pk[1] }}')">Dispatch</button>
+                                        <input type="text" id="key_disp_{{ pk[0] }}" class="form-control form-control-sm" placeholder="Paste Key">
+                                        <button class="btn btn-success btn-sm" onclick="dispatchKey({{ pk[0] }}, '{{ pk[1] }}')">Send</button>
                                     </div>
                                 </td>
                             </tr>
@@ -366,84 +477,7 @@ ADMIN_HTML = """
             </div>
         </div>
 
-        <!-- 5️⃣ 🆔 ID STOCK -->
-        <div class="tab-pane-content" id="tab-id_stock" style="display:none;">
-            <div class="card p-4">
-                <h5>🆔 ID Stock (Accounts Management)</h5>
-                <div class="row g-3 mt-1">
-                    <div class="col-md-4"><label class="small text-muted">Account Type</label>
-                        <select id="id_cat" class="form-select">
-                            <option value="8 Level ID">8 Level ID</option>
-                            <option value="Facebook ID">Facebook ID</option>
-                            <option value="Gmail ID">Gmail ID</option>
-                        </select>
-                    </div>
-                    <div class="col-md-4"><label class="small text-muted">Price (₹)</label><input type="number" id="id_price" class="form-control" placeholder="45"></div>
-                    <div class="col-md-4"><label class="small text-muted">Credentials (Username/Number:Pass)</label><input type="text" id="id_cred" class="form-control" placeholder="9847123456:Pass@123"></div>
-                    <div class="col-12"><button class="btn btn-custom" onclick="saveIdStock()"><i class="fas fa-plus me-1"></i> Add Account to Stock</button></div>
-                </div>
-            </div>
-        </div>
-
-        <!-- 6️⃣ 👥 MEMBERS & WALLETS (INSPECTOR) -->
-        <div class="tab-pane-content" id="tab-members" style="display:none;">
-            <div class="card p-4">
-                <h5>👥 Members & Wallets Management</h5>
-                <input type="text" id="memSearch" class="form-control mt-2 mb-3" placeholder="🔍 Search by name, @username, or Telegram ID..." onkeyup="filterTable('memSearch', 'memTable')">
-                <div class="table-responsive">
-                    <table class="table table-dark align-middle" id="memTable">
-                        <thead><tr><th>Telegram ID</th><th>Name</th><th>Role</th><th>Balance</th><th>Orders</th><th>Adjust Balance</th></tr></thead>
-                        <tbody>
-                            {% for u in users_list %}
-                            <tr>
-                                <td><code>{{ u[0] }}</code></td>
-                                <td>{{ u[1] }}</td>
-                                <td><span class="badge {{ 'bg-warning text-dark' if u[9]=='Reseller' else 'bg-secondary' }}">{{ u[9] }}</span></td>
-                                <td><strong>₹{{ u[5] }}</strong></td>
-                                <td>{{ u[4] }}</td>
-                                <td>
-                                    <div class="d-flex gap-1">
-                                        <input type="number" id="bal_adj_{{ u[0] }}" class="form-control form-control-sm" style="width:85px;" placeholder="+50/-20">
-                                        <button class="btn btn-sm btn-custom" onclick="adjustBalance({{ u[0] }})">Apply</button>
-                                    </div>
-                                </td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-
-        <!-- 7️⃣ 🤝 RESELLERS -->
-        <div class="tab-pane-content" id="tab-resellers" style="display:none;">
-            <div class="card p-4">
-                <h5>🤝 Resellers Management</h5>
-                <div class="table-responsive mt-3">
-                    <table class="table table-dark align-middle">
-                        <thead><tr><th>Telegram ID</th><th>Name</th><th>Wallet</th><th>Promote / Demote</th></tr></thead>
-                        <tbody>
-                            {% for u in users_list %}
-                            <tr>
-                                <td><code>{{ u[0] }}</code></td>
-                                <td>{{ u[1] }}</td>
-                                <td>₹{{ u[5] }}</td>
-                                <td>
-                                    {% if u[9] == 'Reseller' %}
-                                        <button class="btn btn-sm btn-outline-warning" onclick="toggleResellerRole({{ u[0] }}, 'Regular')">Revoke Reseller</button>
-                                    {% else %}
-                                        <button class="btn btn-sm btn-custom" onclick="toggleResellerRole({{ u[0] }}, 'Reseller')"><i class="fas fa-handshake me-1"></i> Make Reseller</button>
-                                    {% endif %}
-                                </td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-
-        <!-- 8️⃣ 📢 BROADCAST -->
+        <!-- 📢 BROADCAST -->
         <div class="tab-pane-content" id="tab-broadcast" style="display:none;">
             <div class="card p-4">
                 <h5>📢 Broadcast Announcement to All Users</h5>
@@ -452,87 +486,25 @@ ADMIN_HTML = """
             </div>
         </div>
 
-        <!-- 9️⃣ 🎟️ COUPON MANAGER -->
-        <div class="tab-pane-content" id="tab-coupons" style="display:none;">
+        <!-- ⚙️ STORE SETTINGS -->
+        <div class="tab-pane-content" id="tab-store" style="display:none;">
             <div class="card p-4">
-                <h5>🎟️ Coupon & Promo Codes Manager</h5>
+                <h5>⚙️ Store Settings</h5>
                 <div class="row g-3 mt-1">
-                    <div class="col-md-4"><label class="small text-muted">Promo Code</label><input type="text" id="cp_code" class="form-control" placeholder="OFF50"></div>
-                    <div class="col-md-4"><label class="small text-muted">Discount Value (₹)</label><input type="number" id="cp_val" class="form-control" placeholder="50"></div>
-                    <div class="col-md-4"><label class="small text-muted">Usage Limit (Users)</label><input type="number" id="cp_limit" class="form-control" placeholder="50"></div>
-                    <div class="col-12"><button class="btn btn-custom" onclick="saveCoupon()"><i class="fas fa-plus me-1"></i> Create Promo Code</button></div>
+                    <div class="col-md-6"><label class="small">Support Username</label><input type="text" id="st_supp" class="form-control" value="{{ store.support_username }}"></div>
+                    <div class="col-md-6"><label class="small">Tutorial Video Link</label><input type="text" id="st_how" class="form-control" value="{{ store.how_to_use_link }}"></div>
+                    <div class="col-12"><button class="btn btn-custom" onclick="saveStore()">Save Store Settings</button></div>
                 </div>
             </div>
         </div>
 
-        <!-- 🔟 💳 UPI PAYMENT SETUP -->
-        <div class="tab-pane-content" id="tab-upi" style="display:none;">
-            <div class="card p-4">
-                <h5>💳 UPI Gateway Setup (FamPay & Paytm)</h5>
-                <div class="row g-3 mt-1">
-                    <div class="col-md-6"><label class="small text-muted">FamPay Receiver UPI ID</label><input type="text" id="u_fam" class="form-control" value="{{ upi.fampay_token }}"></div>
-                    <div class="col-md-6"><label class="small text-muted">Paytm Gateway Token / UPI</label><input type="text" id="u_paytm" class="form-control" value="{{ upi.paytm_token }}"></div>
-                    <div class="col-12"><button class="btn btn-custom" onclick="saveUpi()"><i class="fas fa-save me-1"></i> Save Gateway Settings</button></div>
-                </div>
-            </div>
-        </div>
-
-        <!-- 1️⃣1️⃣ 💳 TOP-UPS QUEUE -->
-        <div class="tab-pane-content" id="tab-topups" style="display:none;">
-            <div class="card p-4">
-                <h5>💳 Review Pending Deposit Requests</h5>
-                <p class="text-muted small">Customer deposit transactions awaiting verification.</p>
-                <div class="table-responsive">
-                    <table class="table table-dark">
-                        <thead><tr><th>User ID</th><th>Amount</th><th>UTR</th><th>Action</th></tr></thead>
-                        <tbody>
-                            <tr><td colspan="4" class="text-center text-muted">No pending deposit requests.</td></tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-
-        <!-- 1️⃣2️⃣ 🔗 PRODUCT LINKS -->
-        <div class="tab-pane-content" id="tab-links" style="display:none;">
-            <div class="card p-4">
-                <h5>🔗 Product Direct Deep Links</h5>
-                <div class="table-responsive mt-3">
-                    <table class="table table-dark align-middle">
-                        <thead><tr><th>Product</th><th>Direct Buy Link</th><th>Action</th></tr></thead>
-                        <tbody>
-                            {% for p in products %}
-                            <tr>
-                                <td>{{ p.name }}</td>
-                                <td><code>https://t.me/{{ bot_info.username.replace('@','') }}?start=buy_{{ p.prod_key }}</code></td>
-                                <td><button class="btn btn-sm btn-custom" onclick="navigator.clipboard.writeText('https://t.me/{{ bot_info.username.replace('@','') }}?start=buy_{{ p.prod_key }}'); alert('Link Copied!');">Copy</button></td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-
-        <!-- 1️⃣3️⃣ 🛡️ SECURITY & PASSWORD -->
+        <!-- 🛡️ SECURITY -->
         <div class="tab-pane-content" id="tab-security" style="display:none;">
             <div class="card p-4">
                 <h5>🛡️ Change Master Admin Password</h5>
                 <div class="row g-3 mt-1">
-                    <div class="col-md-6"><label class="small text-muted">New Password</label><input type="password" id="sec_pwd" class="form-control" placeholder="New Password"></div>
+                    <div class="col-md-6"><label class="small">New Password</label><input type="password" id="sec_pwd" class="form-control" placeholder="New Password"></div>
                     <div class="col-12"><button class="btn btn-warning" onclick="changePwd()">Update Password</button></div>
-                </div>
-            </div>
-        </div>
-
-        <!-- 1️⃣4️⃣ ⚙️ STORE SETTINGS -->
-        <div class="tab-pane-content" id="tab-store" style="display:none;">
-            <div class="card p-4">
-                <h5>⚙️ Store Branding & Configuration</h5>
-                <div class="row g-3 mt-1">
-                    <div class="col-md-6"><label class="small text-muted">Support Username</label><input type="text" id="st_supp" class="form-control" value="{{ store.support_username }}"></div>
-                    <div class="col-md-6"><label class="small text-muted">Tutorial Video Link</label><input type="text" id="st_how" class="form-control" value="{{ store.how_to_use_link }}"></div>
-                    <div class="col-12"><button class="btn btn-custom" onclick="saveStore()">Save Store Settings</button></div>
                 </div>
             </div>
         </div>
@@ -540,6 +512,29 @@ ADMIN_HTML = """
     {% endif %}
 
     <script>
+        let currentInspectUid = null;
+        function openInspector(uid, name, user, joined, bal, spent, role) {
+            currentInspectUid = uid;
+            document.getElementById('m_id').innerText = uid;
+            document.getElementById('m_name').innerText = name;
+            document.getElementById('m_user').innerText = user;
+            document.getElementById('m_joined').innerText = joined;
+            document.getElementById('m_bal').innerText = parseFloat(bal).toFixed(2);
+            document.getElementById('m_spent').innerText = parseFloat(spent).toFixed(2);
+            document.getElementById('m_role').innerText = role;
+            document.getElementById('m_dm_link').href = 'tg://user?id=' + uid;
+            document.getElementById('userModal').style.display = 'flex';
+        }
+        function quickAddBal(delta) {
+            if(!currentInspectUid) return;
+            fetch('/api/user/adjust_balance', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({user_id: currentInspectUid, delta: delta}) })
+            .then(r => r.json()).then(d => { alert(d.message); location.reload(); });
+        }
+        function applyCustomBal() {
+            let val = parseFloat(document.getElementById('m_custom_bal').value);
+            if(isNaN(val)) return alert('Enter valid number');
+            quickAddBal(val);
+        }
         function showTab(t, el) {
             document.querySelectorAll('.tab-pane-content').forEach(d => d.style.display = 'none');
             let target = document.getElementById('tab-' + t);
@@ -562,10 +557,10 @@ ADMIN_HTML = """
             let rprice = document.getElementById('ap_rprice').value;
             let link = document.getElementById('ap_link').value;
             let keys = document.getElementById('ap_keys').value;
-            if(!name || !plan || !price) { alert('Fill required fields!'); return; }
+            if(!name || !plan || !price) return alert('Fill required fields!');
             fetch('/api/product/save', {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({name: name, category: cat, icon: icon, prices: [[plan, parseFloat(price)]], reseller_price: parseFloat(rprice || price), download_link: link, keys: keys})
+                body: JSON.stringify({name: name, category: cat, icon: icon, prices: [[plan, parseFloat(price)]], reseller_price: parseFloat(rprice||price), download_link: link, keys: keys})
             }).then(r => r.json()).then(d => { alert(d.message); location.reload(); });
         }
         function deleteProduct(k) {
@@ -579,40 +574,28 @@ ADMIN_HTML = """
             fetch('/api/pending/dispatch', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({order_id: oid, user_id: uid, key: key}) })
             .then(r => r.json()).then(d => { alert(d.message); location.reload(); });
         }
-        function adjustBalance(uid) {
-            let val = parseFloat(document.getElementById('bal_adj_' + uid).value);
-            if(isNaN(val)) return alert('Enter valid amount!');
-            fetch('/api/user/adjust_balance', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({user_id: uid, delta: val}) })
-            .then(r => r.json()).then(d => { alert(d.message); location.reload(); });
+        function saveGatewaySelection() {
+            let gw = document.getElementById('gw_select').value;
+            fetch('/api/gateway/set_active', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({gateway: gw}) })
+            .then(r => r.json()).then(d => alert(d.message));
         }
-        function toggleResellerRole(uid, role) {
-            fetch('/api/user/set_role', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({user_id: uid, role: role}) })
-            .then(r => r.json()).then(d => { alert(d.message); location.reload(); });
+        function saveFamPayGateway() {
+            let k = document.getElementById('fp_api_key').value;
+            let u = document.getElementById('fp_upi_id').value;
+            fetch('/api/gateway/fampay', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({api_key: k, upi_id: u}) })
+            .then(r => r.json()).then(d => alert(d.message));
         }
-        function saveIdStock() {
-            let cat = document.getElementById('id_cat').value;
-            let pr = document.getElementById('id_price').value;
-            let cred = document.getElementById('id_cred').value;
-            if(!pr || !cred) return alert('Fill fields!');
-            fetch('/api/id_stock/add', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({category: cat, price: parseFloat(pr), credentials: cred}) })
-            .then(r => r.json()).then(d => { alert(d.message); location.reload(); });
-        }
-        function saveCoupon() {
-            let c = document.getElementById('cp_code').value;
-            let v = document.getElementById('cp_val').value;
-            let l = document.getElementById('cp_limit').value;
-            if(!c || !v) return alert('Fill fields!');
-            fetch('/api/coupon/save', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({code: c, val: parseFloat(v), limit: parseInt(l||100)}) })
-            .then(r => r.json()).then(d => { alert(d.message); location.reload(); });
+        function savePaytmGateway() {
+            let u = document.getElementById('pt_url').value;
+            let upi = document.getElementById('pt_upi').value;
+            let m = document.getElementById('pt_merchant').value;
+            fetch('/api/gateway/paytm', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({url: u, upi: upi, merchant: m}) })
+            .then(r => r.json()).then(d => alert(d.message));
         }
         function sendBroadcast() {
             let msg = document.getElementById('bc_msg').value;
             if(!msg) return alert('Enter message!');
             fetch('/api/broadcast/send', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({message: msg}) })
-            .then(r => r.json()).then(d => alert(d.message));
-        }
-        function saveUpi() {
-            fetch('/api/upi/save', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({fampay_token: document.getElementById('u_fam').value, paytm_token: document.getElementById('u_paytm').value}) })
             .then(r => r.json()).then(d => alert(d.message));
         }
         function saveStore() {
@@ -631,7 +614,7 @@ ADMIN_HTML = """
 """
 
 # ==========================================
-# 🌐 FLASK BACKEND ENDPOINTS
+# 🌐 BACKEND API HANDLERS
 # ==========================================
 @app.route('/login', methods=['POST'])
 def login():
@@ -662,17 +645,50 @@ def dashboard():
     c.execute('SELECT id, user_id, prod_name, plan, key_delivered, amount, utr, timestamp FROM order_history ORDER BY id DESC LIMIT 50'); all_orders = c.fetchall()
     c.execute('SELECT id, user_id, prod_name, plan, key_delivered, amount, timestamp FROM order_history WHERE key_delivered LIKE "PENDING%" ORDER BY id DESC'); pending = c.fetchall()
     c.execute('SELECT user_id, full_name, username, joined_date, orders_count, wallet_balance, total_spent, total_referrals, referral_earnings, account_type FROM users ORDER BY user_id DESC LIMIT 50'); users_list = c.fetchall()
-    c.execute('SELECT fampay_token, paytm_token FROM upi_settings WHERE id = 1'); upi_r = c.fetchone() or ("", "")
     c.execute('SELECT support_username, how_to_use_link FROM store_settings WHERE id = 1'); st_r = c.fetchone() or ("@Athulsudin", "")
+    c.execute('SELECT active_gateway, fampay_api_key, fampay_upi_id, fampay_base_url, paytm_base_url, paytm_upi_id, paytm_merchant_id FROM gateway_config WHERE id = 1'); gw_r = c.fetchone()
     conn.close()
+
+    gw_cfg = {
+        "active_gateway": gw_r[0], "fampay_api_key": gw_r[1], "fampay_upi_id": gw_r[2],
+        "fampay_base_url": gw_r[3], "paytm_base_url": gw_r[4], "paytm_upi_id": gw_r[5], "paytm_merchant_id": gw_r[6]
+    }
 
     return render_template_string(
         ADMIN_HTML, bot_info=BOT_INFO,
         stats={"users": tot_users, "total_wallet": f"{tot_wallet:,.2f}", "products_count": tot_prods, "orders": tot_orders, "revenue": f"{tot_rev:,.2f}", "keys": tot_keys},
         products=prods, all_orders=all_orders, pending_orders=pending, users_list=users_list,
-        upi={"fampay_token": upi_r[0], "paytm_token": upi_r[1]},
-        store={"support_username": st_r[0], "how_to_use_link": st_r[1]}
+        gw_cfg=gw_cfg, store={"support_username": st_r[0], "how_to_use_link": st_r[1]}
     )
+
+@app.route('/api/gateway/set_active', methods=['POST'])
+def api_set_gw():
+    if not session.get('admin_logged'): return jsonify({"message": "Unauthorized"}), 401
+    gw = request.json.get('gateway', 'fampay')
+    conn = sqlite3.connect(DB_FILE); c = conn.cursor()
+    c.execute('UPDATE gateway_config SET active_gateway = ? WHERE id = 1', (gw,))
+    conn.commit(); conn.close()
+    return jsonify({"message": f"Active Gateway set to {gw.upper()}!"})
+
+@app.route('/api/gateway/fampay', methods=['POST'])
+def api_fampay_save():
+    if not session.get('admin_logged'): return jsonify({"message": "Unauthorized"}), 401
+    d = request.json
+    conn = sqlite3.connect(DB_FILE); c = conn.cursor()
+    c.execute('UPDATE gateway_config SET fampay_api_key = ?, fampay_upi_id = ? WHERE id = 1', (d.get('api_key',''), d.get('upi_id','')))
+    c.execute('UPDATE upi_settings SET fampay_token = ? WHERE id = 1', (d.get('upi_id',''),))
+    conn.commit(); conn.close()
+    return jsonify({"message": "FamPay Anti-Fraud Gateway Settings Saved!"})
+
+@app.route('/api/gateway/paytm', methods=['POST'])
+def api_paytm_save():
+    if not session.get('admin_logged'): return jsonify({"message": "Unauthorized"}), 401
+    d = request.json
+    conn = sqlite3.connect(DB_FILE); c = conn.cursor()
+    c.execute('UPDATE gateway_config SET paytm_base_url = ?, paytm_upi_id = ?, paytm_merchant_id = ? WHERE id = 1', (d.get('url',''), d.get('upi',''), d.get('merchant','')))
+    c.execute('UPDATE upi_settings SET paytm_token = ? WHERE id = 1', (d.get('upi',''),))
+    conn.commit(); conn.close()
+    return jsonify({"message": "Paytm Gateway Settings Saved!"})
 
 @app.route('/api/product/save', methods=['POST'])
 def api_save_p():
@@ -723,35 +739,6 @@ def api_adj_bal():
     conn.commit(); conn.close()
     return jsonify({"message": "Wallet balance updated!"})
 
-@app.route('/api/user/set_role', methods=['POST'])
-def api_set_role():
-    if not session.get('admin_logged'): return jsonify({"message": "Unauthorized"}), 401
-    d = request.json
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor()
-    c.execute('UPDATE users SET account_type = ? WHERE user_id = ?', (d['role'], d['user_id']))
-    conn.commit(); conn.close()
-    return jsonify({"message": f"Role updated to {d['role']}!"})
-
-@app.route('/api/id_stock/add', methods=['POST'])
-def api_id_stock():
-    if not session.get('admin_logged'): return jsonify({"message": "Unauthorized"}), 401
-    d = request.json
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor()
-    c.execute('INSERT INTO id_accounts (category_name, account_data, price, is_sold) VALUES (?, ?, ?, 0)',
-              (d['category'], d['credentials'], d['price']))
-    conn.commit(); conn.close()
-    return jsonify({"message": "Account added to ID Stock!"})
-
-@app.route('/api/coupon/save', methods=['POST'])
-def api_coupon():
-    if not session.get('admin_logged'): return jsonify({"message": "Unauthorized"}), 401
-    d = request.json
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor()
-    c.execute('INSERT OR REPLACE INTO coupons (code, discount_type, discount_val, usage_limit, used_count, is_active) VALUES (?, "flat", ?, ?, 0, 1)',
-              (d['code'].upper(), d['val'], d['limit']))
-    conn.commit(); conn.close()
-    return jsonify({"message": "Promo code activated!"})
-
 @app.route('/api/broadcast/send', methods=['POST'])
 def api_bc():
     if not session.get('admin_logged'): return jsonify({"message": "Unauthorized"}), 401
@@ -767,16 +754,7 @@ def api_bc():
                 urllib.request.urlopen(urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}), timeout=4)
             except Exception: pass
     Thread(target=_run).start()
-    return jsonify({"message": "Broadcast sent to all users!"})
-
-@app.route('/api/upi/save', methods=['POST'])
-def api_save_upi():
-    if not session.get('admin_logged'): return jsonify({"message": "Unauthorized"}), 401
-    d = request.json
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor()
-    c.execute('UPDATE upi_settings SET fampay_token=?, paytm_token=? WHERE id = 1', (d.get('fampay_token',''), d.get('paytm_token','')))
-    conn.commit(); conn.close()
-    return jsonify({"message": "UPI settings saved!"})
+    return jsonify({"message": "Broadcast sending in background!"})
 
 @app.route('/api/store/save', methods=['POST'])
 def api_save_st():
