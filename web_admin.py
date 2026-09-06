@@ -4,18 +4,109 @@ import sqlite3
 import re
 import urllib.request
 import urllib.parse
+from datetime import timedelta, datetime
 from threading import Thread
+import pytz
 from flask import Flask, render_template_string, request, jsonify, redirect, session
 
 DB_FILE = "bot_database.db"
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "athulsudin1234")
 BOT_TOKEN = "8892856619:AAGZhdOv389_AaKvbcbInlJAiDMOwQxOeHc"
+DEFAULT_ADMIN_PWD = os.environ.get("ADMIN_PASSWORD", "athulsudin1234")
+IST = pytz.timezone('Asia/Kolkata')
 
 app = Flask(__name__)
-app.secret_key = os.urandom(24)
+app.secret_key = os.urandom(32)
+app.permanent_session_lifetime = timedelta(days=30)
+
+def get_ist_time():
+    return datetime.now(IST).strftime("%d %b %Y, %I:%M %p (IST)")
 
 # ==========================================
-# 🎨 VIDEO EXACT DARK THEME HTML TEMPLATE
+# 🗄️ DATABASE & AUTH
+# ==========================================
+def init_db_extended():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS admin_auth (
+            id INTEGER PRIMARY KEY DEFAULT 1,
+            password TEXT
+        )
+    ''')
+    c.execute('SELECT password FROM admin_auth WHERE id = 1')
+    if not c.fetchone():
+        c.execute('INSERT INTO admin_auth (id, password) VALUES (1, ?)', (DEFAULT_ADMIN_PWD,))
+
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS coupons (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            code TEXT UNIQUE,
+            discount_type TEXT,
+            discount_val REAL,
+            usage_limit INTEGER,
+            used_count INTEGER DEFAULT 0,
+            is_active INTEGER DEFAULT 1
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS id_accounts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            category_name TEXT,
+            account_data TEXT,
+            price REAL,
+            is_sold INTEGER DEFAULT 0
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS store_customization (
+            id INTEGER PRIMARY KEY DEFAULT 1,
+            monthly_users TEXT DEFAULT '3,074 monthly users',
+            header_badge TEXT DEFAULT '🔥 FAST • TRUSTED • ACTIVE 🔥'
+        )
+    ''')
+    c.execute('SELECT id FROM store_customization WHERE id = 1')
+    if not c.fetchone():
+        c.execute('INSERT INTO store_customization VALUES (1, "3,074 monthly users", "🔥 FAST • TRUSTED • ACTIVE 🔥")')
+    conn.commit()
+    conn.close()
+
+def get_current_password():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('SELECT password FROM admin_auth WHERE id = 1')
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else DEFAULT_ADMIN_PWD
+
+init_db_extended()
+
+# Dynamic Bot DP Fetcher
+BOT_INFO = {"name": "Bot Control Center", "username": "@EliteBot", "avatar": None}
+def refresh_bot_meta():
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getMe"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            d = json.loads(resp.read().decode())
+            if d.get("ok"):
+                BOT_INFO["name"] = d["result"].get("first_name", "Bot Control Center")
+                BOT_INFO["username"] = f"@{d['result'].get('username', 'Bot')}"
+        p_url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUserProfilePhotos?user_id={BOT_TOKEN.split(':')[0]}&limit=1"
+        with urllib.request.urlopen(urllib.request.Request(p_url, headers={"User-Agent": "Mozilla/5.0"}), timeout=5) as resp2:
+            pd = json.loads(resp2.read().decode())
+            if pd.get("ok") and pd["result"]["total_count"] > 0:
+                fid = pd["result"]["photos"][0][-1]["file_id"]
+                with urllib.request.urlopen(urllib.request.Request(f"https://api.telegram.org/bot{BOT_TOKEN}/getFile?file_id={fid}"), timeout=5) as resp3:
+                    fd = json.loads(resp3.read().decode())
+                    if fd.get("ok"):
+                        BOT_INFO["avatar"] = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{fd['result']['file_path']}"
+    except Exception:
+        pass
+
+Thread(target=refresh_bot_meta, daemon=True).start()
+
+# ==========================================
+# 🎨 COMPLETE CYBER ADMIN DASHBOARD HTML
 # ==========================================
 ADMIN_HTML = """
 <!DOCTYPE html>
@@ -23,213 +114,218 @@ ADMIN_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Elite Hackers - Bot Control Center</title>
+    <title>Bot Control Center</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <style>
-        :root {
-            --bg-main: #0f172a;
-            --bg-card: #1e293b;
-            --border-color: #334155;
-            --accent-primary: #6366f1;
-            --accent-hover: #4f46e5;
-            --text-main: #f8fafc;
-            --text-muted: #94a3b8;
-            --sidebar-w: 260px;
-        }
-        body { background-color: var(--bg-main); color: var(--text-main); font-family: 'Inter', system-ui, -apple-system, sans-serif; overflow-x: hidden; margin: 0; }
-        .card { background-color: var(--bg-card); border: 1px solid var(--border-color); color: var(--text-main); border-radius: 12px; margin-bottom: 20px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2); }
-        .btn-custom { background-color: var(--accent-primary); color: white; border: none; font-weight: 500; border-radius: 8px; padding: 10px 18px; }
-        .btn-custom:hover { background-color: var(--accent-hover); color: white; }
-        .form-control, .form-select { background-color: #0b1120; border: 1px solid var(--border-color); color: white; border-radius: 8px; padding: 10px; }
-        .form-control:focus, .form-select:focus { background-color: #0b1120; color: white; border-color: var(--accent-primary); box-shadow: 0 0 0 0.2rem rgba(99, 102, 241, 0.25); }
+        :root { --bg: #080318; --card: rgba(22, 13, 44, 0.88); --neon: rgba(147, 51, 234, 0.35); --sidebar: 270px; }
+        body { background: radial-gradient(circle at top center, #1b0c3f 0%, #0c051d 60%, #05020c 100%); color: #f8fafc; font-family: -apple-system, system-ui, sans-serif; min-height: 100vh; margin: 0; }
+        body::before { content: ''; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-image: linear-gradient(rgba(147, 51, 234, 0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(147, 51, 234, 0.05) 1px, transparent 1px); background-size: 36px 36px; pointer-events: none; }
         
-        /* Sidebar styling */
-        .sidebar { position: fixed; top: 0; left: 0; width: var(--sidebar-w); height: 100vh; background: var(--bg-card); border-right: 1px solid var(--border-color); z-index: 1050; padding-top: 20px; overflow-y: auto; transition: 0.3s; }
-        .sidebar-brand { padding: 0 20px 20px; font-weight: 700; font-size: 1.1rem; color: #38bdf8; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border-color); }
-        .sidebar-link { padding: 12px 20px; color: var(--text-muted); display: flex; align-items: center; gap: 12px; font-weight: 500; cursor: pointer; text-decoration: none; border-left: 4px solid transparent; transition: 0.2s; }
-        .sidebar-link:hover, .sidebar-link.active { background: var(--bg-main); color: #38bdf8; border-left-color: #38bdf8; }
-        
-        .main-content { margin-left: var(--sidebar-w); padding: 25px; min-height: 100vh; }
-        @media (max-width: 768px) {
-            .sidebar { left: -260px; }
-            .sidebar.active { left: 0; }
-            .main-content { margin-left: 0; }
-        }
-        .stat-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 12px; padding: 20px; }
-        .stat-card h6 { font-size: 0.8rem; letter-spacing: 0.5px; color: var(--text-muted); font-weight: 600; margin: 0; }
-        .stat-card h2 { font-size: 1.8rem; font-weight: 700; margin: 8px 0 0; }
+        /* 🔐 LOGIN SCREEN */
+        .login-box { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
+        .login-card { background: var(--card); backdrop-filter: blur(25px); border: 1px solid var(--neon); border-radius: 28px; padding: 42px 32px; width: 100%; max-width: 400px; text-align: center; box-shadow: 0 0 50px rgba(139, 92, 246, 0.25); }
+        .avatar-ring { width: 88px; height: 88px; margin: 0 auto 20px; border-radius: 50%; padding: 3px; background: linear-gradient(135deg, #06b6d4, #a855f7, #f59e0b); display: flex; align-items: center; justify-content: center; }
+        .avatar-inner { width: 100%; height: 100%; background: #0d0622; border-radius: 50%; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+        .title-grad { font-size: 1.65rem; font-weight: 800; background: linear-gradient(90deg, #a78bfa, #38bdf8, #facc15); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .pwd-field { position: relative; margin-bottom: 20px; }
+        .pwd-field input { width: 100%; background: rgba(14, 7, 33, 0.9); border: 1px solid rgba(139, 92, 246, 0.5); border-radius: 14px; padding: 13px 45px 13px 18px; color: white; outline: none; }
+        .eye-btn { position: absolute; right: 15px; top: 50%; transform: translateY(-50%); color: #a78bfa; cursor: pointer; }
+        .btn-unlock { width: 100%; padding: 13px; border: none; border-radius: 14px; background: linear-gradient(135deg, #7c3aed, #6366f1); color: white; font-weight: 700; cursor: pointer; }
+
+        /* 💻 DASHBOARD */
+        .sidebar { position: fixed; top: 0; left: -270px; width: var(--sidebar); height: 100vh; background: #0f0724; border-right: 1px solid var(--neon); padding-top: 20px; z-index: 1050; transition: 0.3s; overflow-y: auto; }
+        .sidebar.active { left: 0; }
+        .sidebar-link { padding: 12px 20px; color: #94a3b8; display: flex; align-items: center; gap: 12px; cursor: pointer; text-decoration: none; border-left: 4px solid transparent; }
+        .sidebar-link:hover, .sidebar-link.active { background: #1a0b3b; color: #38bdf8; border-left-color: #38bdf8; }
+        .main-content { padding: 25px; transition: 0.3s; }
+        @media (min-width: 769px) { .sidebar { left: 0; } .main-content { margin-left: var(--sidebar); } }
+        .stat-card { background: var(--card); border: 1px solid var(--neon); border-radius: 16px; padding: 20px; border-left: 4px solid #8b5cf6; }
+        .card { background: var(--card); border: 1px solid var(--neon); border-radius: 18px; margin-bottom: 20px; }
+        .btn-custom { background: linear-gradient(135deg, #7c3aed, #6366f1); color: white; border: none; border-radius: 10px; padding: 10px 18px; font-weight: 600; }
+        .form-control, .form-select { background: #0d0622; border: 1px solid var(--neon); color: white; border-radius: 10px; padding: 10px; }
+        .form-control:focus { background: #0d0622; color: white; border-color: #a855f7; box-shadow: none; }
+        .squircle-icon { width: 42px; height: 42px; border-radius: 12px; background: rgba(139, 92, 246, 0.2); display: flex; align-items: center; justify-content: center; }
     </style>
 </head>
 <body>
-
     {% if not session.get('admin_logged') %}
-    <!-- 1️⃣ 🔐 PASSWORD LOGIN GATEWAY -->
-    <div class="d-flex align-items-center justify-content-center" style="min-height: 100vh;">
-        <div class="col-11 col-sm-8 col-md-5 col-lg-4">
-            <div class="card p-4 text-center">
-                <div class="mb-3">
-                    <i class="fas fa-shield-halved fa-3x text-primary"></i>
+    <div class="login-box">
+        <div class="login-card">
+            <div class="avatar-ring">
+                <div class="avatar-inner">
+                    {% if bot_info.avatar %}<img src="{{ bot_info.avatar }}" style="width:100%;height:100%;object-fit:cover;">{% else %}<span style="font-size:2.2rem;">🔒</span>{% endif %}
                 </div>
-                <h4 class="fw-bold mb-3">ADMIN CONTROL UNLOCK</h4>
-                <p class="text-muted small">Enter master password to access Web Dashboard</p>
-                {% if error %}
-                    <div class="alert alert-danger py-2 small">{{ error }}</div>
-                {% endif %}
-                <form method="POST" action="/login">
-                    <div class="mb-3">
-                        <input type="password" name="password" class="form-control text-center" placeholder="••••••••••••" required>
-                    </div>
-                    <button type="submit" class="btn btn-custom w-100"><i class="fas fa-lock-open me-2"></i>Unlock Dashboard</button>
-                </form>
             </div>
+            <div class="title-grad">Bot Control Center</div>
+            <div style="color:#38bdf8;font-size:0.9rem;margin-bottom:12px;">{{ bot_info.username }}</div>
+            <div style="color:#94a3b8;font-size:0.85rem;margin-bottom:24px;">Restricted owner access — enter your key</div>
+            {% if error %}<div class="alert alert-danger py-2 small">{{ error }}</div>{% endif %}
+            <form method="POST" action="/login">
+                <div class="pwd-field">
+                    <input type="password" id="pInput" name="password" placeholder="Admin password" required autofocus>
+                    <span class="eye-btn" onclick="togglePwd()"><i id="eyeI" class="fa-regular fa-eye"></i></span>
+                </div>
+                <button type="submit" class="btn-unlock">Unlock</button>
+            </form>
+            <div style="margin-top:20px;font-size:0.78rem;color:#d8b4fe;">🔐 Owner-only · session remembered for 30 days</div>
         </div>
     </div>
+    <script>
+        function togglePwd() {
+            let p = document.getElementById('pInput');
+            let e = document.getElementById('eyeI');
+            p.type = p.type === 'password' ? 'text' : 'password';
+            e.className = p.type === 'password' ? 'fa-regular fa-eye' : 'fa-regular fa-eye-slash';
+        }
+    </script>
     {% else %}
 
-    <!-- 🌟 SIDEBAR MENU -->
     <div class="sidebar" id="sidebar">
-        <div class="sidebar-brand">
-            <i class="fas fa-bolt text-warning"></i>
-            <span>ELITE HACKERS PANEL</span>
+        <div class="px-3 pb-3 border-bottom border-secondary d-flex align-items-center gap-2">
+            <span class="fs-4">⚡</span>
+            <strong class="text-info">{{ bot_info.name }}</strong>
         </div>
         <div class="mt-3">
-            <a class="sidebar-link active" onclick="showTab('dashboard', this)"><i class="fas fa-chart-pie"></i> Dashboard</a>
-            <a class="sidebar-link" onclick="showTab('products', this)"><i class="fas fa-box-open"></i> Manage Products</a>
-            <a class="sidebar-link" onclick="showTab('stock', this)"><i class="fas fa-key"></i> Keys / ID Stock</a>
+            <a class="sidebar-link active" onclick="showTab('dashboard', this)"><i class="fas fa-chart-line"></i> Dashboard</a>
+            <a class="sidebar-link" onclick="showTab('products', this)"><i class="fas fa-boxes-stacked"></i> Manage Product</a>
+            <a class="sidebar-link" onclick="showTab('keys', this)"><i class="fas fa-key"></i> Manage Keys</a>
+            <a class="sidebar-link" onclick="showTab('pending_keys', this)"><i class="fas fa-clock"></i> Pending Keys</a>
+            <a class="sidebar-link" onclick="showTab('id_stock', this)"><i class="fas fa-id-badge"></i> ID Stock</a>
+            <a class="sidebar-link" onclick="showTab('members', this)"><i class="fas fa-users"></i> Members & Wallets</a>
+            <a class="sidebar-link" onclick="showTab('resellers', this)"><i class="fas fa-handshake"></i> Resellers</a>
             <a class="sidebar-link" onclick="showTab('broadcast', this)"><i class="fas fa-bullhorn"></i> Broadcast</a>
+            <a class="sidebar-link" onclick="showTab('coupons', this)"><i class="fas fa-ticket"></i> Coupon Manager</a>
             <a class="sidebar-link" onclick="showTab('upi', this)"><i class="fas fa-credit-card"></i> UPI Payment Setup</a>
-            <a class="sidebar-link" onclick="showTab('api', this)"><i class="fas fa-plug"></i> Key Delivery API</a>
+            <a class="sidebar-link" onclick="showTab('topups', this)"><i class="fas fa-wallet"></i> Top-ups Queue</a>
+            <a class="sidebar-link" onclick="showTab('security', this)"><i class="fas fa-shield-halved"></i> Security & Sessions</a>
             <a class="sidebar-link" onclick="showTab('store', this)"><i class="fas fa-sliders"></i> Store Settings</a>
-            <a href="/logout" class="sidebar-link text-danger mt-4"><i class="fas fa-right-from-bracket"></i> Logout</a>
+            <a href="/logout" class="sidebar-link text-danger mt-4"><i class="fas fa-lock"></i> Logout</a>
         </div>
     </div>
 
-    <!-- 💻 MAIN CONTENT -->
     <div class="main-content">
-        <!-- TOPBAR -->
         <div class="d-flex justify-content-between align-items-center mb-4">
             <div class="d-flex align-items-center gap-3">
-                <button class="btn btn-dark d-md-none" onclick="toggleSidebar()"><i class="fas fa-bars"></i></button>
-                <h4 class="fw-bold m-0">⚙️ Bot Control Center</h4>
+                <button class="btn btn-dark d-md-none" onclick="document.getElementById('sidebar').classList.toggle('active')"><i class="fas fa-bars"></i></button>
+                <h4 class="fw-bold m-0 title-grad">Bot Control Center</h4>
             </div>
-            <div class="d-flex align-items-center gap-2">
-                <span class="badge bg-success py-2 px-3"><i class="fas fa-circle-check me-1"></i> Bot Active</span>
-                <a href="/logout" class="btn btn-outline-danger btn-sm"><i class="fas fa-lock me-1"></i> Logout</a>
-            </div>
+            <a href="/logout" class="btn btn-outline-danger btn-sm"><i class="fas fa-arrow-right-from-bracket"></i></a>
         </div>
 
-        <!-- 2️⃣ 📊 TAB 1: DASHBOARD OVERVIEW -->
+        <!-- 📊 1. DASHBOARD -->
         <div class="tab-pane-content" id="tab-dashboard">
-            <div class="row g-3 mb-4">
-                <div class="col-md-3">
-                    <div class="stat-card">
-                        <h6>TOTAL USERS</h6>
-                        <h2 class="text-primary">{{ stats.users }}</h2>
-                    </div>
-                </div>
-                <div class="col-md-3">
-                    <div class="stat-card">
-                        <h6>TOTAL ORDERS</h6>
-                        <h2 class="text-success">{{ stats.orders }}</h2>
-                    </div>
-                </div>
-                <div class="col-md-3">
-                    <div class="stat-card">
-                        <h6>TOTAL REVENUE</h6>
-                        <h2 class="text-warning">₹{{ stats.revenue }}</h2>
-                    </div>
-                </div>
-                <div class="col-md-3">
-                    <div class="stat-card">
-                        <h6>ACTIVE KEYS IN STOCK</h6>
-                        <h2 class="text-info">{{ stats.keys }}</h2>
-                    </div>
-                </div>
+            <div class="card p-4 mb-4" style="background:linear-gradient(135deg,#1f1042,#110729);">
+                <small class="text-info fw-bold">⚡ BOT CONTROL CENTER</small>
+                <h3 class="fw-bold mt-1">Welcome back.</h3>
+                <span class="text-muted">Here's how {{ bot_info.username }} is doing right now.</span>
             </div>
-
-            <div class="card p-4">
-                <h5 class="fw-bold mb-3"><i class="fas fa-chart-line text-info me-2"></i>System Overview</h5>
-                <p class="text-muted">Use the sidebar to add products, restock serial keys, toggle maintenance/stockout, send instant broadcasts, and update UPI configs live without restarting Render.</p>
+            <div class="row g-3">
+                <div class="col-6 col-md-3"><div class="stat-card"><h6>MEMBERS</h6><h2>{{ stats.users }}</h2></div></div>
+                <div class="col-6 col-md-3"><div class="stat-card" style="border-left-color:#10b981;"><h6>WALLET (ALL)</h6><h2>₹{{ stats.total_wallet }}</h2></div></div>
+                <div class="col-6 col-md-3"><div class="stat-card" style="border-left-color:#38bdf8;"><h6>CATALOG ITEMS</h6><h2>{{ stats.products_count }}</h2></div></div>
+                <div class="col-6 col-md-3"><div class="stat-card" style="border-left-color:#10b981;"><h6>ORDERS FULFILLED</h6><h2>{{ stats.orders }}</h2></div></div>
+                <div class="col-6 col-md-3"><div class="stat-card" style="border-left-color:#facc15;"><h6>LIFETIME REVENUE</h6><h2>₹{{ stats.revenue }}</h2></div></div>
+                <div class="col-6 col-md-3"><div class="stat-card" style="border-left-color:#06b6d4;"><h6>KEYS IN STOCK</h6><h2>{{ stats.keys }}</h2></div></div>
             </div>
         </div>
 
-        <!-- 3️⃣ 📦 TAB 2: MANAGE PRODUCTS -->
-        <div class="tab-pane-content" id="tab-products" style="display: none;">
+        <!-- 📦 2. MANAGE PRODUCT -->
+        <div class="tab-pane-content" id="tab-products" style="display:none;">
             <div class="card p-4">
-                <h5 class="fw-bold mb-3"><i class="fas fa-plus-circle text-primary me-2"></i>Add / Edit Product</h5>
-                <div class="row g-3">
-                    <div class="col-md-4">
-                        <label class="form-label small text-muted">Product Name</label>
-                        <input type="text" id="p_name" class="form-control" placeholder="e.g. BALA MOD NON ROOT">
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label small text-muted">Category</label>
-                        <select id="p_cat" class="form-select">
-                            <option value="non_root">Non-Root Panel</option>
-                            <option value="root">Root Panel</option>
-                            <option value="ios">iOS Panel</option>
-                            <option value="pc">PC Panel</option>
-                            <option value="likes">Like Service</option>
-                        </select>
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label small text-muted">Emoji / Icon</label>
-                        <input type="text" id="p_icon" class="form-control" placeholder="⚡ or 🍏">
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label small text-muted">Plan Name</label>
-                        <input type="text" id="p_plan" class="form-control" placeholder="1_Day">
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label small text-muted">Price (₹)</label>
-                        <input type="number" id="p_price" class="form-control" placeholder="120">
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label small text-muted">Download / Channel Link</label>
-                        <input type="text" id="p_link" class="form-control" placeholder="https://t.me/...">
-                    </div>
-                    <div class="col-12">
-                        <button onclick="saveProduct()" class="btn btn-custom w-100"><i class="fas fa-floppy-disk me-2"></i>Save Product to Database</button>
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h5 class="m-0 fw-bold">📦 Manage Products</h5>
+                    <button class="btn btn-custom btn-sm" onclick="document.getElementById('addProdBox').style.display='block'"><i class="fas fa-plus me-1"></i> Add Product</button>
+                </div>
+                <div id="addProdBox" class="p-3 mb-4 card" style="display:none;background:#13082e;">
+                    <h6>➕ Add Product</h6>
+                    <div class="row g-3 mt-1">
+                        <div class="col-md-4"><label class="small">Product Name</label><input type="text" id="ap_name" class="form-control" placeholder="BALA MOD"></div>
+                        <div class="col-md-4">
+                            <label class="small">Category</label>
+                            <select id="ap_cat" class="form-select">
+                                <option value="non_root">Non-Root Mobile</option><option value="root">Root Mobile</option>
+                                <option value="ios">iOS Panels</option><option value="pc">PC Panels</option><option value="likes">8 Level ID / Likes</option>
+                            </select>
+                        </div>
+                        <div class="col-md-4"><label class="small">Icon / Emoji</label><input type="text" id="ap_icon" class="form-control" placeholder="⚡"></div>
+                        <div class="col-md-4"><label class="small">Plan Name</label><input type="text" id="ap_plan" class="form-control" placeholder="10_Days"></div>
+                        <div class="col-md-4"><label class="small">Regular Price (₹)</label><input type="number" id="ap_price" class="form-control" placeholder="400"></div>
+                        <div class="col-md-4"><label class="small">Reseller Price (₹)</label><input type="number" id="ap_rprice" class="form-control" placeholder="250"></div>
+                        <div class="col-12"><label class="small">Download Link</label><input type="text" id="ap_link" class="form-control"></div>
+                        <div class="col-12"><button class="btn btn-custom w-100" onclick="saveProduct()">Save Product</button></div>
                     </div>
                 </div>
+                <div class="row g-3">
+                    {% for p in products %}
+                    <div class="col-md-6">
+                        <div class="card p-3" style="background:#12072c;">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <span class="fs-4">{{ p.icon }}</span>
+                                <span class="badge bg-secondary">{{ p.category }}</span>
+                            </div>
+                            <h5 class="fw-bold mt-2">{{ p.name }}</h5>
+                            <div class="text-muted small">Prices: {{ p.prices }}</div>
+                            <div class="d-flex gap-2 mt-3">
+                                <button class="btn btn-sm btn-outline-danger" onclick="deleteProduct('{{ p.prod_key }}')"><i class="fas fa-trash"></i> Delete</button>
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
             </div>
+        </div>
 
-            <!-- Products List Table with Maintenance & Stock Out toggles -->
+        <!-- ⏳ 3. PENDING KEYS -->
+        <div class="tab-pane-content" id="tab-pending_keys" style="display:none;">
             <div class="card p-4">
-                <h5 class="fw-bold mb-3"><i class="fas fa-list text-info me-2"></i>Existing Products</h5>
+                <h5>⏳ Pending Keys Queue (Out-of-Stock Manual Dispatch)</h5>
+                <p class="text-muted small">Orders waiting for keys. Enter key and click send to dispatch directly to customer Telegram.</p>
                 <div class="table-responsive">
-                    <table class="table table-dark table-hover align-middle">
-                        <thead>
-                            <tr class="text-secondary">
-                                <th>Icon</th>
-                                <th>Name</th>
-                                <th>Category</th>
-                                <th>Plans & Prices</th>
-                                <th>Maintenance</th>
-                                <th>Stock Status</th>
-                                <th>Action</th>
-                            </tr>
-                        </thead>
+                    <table class="table table-dark">
+                        <thead><tr><th>User ID</th><th>Product</th><th>Plan</th><th>Paid</th><th>Action</th></tr></thead>
                         <tbody>
-                            {% for p in products %}
+                            {% for pk in pending_orders %}
                             <tr>
-                                <td><span style="font-size: 1.4rem;">{{ p.icon }}</span></td>
-                                <td><strong>{{ p.name }}</strong></td>
-                                <td><span class="badge bg-info text-dark">{{ p.category }}</span></td>
-                                <td>{{ p.prices }}</td>
+                                <td><code>{{ pk[1] }}</code></td>
+                                <td>{{ pk[2] }}</td>
+                                <td>{{ pk[3] }}</td>
+                                <td>₹{{ pk[5] }}</td>
                                 <td>
-                                    <button onclick="toggleMaint('{{ p.prod_key }}', {{ 0 if p.maintenance else 1 }})" class="btn btn-sm {{ 'btn-warning' if p.maintenance else 'btn-outline-secondary' }}">
-                                        {{ '🛠️ Active' if p.maintenance else 'Off' }}
-                                    </button>
+                                    <div class="d-flex gap-2">
+                                        <input type="text" id="key_disp_{{ pk[0] }}" class="form-control form-control-sm" placeholder="Paste Key">
+                                        <button class="btn btn-success btn-sm" onclick="dispatchKey({{ pk[0] }}, '{{ pk[1] }}')">Send</button>
+                                    </div>
                                 </td>
+                            </tr>
+                            {% else %}
+                            <tr><td colspan="5" class="text-center text-muted">No pending keys in queue. All orders fulfilled!</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- 👥 4. MEMBERS & WALLETS (INSPECTOR) -->
+        <div class="tab-pane-content" id="tab-members" style="display:none;">
+            <div class="card p-4">
+                <h5>👥 Members & Wallets Management</h5>
+                <div class="table-responsive mt-3">
+                    <table class="table table-dark align-middle">
+                        <thead><tr><th>Telegram ID</th><th>Name</th><th>Role</th><th>Balance</th><th>Adjust Balance</th></tr></thead>
+                        <tbody>
+                            {% for u in users_list %}
+                            <tr>
+                                <td><code>{{ u[0] }}</code></td>
+                                <td>{{ u[1] }}</td>
+                                <td><span class="badge {{ 'bg-warning text-dark' if u[9]=='Reseller' else 'bg-secondary' }}">{{ u[9] }}</span></td>
+                                <td><strong>₹{{ u[5] }}</strong></td>
                                 <td>
-                                    <button onclick="toggleStock('{{ p.prod_key }}', {{ 0 if p.stock_out else 1 }})" class="btn btn-sm {{ 'btn-danger' if p.stock_out else 'btn-success' }}">
-                                        {{ '❌ Out' if p.stock_out else '✅ In Stock' }}
-                                    </button>
-                                </td>
-                                <td>
-                                    <button onclick="deleteProduct('{{ p.prod_key }}')" class="btn btn-outline-danger btn-sm"><i class="fas fa-trash"></i></button>
+                                    <div class="d-flex gap-1">
+                                        <input type="number" id="bal_adj_{{ u[0] }}" class="form-control form-control-sm" style="width:90px;" placeholder="+50 / -20">
+                                        <button class="btn btn-sm btn-custom" onclick="adjustBalance({{ u[0] }})">Apply</button>
+                                    </div>
                                 </td>
                             </tr>
                             {% endfor %}
@@ -239,118 +335,46 @@ ADMIN_HTML = """
             </div>
         </div>
 
-        <!-- 4️⃣ 🔑 TAB 3: ID STOCK & SERIAL KEY MANAGEMENT -->
-        <div class="tab-pane-content" id="tab-stock" style="display: none;">
+        <!-- 📢 5. BROADCAST -->
+        <div class="tab-pane-content" id="tab-broadcast" style="display:none;">
             <div class="card p-4">
-                <h5 class="fw-bold mb-3"><i class="fas fa-key text-warning me-2"></i>Add Serial Keys (Auto sequential delivery)</h5>
-                <div class="row g-3">
-                    <div class="col-md-6">
-                        <label class="form-label small text-muted">Product Key Identifier</label>
-                        <input type="text" id="k_prod" class="form-control" placeholder="e.g. bala_mod">
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label small text-muted">Plan Name</label>
-                        <input type="text" id="k_plan" class="form-control" placeholder="e.g. 1_Day">
-                    </div>
-                    <div class="col-12">
-                        <label class="form-label small text-muted">Paste Keys (One Key Per Line)</label>
-                        <textarea id="k_keys" class="form-control" rows="6" placeholder="KEY-1234&#10;KEY-5678&#10;KEY-9012"></textarea>
-                    </div>
-                    <div class="col-12">
-                        <button onclick="uploadKeys()" class="btn btn-custom"><i class="fas fa-cloud-arrow-up me-2"></i>Upload Keys to Stock</button>
-                    </div>
+                <h5>📢 Broadcast Message to All Users</h5>
+                <textarea id="bc_msg" class="form-control mt-3" rows="6" placeholder="Type broadcast message (HTML supported)..."></textarea>
+                <button class="btn btn-custom mt-3" onclick="sendBroadcast()"><i class="fas fa-paper-plane me-2"></i> Send to All Users</button>
+            </div>
+        </div>
+
+        <!-- 💳 6. UPI SETTINGS -->
+        <div class="tab-pane-content" id="tab-upi" style="display:none;">
+            <div class="card p-4">
+                <h5>💳 UPI Gateway Setup</h5>
+                <div class="row g-3 mt-1">
+                    <div class="col-md-6"><label class="small">FamPay UPI ID</label><input type="text" id="u_fam" class="form-control" value="{{ upi.fampay_token }}"></div>
+                    <div class="col-md-6"><label class="small">Paytm Token / UPI</label><input type="text" id="u_paytm" class="form-control" value="{{ upi.paytm_token }}"></div>
+                    <div class="col-12"><button class="btn btn-custom" onclick="saveUpi()">Save UPI Settings</button></div>
                 </div>
             </div>
         </div>
 
-        <!-- 5️⃣ 📢 TAB 4: BROADCAST MESSAGE -->
-        <div class="tab-pane-content" id="tab-broadcast" style="display: none;">
+        <!-- ⚙️ 7. STORE SETTINGS -->
+        <div class="tab-pane-content" id="tab-store" style="display:none;">
             <div class="card p-4">
-                <h5 class="fw-bold mb-3"><i class="fas fa-bullhorn text-danger me-2"></i>Broadcast Message to All Telegram Users</h5>
-                <div class="row g-3">
-                    <div class="col-12">
-                        <label class="form-label small text-muted">Message (HTML Tags supported like &lt;b&gt;, &lt;i&gt;, &lt;code&gt;)</label>
-                        <textarea id="bc_text" class="form-control" rows="6" placeholder="🚀 Type your message here..."></textarea>
-                    </div>
-                    <div class="col-12">
-                        <button onclick="sendBroadcast()" class="btn btn-danger"><i class="fas fa-paper-plane me-2"></i>Send Broadcast Now</button>
-                    </div>
+                <h5>⚙️ Store Branding & Limits</h5>
+                <div class="row g-3 mt-1">
+                    <div class="col-md-6"><label class="small">Support Username</label><input type="text" id="st_supp" class="form-control" value="{{ store.support_username }}"></div>
+                    <div class="col-md-6"><label class="small">Tutorial Link</label><input type="text" id="st_how" class="form-control" value="{{ store.how_to_use_link }}"></div>
+                    <div class="col-12"><button class="btn btn-custom" onclick="saveStore()">Save Settings</button></div>
                 </div>
             </div>
         </div>
 
-        <!-- 6️⃣ 💳 TAB 5: UPI GATEWAY SETUP -->
-        <div class="tab-pane-content" id="tab-upi" style="display: none;">
+        <!-- 🛡️ 8. SECURITY -->
+        <div class="tab-pane-content" id="tab-security" style="display:none;">
             <div class="card p-4">
-                <h5 class="fw-bold mb-3"><i class="fas fa-wallet text-success me-2"></i>UPI Gateway Settings</h5>
-                <div class="row g-3">
-                    <div class="col-md-6">
-                        <label class="form-label small text-muted">FamPay UPI ID</label>
-                        <input type="text" id="u_fampay_upi" class="form-control" value="{{ upi.fampay_token }}" placeholder="9544113089@fam">
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label small text-muted">Custom FamPay QR Image URL</label>
-                        <input type="text" id="u_fampay_qr" class="form-control" value="{{ upi.fampay_qr }}" placeholder="https://i.imgur.com/...">
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label small text-muted">Paytm API Token</label>
-                        <input type="text" id="u_paytm_token" class="form-control" value="{{ upi.paytm_token }}" placeholder="Paytm API Token">
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label small text-muted">Paytm Custom QR URL</label>
-                        <input type="text" id="u_paytm_qr" class="form-control" value="{{ upi.paytm_qr }}" placeholder="https://i.imgur.com/...">
-                    </div>
-                    <div class="col-12">
-                        <button onclick="saveUpi()" class="btn btn-custom w-100"><i class="fas fa-floppy-disk me-2"></i>Save UPI Settings</button>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- 7️⃣ 🔌 TAB 6: KEY DELIVERY API SETUP -->
-        <div class="tab-pane-content" id="tab-api" style="display: none;">
-            <div class="card p-4">
-                <h5 class="fw-bold mb-3"><i class="fas fa-plug text-warning me-2"></i>Key Delivery API Configuration</h5>
-                <div class="row g-3">
-                    <div class="col-md-6">
-                        <label class="form-label small text-muted">API Key</label>
-                        <input type="text" id="api_key" class="form-control" value="{{ api_cfg[1] }}">
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label small text-muted">Master Key</label>
-                        <input type="text" id="api_master" class="form-control" value="{{ api_cfg[2] }}">
-                    </div>
-                    <div class="col-12">
-                        <label class="form-label small text-muted">Supplier Panel URL</label>
-                        <input type="text" id="api_url" class="form-control" value="{{ api_cfg[0] }}">
-                    </div>
-                    <div class="col-12">
-                        <button onclick="saveApi()" class="btn btn-success"><i class="fas fa-save me-2"></i>Save API Settings</button>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- 8️⃣ ⚙️ TAB 7: STORE SETTINGS -->
-        <div class="tab-pane-content" id="tab-store" style="display: none;">
-            <div class="card p-4">
-                <h5 class="fw-bold mb-3"><i class="fas fa-gear text-info me-2"></i>Store Configurations</h5>
-                <div class="row g-3">
-                    <div class="col-md-6">
-                        <label class="form-label small text-muted">Support Telegram Username</label>
-                        <input type="text" id="st_support" class="form-control" value="{{ store.support_username }}" placeholder="@Athulsudin">
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label small text-muted">How to Use Channel Link</label>
-                        <input type="text" id="st_how" class="form-control" value="{{ store.how_to_use_link }}" placeholder="https://t.me/...">
-                    </div>
-                    <div class="col-12">
-                        <label class="form-label small text-muted">Welcome Message Text</label>
-                        <textarea id="st_welc" class="form-control" rows="6">{{ store.welcome_message }}</textarea>
-                    </div>
-                    <div class="col-12">
-                        <button onclick="saveStore()" class="btn btn-custom"><i class="fas fa-floppy-disk me-2"></i>Save Store Settings</button>
-                    </div>
+                <h5>🛡️ Change Admin Password</h5>
+                <div class="row g-3 mt-1">
+                    <div class="col-md-6"><input type="password" id="sec_pwd" class="form-control" placeholder="New Password"></div>
+                    <div class="col-12"><button class="btn btn-warning" onclick="changePwd()">Update Password</button></div>
                 </div>
             </div>
         </div>
@@ -358,106 +382,56 @@ ADMIN_HTML = """
     {% endif %}
 
     <script>
-        function toggleSidebar() { document.getElementById('sidebar').classList.toggle('active'); }
-        function showTab(tabName, el) {
+        function showTab(t, el) {
             document.querySelectorAll('.tab-pane-content').forEach(d => d.style.display = 'none');
-            document.getElementById('tab-' + tabName).style.display = 'block';
+            document.getElementById('tab-' + t).style.display = 'block';
             document.querySelectorAll('.sidebar-link').forEach(l => l.classList.remove('active'));
             if(el) el.classList.add('active');
         }
         function saveProduct() {
-            let name = document.getElementById('p_name').value;
-            let cat = document.getElementById('p_cat').value;
-            let icon = document.getElementById('p_icon').value;
-            let plan = document.getElementById('p_plan').value;
-            let price = document.getElementById('p_price').value;
-            let link = document.getElementById('p_link').value;
-
-            if(!name || !plan || !price) { alert("Please fill required fields!"); return; }
-
             fetch('/api/product/save', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({name: name, category: cat, icon: icon, prices: [[plan, parseFloat(price)]], download_link: link})
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    name: document.getElementById('ap_name').value, category: document.getElementById('ap_cat').value,
+                    icon: document.getElementById('ap_icon').value, prices: [[document.getElementById('ap_plan').value, parseFloat(document.getElementById('ap_price').value)]],
+                    reseller_price: parseFloat(document.getElementById('ap_rprice').value || 0), download_link: document.getElementById('ap_link').value
+                })
             }).then(r => r.json()).then(d => { alert(d.message); location.reload(); });
         }
-        function deleteProduct(prod_key) {
-            if(!confirm("Are you sure you want to delete this product?")) return;
-            fetch('/api/product/delete', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({prod_key: prod_key})
-            }).then(r => r.json()).then(d => { alert(d.message); location.reload(); });
+        function deleteProduct(k) {
+            if(!confirm('Delete this product?')) return;
+            fetch('/api/product/delete', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({prod_key: k}) })
+            .then(r => r.json()).then(d => { alert(d.message); location.reload(); });
         }
-        function toggleMaint(prod_key, state) {
-            fetch('/api/product/maintenance', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({prod_key: prod_key, state: state})
-            }).then(r => r.json()).then(d => { location.reload(); });
+        function dispatchKey(oid, uid) {
+            let key = document.getElementById('key_disp_' + oid).value;
+            if(!key) { alert('Please enter key!'); return; }
+            fetch('/api/pending/dispatch', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({order_id: oid, user_id: uid, key: key}) })
+            .then(r => r.json()).then(d => { alert(d.message); location.reload(); });
         }
-        function toggleStock(prod_key, state) {
-            fetch('/api/product/stockout', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({prod_key: prod_key, state: state})
-            }).then(r => r.json()).then(d => { location.reload(); });
-        }
-        function uploadKeys() {
-            let prod = document.getElementById('k_prod').value;
-            let plan = document.getElementById('k_plan').value;
-            let keys = document.getElementById('k_keys').value;
-            if(!prod || !plan || !keys) { alert("Please fill all key fields!"); return; }
-
-            fetch('/api/stock/add', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({prod_key: prod, plan: plan, keys: keys})
-            }).then(r => r.json()).then(d => { alert(d.message); location.reload(); });
+        function adjustBalance(uid) {
+            let val = parseFloat(document.getElementById('bal_adj_' + uid).value);
+            if(isNaN(val)) { alert('Invalid amount!'); return; }
+            fetch('/api/user/adjust_balance', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({user_id: uid, delta: val}) })
+            .then(r => r.json()).then(d => { alert(d.message); location.reload(); });
         }
         function sendBroadcast() {
-            let text = document.getElementById('bc_text').value;
-            if(!text) { alert("Please type a message!"); return; }
-
-            fetch('/api/broadcast/send', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({message: text})
-            }).then(r => r.json()).then(d => { alert(d.message); });
+            let msg = document.getElementById('bc_msg').value;
+            if(!msg) return alert('Enter message!');
+            fetch('/api/broadcast/send', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({message: msg}) })
+            .then(r => r.json()).then(d => alert(d.message));
         }
         function saveUpi() {
-            fetch('/api/upi/save', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({
-                    fampay_token: document.getElementById('u_fampay_upi').value,
-                    fampay_qr: document.getElementById('u_fampay_qr').value,
-                    paytm_token: document.getElementById('u_paytm_token').value,
-                    paytm_qr: document.getElementById('u_paytm_qr').value
-                })
-            }).then(r => r.json()).then(d => { alert(d.message); });
-        }
-        function saveApi() {
-            fetch('/api/api_cfg/save', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({
-                    api_url: document.getElementById('api_url').value,
-                    api_key: document.getElementById('api_key').value,
-                    master_key: document.getElementById('api_master').value
-                })
-            }).then(r => r.json()).then(d => { alert(d.message); });
+            fetch('/api/upi/save', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({fampay_token: document.getElementById('u_fam').value, paytm_token: document.getElementById('u_paytm').value}) })
+            .then(r => r.json()).then(d => alert(d.message));
         }
         function saveStore() {
-            fetch('/api/store/save', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({
-                    support_username: document.getElementById('st_support').value,
-                    how_to_use_link: document.getElementById('st_how').value,
-                    welcome_message: document.getElementById('st_welc').value
-                })
-            }).then(r => r.json()).then(d => { alert(d.message); });
+            fetch('/api/store/save', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({support_username: document.getElementById('st_supp').value, how_to_use_link: document.getElementById('st_how').value}) })
+            .then(r => r.json()).then(d => alert(d.message));
+        }
+        function changePwd() {
+            fetch('/api/security/change_pwd', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({password: document.getElementById('sec_pwd').value}) })
+            .then(r => r.json()).then(d => alert(d.message));
         }
     </script>
 </body>
@@ -465,15 +439,15 @@ ADMIN_HTML = """
 """
 
 # ==========================================
-# 🌐 FLASK ROUTES & AUTH
+# 🌐 BACKEND ROUTES
 # ==========================================
 @app.route('/login', methods=['POST'])
 def login():
-    pwd = request.form.get('password')
-    if pwd == ADMIN_PASSWORD:
+    if request.form.get('password') == get_current_password():
+        session.permanent = True
         session['admin_logged'] = True
         return redirect('/')
-    return render_template_string(ADMIN_HTML, error="Incorrect Admin Password!")
+    return render_template_string(ADMIN_HTML, bot_info=BOT_INFO, error="Invalid Admin Password!")
 
 @app.route('/logout')
 def logout():
@@ -483,186 +457,127 @@ def logout():
 @app.route('/')
 def dashboard():
     if not session.get('admin_logged'):
-        return render_template_string(ADMIN_HTML)
+        return render_template_string(ADMIN_HTML, bot_info=BOT_INFO)
 
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-
-    c.execute('SELECT COUNT(*) FROM users')
-    tot_users = c.fetchone()[0]
-
-    c.execute('SELECT COUNT(*), SUM(amount) FROM order_history')
-    row = c.fetchone()
-    tot_orders = row[0] or 0
-    tot_rev = row[1] or 0.0
-
-    c.execute('SELECT COUNT(*) FROM keys_inventory WHERE is_used = 0')
-    tot_keys = c.fetchone()[0]
-
-    c.execute('SELECT prod_key, name, category, prices, download_link, icon, maintenance, stock_out FROM products')
-    prods = [{"prod_key": p[0], "name": p[1], "category": p[2], "prices": json.loads(p[3]), "download_link": p[4], "icon": p[5] or "⚡", "maintenance": bool(p[6]), "stock_out": bool(p[7])} for p in c.fetchall()]
-
-    c.execute('SELECT support_username, how_to_use_link, welcome_message FROM store_settings WHERE id = 1')
-    st_row = c.fetchone() or ("@Athulsudin", "", "")
-    store = {"support_username": st_row[0], "how_to_use_link": st_row[1], "welcome_message": st_row[2]}
-
-    c.execute('SELECT paytm_token, paytm_qr, fampay_token, fampay_qr FROM upi_settings WHERE id = 1')
-    up_row = c.fetchone() or ("", "", "", "")
-    upi = {"paytm_token": up_row[0], "paytm_qr": up_row[1], "fampay_token": up_row[2], "fampay_qr": up_row[3]}
-
-    c.execute('SELECT api_url, api_key, master_key FROM api_config WHERE id = 1')
-    api_cfg = c.fetchone() or ("", "", "")
-    conn.close()
-
-    stats = {
-        "users": tot_users,
-        "orders": tot_orders,
-        "revenue": f"{tot_rev:,.2f}",
-        "keys": tot_keys
-    }
-
-    return render_template_string(ADMIN_HTML, stats=stats, products=prods, store=store, upi=upi, api_cfg=api_cfg)
-
-# ==========================================
-# 🛠️ BACKEND API ENDPOINTS
-# ==========================================
-@app.route('/api/product/save', methods=['POST'])
-def api_save_product():
-    if not session.get('admin_logged'): return jsonify({"success": False, "message": "Unauthorized"}), 401
-    d = request.json
-    name = d['name'].strip()
-    key = re.sub(r'[^a-zA-Z0-9]', '_', name).strip('_').lower()
+    c.execute('SELECT COUNT(*), SUM(wallet_balance) FROM users'); r_u = c.fetchone(); tot_users = r_u[0] or 0; tot_wallet = r_u[1] or 0.0
+    c.execute('SELECT COUNT(*), SUM(amount) FROM order_history'); r_o = c.fetchone(); tot_orders = r_o[0] or 0; tot_rev = r_o[1] or 0.0
+    c.execute('SELECT COUNT(*) FROM products'); tot_prods = c.fetchone()[0]
+    c.execute('SELECT COUNT(*) FROM keys_inventory WHERE is_used = 0'); tot_keys = c.fetchone()[0]
     
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('''
-        INSERT OR REPLACE INTO products (prod_key, name, category, prices, download_link, icon, maintenance, stock_out)
-        VALUES (?, ?, ?, ?, ?, ?, 0, 0)
-    ''', (key, name, d['category'], json.dumps(d['prices']), d.get('download_link', ''), d.get('icon', '⚡')))
-    conn.commit()
+    c.execute('SELECT prod_key, name, category, prices, icon, download_link FROM products'); prods = [{"prod_key": p[0], "name": p[1], "category": p[2], "prices": json.loads(p[3]), "icon": p[4] or "⚡", "download_link": p[5]} for p in c.fetchall()]
+    c.execute('SELECT id, user_id, prod_name, plan, key_delivered, amount, timestamp FROM order_history WHERE key_delivered LIKE "PENDING%" ORDER BY id DESC'); pending = c.fetchall()
+    c.execute('SELECT user_id, full_name, username, joined_date, orders_count, wallet_balance, total_spent, total_referrals, referral_earnings, account_type FROM users ORDER BY user_id DESC LIMIT 50'); users_list = c.fetchall()
+    c.execute('SELECT fampay_token, paytm_token FROM upi_settings WHERE id = 1'); upi_r = c.fetchone() or ("", "")
+    c.execute('SELECT support_username, how_to_use_link FROM store_settings WHERE id = 1'); st_r = c.fetchone() or ("@Athulsudin", "")
     conn.close()
-    return jsonify({"success": True, "message": "Product saved successfully!"})
+
+    return render_template_string(
+        ADMIN_HTML, bot_info=BOT_INFO,
+        stats={"users": tot_users, "total_wallet": f"{tot_wallet:,.2f}", "products_count": tot_prods, "orders": tot_orders, "revenue": f"{tot_rev:,.2f}", "keys": tot_keys},
+        products=prods, pending_orders=pending, users_list=users_list,
+        upi={"fampay_token": upi_r[0], "paytm_token": upi_r[1]},
+        store={"support_username": st_r[0], "how_to_use_link": st_r[1]}
+    )
+
+@app.route('/api/product/save', methods=['POST'])
+def api_save_p():
+    if not session.get('admin_logged'): return jsonify({"message": "Unauthorized"}), 401
+    d = request.json
+    k = re.sub(r'[^a-zA-Z0-9]', '_', d['name']).strip('_').lower()
+    conn = sqlite3.connect(DB_FILE); c = conn.cursor()
+    c.execute('INSERT OR REPLACE INTO products (prod_key, name, category, prices, download_link, icon, maintenance, stock_out) VALUES (?, ?, ?, ?, ?, ?, 0, 0)',
+              (k, d['name'], d['category'], json.dumps(d['prices']), d.get('download_link',''), d.get('icon','⚡')))
+    conn.commit(); conn.close()
+    return jsonify({"message": "Product saved successfully!"})
 
 @app.route('/api/product/delete', methods=['POST'])
-def api_delete_product():
-    if not session.get('admin_logged'): return jsonify({"success": False, "message": "Unauthorized"}), 401
-    key = request.json.get('prod_key')
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('DELETE FROM products WHERE prod_key = ?', (key,))
-    conn.commit()
-    conn.close()
-    return jsonify({"success": True, "message": "Product deleted successfully!"})
+def api_del_p():
+    if not session.get('admin_logged'): return jsonify({"message": "Unauthorized"}), 401
+    conn = sqlite3.connect(DB_FILE); c = conn.cursor()
+    c.execute('DELETE FROM products WHERE prod_key = ?', (request.json.get('prod_key'),))
+    conn.commit(); conn.close()
+    return jsonify({"message": "Product deleted!"})
 
-@app.route('/api/product/maintenance', methods=['POST'])
-def api_maint_product():
-    if not session.get('admin_logged'): return jsonify({"success": False}), 401
+@app.route('/api/pending/dispatch', methods=['POST'])
+def api_dispatch():
+    if not session.get('admin_logged'): return jsonify({"message": "Unauthorized"}), 401
     d = request.json
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('UPDATE products SET maintenance = ? WHERE prod_key = ?', (d['state'], d['prod_key']))
-    conn.commit()
-    conn.close()
-    return jsonify({"success": True})
+    oid = d['order_id']; uid = d['user_id']; key = d['key'].strip()
+    conn = sqlite3.connect(DB_FILE); c = conn.cursor()
+    c.execute('UPDATE order_history SET key_delivered = ? WHERE id = ?', (key, oid))
+    conn.commit(); conn.close()
+    
+    # Send Key to Customer Telegram Chat
+    try:
+        msg = f"✅ <b>Payment verified — here's your key!</b>\n⏩ ~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n🗝️ Your Key:\n<code>{key}</code>\n\nThank you for shopping with us!"
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        payload = json.dumps({"chat_id": uid, "text": msg, "parse_mode": "HTML"}).encode()
+        urllib.request.urlopen(urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}), timeout=5)
+    except Exception:
+        pass
+    return jsonify({"message": "Key dispatched directly to customer!"})
 
-@app.route('/api/product/stockout', methods=['POST'])
-def api_stockout_product():
-    if not session.get('admin_logged'): return jsonify({"success": False}), 401
+@app.route('/api/user/adjust_balance', methods=['POST'])
+def api_adj_bal():
+    if not session.get('admin_logged'): return jsonify({"message": "Unauthorized"}), 401
     d = request.json
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('UPDATE products SET stock_out = ? WHERE prod_key = ?', (d['state'], d['prod_key']))
-    conn.commit()
-    conn.close()
-    return jsonify({"success": True})
-
-@app.route('/api/stock/add', methods=['POST'])
-def api_stock_add():
-    if not session.get('admin_logged'): return jsonify({"success": False, "message": "Unauthorized"}), 401
-    d = request.json
-    keys = [k.strip() for k in d['keys'].split('\n') if k.strip()]
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    for k in keys:
-        c.execute('INSERT INTO keys_inventory (prod_key, plan, item_key, is_used) VALUES (?, ?, ?, 0)', (d['prod_key'], d['plan'], k))
-    conn.commit()
-    conn.close()
-    return jsonify({"success": True, "message": f"Added {len(keys)} keys to stock!"})
+    conn = sqlite3.connect(DB_FILE); c = conn.cursor()
+    c.execute('UPDATE users SET wallet_balance = wallet_balance + ? WHERE user_id = ?', (d['delta'], d['user_id']))
+    conn.commit(); conn.close()
+    return jsonify({"message": "Wallet balance updated!"})
 
 @app.route('/api/broadcast/send', methods=['POST'])
-def api_broadcast_send():
-    if not session.get('admin_logged'): return jsonify({"success": False, "message": "Unauthorized"}), 401
-    msg = request.json.get('message', '').strip()
-    
-    def _send_sync():
-        conn = sqlite3.connect(DB_FILE)
-        c = conn.cursor()
-        c.execute('SELECT user_id FROM users')
-        users = [r[0] for r in c.fetchall()]
+def api_bc():
+    if not session.get('admin_logged'): return jsonify({"message": "Unauthorized"}), 401
+    msg = request.json.get('message', '')
+    def _run():
+        conn = sqlite3.connect(DB_FILE); c = conn.cursor()
+        c.execute('SELECT user_id FROM users'); uids = [r[0] for r in c.fetchall()]
         conn.close()
-        
-        for u in users:
+        for u in uids:
             try:
                 url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-                payload = json.dumps({"chat_id": u, "text": msg, "parse_mode": "HTML"}).encode("utf-8")
-                req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
-                with urllib.request.urlopen(req, timeout=5) as response:
-                    pass
+                payload = json.dumps({"chat_id": u, "text": msg, "parse_mode": "HTML"}).encode()
+                urllib.request.urlopen(urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}), timeout=4)
             except Exception:
                 pass
-
-    Thread(target=_send_sync).start()
-    return jsonify({"success": True, "message": "Broadcast sending in background to all users!"})
+    Thread(target=_run).start()
+    return jsonify({"message": "Broadcast sending in background!"})
 
 @app.route('/api/upi/save', methods=['POST'])
-def api_upi_save():
-    if not session.get('admin_logged'): return jsonify({"success": False, "message": "Unauthorized"}), 401
+def api_save_upi():
+    if not session.get('admin_logged'): return jsonify({"message": "Unauthorized"}), 401
     d = request.json
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('''
-        INSERT INTO upi_settings (id, paytm_token, paytm_qr, fampay_token, fampay_qr)
-        VALUES (1, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET paytm_token=?, paytm_qr=?, fampay_token=?, fampay_qr=?
-    ''', (d.get('paytm_token',''), d.get('paytm_qr',''), d.get('fampay_token',''), d.get('fampay_qr',''),
-          d.get('paytm_token',''), d.get('paytm_qr',''), d.get('fampay_token',''), d.get('fampay_qr','')))
-    conn.commit()
-    conn.close()
-    return jsonify({"success": True, "message": "UPI settings updated!"})
-
-@app.route('/api/api_cfg/save', methods=['POST'])
-def api_cfg_save():
-    if not session.get('admin_logged'): return jsonify({"success": False, "message": "Unauthorized"}), 401
-    d = request.json
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('''
-        INSERT INTO api_config (id, api_url, api_key, master_key)
-        VALUES (1, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET api_url=?, api_key=?, master_key=?
-    ''', (d['api_url'], d['api_key'], d['master_key'], d['api_url'], d['api_key'], d['master_key']))
-    conn.commit()
-    conn.close()
-    return jsonify({"success": True, "message": "API config saved!"})
+    conn = sqlite3.connect(DB_FILE); c = conn.cursor()
+    c.execute('UPDATE upi_settings SET fampay_token=?, paytm_token=? WHERE id = 1', (d.get('fampay_token',''), d.get('paytm_token','')))
+    conn.commit(); conn.close()
+    return jsonify({"message": "UPI settings saved!"})
 
 @app.route('/api/store/save', methods=['POST'])
-def api_store_save():
-    if not session.get('admin_logged'): return jsonify({"success": False, "message": "Unauthorized"}), 401
+def api_save_st():
+    if not session.get('admin_logged'): return jsonify({"message": "Unauthorized"}), 401
     d = request.json
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('''
-        INSERT INTO store_settings (id, support_username, how_to_use_link, welcome_message)
-        VALUES (1, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET support_username=?, how_to_use_link=?, welcome_message=?
-    ''', (d['support_username'], d['how_to_use_link'], d['welcome_message'], d['support_username'], d['how_to_use_link'], d['welcome_message']))
-    conn.commit()
-    conn.close()
-    return jsonify({"success": True, "message": "Store settings updated!"})
+    conn = sqlite3.connect(DB_FILE); c = conn.cursor()
+    c.execute('UPDATE store_settings SET support_username=?, how_to_use_link=? WHERE id = 1', (d.get('support_username',''), d.get('how_to_use_link','')))
+    conn.commit(); conn.close()
+    return jsonify({"message": "Store settings saved!"})
 
-# ==========================================
-# 🚀 WEB SERVER RUNNER
-# ==========================================
+@app.route('/api/security/change_pwd', methods=['POST'])
+def api_pwd():
+    if not session.get('admin_logged'): return jsonify({"message": "Unauthorized"}), 401
+    np = request.json.get('password', '').strip()
+    if np:
+        conn = sqlite3.connect(DB_FILE); c = conn.cursor()
+        c.execute('UPDATE admin_auth SET password = ? WHERE id = 1', (np,))
+        conn.commit(); conn.close()
+        return jsonify({"message": "Password updated successfully!"})
+    return jsonify({"message": "Password cannot be empty!"}), 400
+
 def run_web():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
+
+if __name__ == "__main__":
+    run_web()
