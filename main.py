@@ -29,9 +29,6 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = "8892856619:AAGZhdOv389_AaKvbcbInlJAiDMOwQxOeHc"
 ADMIN_ID = 7616127905
 DB_FILE = "bot_database.db"
-
-STORE_CONFIG = {"support_username": "@Athulsudin", "how_to_use_link": "https://t.me/chatelitehackers"}
-UPI_CONFIG = {"fampay_token": "9544113089@fam", "paytm_token": ""}
 IST = pytz.timezone('Asia/Kolkata')
 
 def get_ist_time():
@@ -107,6 +104,12 @@ def init_db():
             welcome_message TEXT
         )
     ''')
+    c.execute('SELECT id FROM store_settings WHERE id = 1')
+    if not c.fetchone():
+        c.execute('INSERT INTO store_settings VALUES (1, "@Athulsudin", "https://t.me/chatelitehackers", "")')
+    c.execute('SELECT id FROM upi_settings WHERE id = 1')
+    if not c.fetchone():
+        c.execute('INSERT INTO upi_settings VALUES (1, "", "", "9544113089@fam", "")')
     conn.commit()
     conn.close()
 
@@ -192,7 +195,7 @@ def get_product_by_key(prod_key):
 init_db()
 
 # ==========================================
-# 🏠 1. MAIN MENU & DEEP LINK REFERRAL
+# 🏠 1. MAIN MENU (10 BUTTONS & LIVE STATS)
 # ==========================================
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -216,6 +219,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u_data = db_get_user(user.id)
     balance = u_data[4] if u_data else 0.0
 
+    conn = sqlite3.connect(DB_FILE); c = conn.cursor()
+    c.execute('SELECT how_to_use_link FROM store_settings WHERE id = 1'); how_link = c.fetchone()[0] or "https://t.me/chatelitehackers"
+    conn.close()
+
     text = (
         f"🛒 ── <b>ELITE HACKERS STORE</b> ── 🛒\n\n"
         f"👏 Welcome, <b>{user.first_name}!</b> 🥷\n\n"
@@ -233,11 +240,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🚀 Tap Shop Now to Start!"
     )
 
-    # 10 Colored Emojis Buttons Layout
     keyboard = [
         [InlineKeyboardButton("🛒 Shop Key", callback_data="shop_key"), InlineKeyboardButton("👤 My Profile", callback_data="my_profile")],
         [InlineKeyboardButton("💰 Add Balance", callback_data="add_balance"), InlineKeyboardButton("🧾 All History", callback_data="all_history")],
-        [InlineKeyboardButton("▶️ Tutorial watch", url=STORE_CONFIG.get("how_to_use_link", "https://t.me/chatelitehackers")), InlineKeyboardButton("👑 Reseller", callback_data="reseller_plan")],
+        [InlineKeyboardButton("▶️ Tutorial watch", url=how_link), InlineKeyboardButton("👑 Reseller", callback_data="reseller_plan")],
         [InlineKeyboardButton("💼 Selling Proof ↗️", url="https://t.me/+fJrFACSrntgwNjll"), InlineKeyboardButton("💬 Support", url="https://t.me/Athulsudin")],
         [InlineKeyboardButton("🎰 Lucky Spin", callback_data="lucky_spin"), InlineKeyboardButton("👥 Referral", callback_data="referral_menu")]
     ]
@@ -406,14 +412,17 @@ async def preset_dep_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     amt = float(update.callback_query.data.replace("preset_dep_", ""))
     await generate_deposit_qr(update, context, amt)
 
-# 📷 Dynamic QR + 5-Minute Auto-Expiry Watchdog
+# 📷 Dynamic QR + 5-Minute Auto Expiry Watchdog
 async def generate_deposit_qr(update: Update, context: ContextTypes.DEFAULT_TYPE, amount: float, is_deficit=False, prod_name=None, plan_name=None):
     query = update.callback_query
     method = context.user_data.get('deposit_method', 'fampay').upper()
     order_id = f"{method}{datetime.now(IST).strftime('%Y%m%d%H%M%S')}{os.urandom(4).hex().upper()}"
     context.user_data['active_deposit'] = {'amount': amount, 'order_id': order_id, 'is_deficit': is_deficit, 'prod': prod_name, 'plan': plan_name, 'confirmed': False}
 
-    upi_id = UPI_CONFIG.get("fampay_token") or "9544113089@fam"
+    conn = sqlite3.connect(DB_FILE); c = conn.cursor()
+    c.execute('SELECT fampay_token FROM upi_settings WHERE id = 1'); upi_id = c.fetchone()[0] or "9544113089@fam"
+    conn.close()
+
     upi_uri = f"upi://pay?pa={upi_id}&pn=ELITE_HACKERS&am={amount:.2f}&cu=INR&tn={order_id}"
     qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=500x500&data={urllib.parse.quote(upi_uri)}"
 
@@ -489,7 +498,7 @@ async def complete_deposit_success(update: Update, context: ContextTypes.DEFAULT
     if dep.get('is_deficit'):
         prod_key = context.user_data.get('pending_deficit', {}).get('prod_key')
         plan = dep.get('plan')
-        delivered_key = db_pop_auto_key(prod_key, plan) or f"PENDING_KEY_{order_id}"
+        delivered_key = db_pop_auto_key(prod_key, plan) or f"PENDING_KEY_{dep['order_id']}"
         db_add_order(user.id, dep.get('prod'), plan, delivered_key, dep['amount'], "UPI_DEFICIT", get_ist_time())
 
         key_card_text = (
@@ -720,7 +729,7 @@ async def process_plan_purchase(update: Update, context: ContextTypes.DEFAULT_TY
                 f"✅ <b>Payment Verified & Received!</b>\n__________________________________\n\n"
                 f"⚠️ <b>NOTICE:</b> Instant auto-stock for <b>{prod_name} ({plan_name})</b> is currently restocking!\n\n"
                 f"🛡️ <b>100% SAFE & GUARANTEED:</b>\n"
-                f"Your payment is completely safe with us. Our admin is preparing your fresh key right now. It will be delivered directly to this chat shortly!\n\n"
+                f"Your payment is completely safe with us. Our admin team is preparing your fresh key right now. It will be delivered directly to this chat shortly!\n\n"
                 f"📞 Need immediate help? Contact: @Athulsudin"
             )
             keyboard = [[InlineKeyboardButton("➡️ Back to Menu", callback_data="main_menu")]]
@@ -792,16 +801,15 @@ def start_bot():
     app.add_handler(CallbackQueryHandler(process_plan_purchase, pattern="^buyplan_"))
     app.add_handler(CallbackQueryHandler(def_pay_click, pattern="^def_pay_"))
 
-    print("🤖 Telegram Bot Polling Running...")
+    print("🤖 Telegram Bot Engine Running...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
-    print("🌐 Launching Web Admin Panel...")
+    print("🌐 Launching Web Admin Panel in Background Thread...")
     t = Thread(target=web_admin.run_web)
     t.daemon = True
     t.start()
 
-    # 🛡️ 24/7 Crash Proof Auto-Restart
     while True:
         try:
             start_bot()
