@@ -18,19 +18,12 @@ app = Flask(__name__)
 app.secret_key = os.urandom(32)
 app.permanent_session_lifetime = timedelta(days=30)
 
-def get_ist_time():
-    return datetime.now(IST).strftime("%d %b %Y, %I:%M %p (IST)")
-
-# ==========================================
-# 🗄️ DATABASE TABLES
-# ==========================================
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS admin_auth (id INTEGER PRIMARY KEY DEFAULT 1, password TEXT)''')
     c.execute('SELECT password FROM admin_auth WHERE id = 1')
-    if not c.fetchone():
-        c.execute('INSERT INTO admin_auth VALUES (1, ?)', (DEFAULT_ADMIN_PWD,))
+    if not c.fetchone(): c.execute('INSERT INTO admin_auth VALUES (1, ?)', (DEFAULT_ADMIN_PWD,))
 
     c.execute('''CREATE TABLE IF NOT EXISTS products (
         prod_key TEXT PRIMARY KEY, name TEXT, category TEXT, prices TEXT,
@@ -43,25 +36,20 @@ def init_db():
         api_key TEXT DEFAULT "", master_key TEXT DEFAULT ""
     )''')
     c.execute('SELECT id FROM api_supplier_config WHERE id = 1')
-    if not c.fetchone():
-        c.execute('INSERT INTO api_supplier_config VALUES (1, "https://adminpanels.shop/api/reseller_v1.php", "", "")')
+    if not c.fetchone(): c.execute('INSERT INTO api_supplier_config VALUES (1, "https://adminpanels.shop/api/reseller_v1.php", "", "")')
 
     c.execute('''CREATE TABLE IF NOT EXISTS gateway_config (
         id INTEGER PRIMARY KEY DEFAULT 1, active_gateway TEXT DEFAULT "fampay",
         fampay_api_key TEXT DEFAULT "", fampay_upi_id TEXT DEFAULT "9544113089@fam",
-        fampay_base_url TEXT DEFAULT "https://xyzcheats.com/gateway",
-        paytm_base_url TEXT DEFAULT "https://xyzcheats.com", paytm_upi_id TEXT DEFAULT "", paytm_merchant_id TEXT DEFAULT ""
+        paytm_upi_id TEXT DEFAULT "", paytm_merchant_id TEXT DEFAULT ""
     )''')
     c.execute('SELECT id FROM gateway_config WHERE id = 1')
-    if not c.fetchone():
-        c.execute('INSERT INTO gateway_config VALUES (1, "fampay", "", "9544113089@fam", "https://xyzcheats.com/gateway", "https://xyzcheats.com", "", "")')
+    if not c.fetchone(): c.execute('INSERT INTO gateway_config VALUES (1, "fampay", "", "9544113089@fam", "", "")')
 
     c.execute('''CREATE TABLE IF NOT EXISTS store_settings (id INTEGER PRIMARY KEY DEFAULT 1, support_username TEXT DEFAULT "@Athulsudin", how_to_use_link TEXT DEFAULT "https://t.me/chatelitehackers")''')
     c.execute('SELECT id FROM store_settings WHERE id = 1')
-    if not c.fetchone():
-        c.execute('INSERT INTO store_settings VALUES (1, "@Athulsudin", "https://t.me/chatelitehackers")')
-    conn.commit()
-    conn.close()
+    if not c.fetchone(): c.execute('INSERT INTO store_settings VALUES (1, "@Athulsudin", "https://t.me/chatelitehackers")')
+    conn.commit(); conn.close()
 
 def get_current_password():
     conn = sqlite3.connect(DB_FILE); c = conn.cursor()
@@ -70,6 +58,7 @@ def get_current_password():
 
 init_db()
 
+# Fetch Bot Info
 BOT_INFO = {"name": "Bot Control Center", "username": "@EliteBot", "avatar": None}
 def fetch_bot_meta():
     try:
@@ -82,9 +71,6 @@ def fetch_bot_meta():
     except Exception: pass
 Thread(target=fetch_bot_meta, daemon=True).start()
 
-# ==========================================
-# 🎨 EXACT CYBER-PURPLE HTML TEMPLATE
-# ==========================================
 ADMIN_HTML = """
 <!DOCTYPE html>
 <html lang="en">
@@ -116,9 +102,8 @@ ADMIN_HTML = """
         .stat-card { background: var(--card); border: 1px solid var(--neon); border-radius: 16px; padding: 20px; border-left: 4px solid #8b5cf6; }
         .btn-custom { background: linear-gradient(135deg, #7c3aed, #6366f1); color: white; border: none; border-radius: 10px; padding: 10px 18px; font-weight: 600; }
         .form-control, .form-select { background-color: #0d0622; border: 1px solid var(--neon); color: white; border-radius: 10px; padding: 10px; }
-        .form-control:focus { background-color: #0d0622; color: white; border-color: #a855f7; box-shadow: none; }
-        .gold-box { border: 1px solid rgba(250, 204, 21, 0.4); border-radius: 16px; padding: 20px; background: rgba(22, 13, 44, 0.95); margin-bottom: 20px; }
         .cyan-box { border: 1px solid rgba(56, 189, 248, 0.4); border-radius: 16px; padding: 20px; background: rgba(22, 13, 44, 0.95); margin-bottom: 20px; }
+        .gold-box { border: 1px solid rgba(250, 204, 21, 0.4); border-radius: 16px; padding: 20px; background: rgba(22, 13, 44, 0.95); margin-bottom: 20px; }
     </style>
 </head>
 <body>
@@ -140,6 +125,12 @@ ADMIN_HTML = """
             <div style="margin-top:20px;font-size:0.78rem;color:#d8b4fe;">🔐 Owner-only · session remembered for 30 days</div>
         </div>
     </div>
+    <script>
+        function togglePwd() {
+            let p = document.getElementById('pInput');
+            p.type = p.type === 'password' ? 'text' : 'password';
+        }
+    </script>
     {% else %}
     <div class="sidebar" id="sidebar">
         <div class="px-3 pb-3 border-bottom border-secondary d-flex align-items-center gap-2">
@@ -179,7 +170,7 @@ ADMIN_HTML = """
             </div>
         </div>
 
-        <!-- 📦 2. MANAGE PRODUCT (Exact Video Fields: PID & Remote Duration) -->
+        <!-- 📦 2. MANAGE PRODUCT -->
         <div class="tab-pane-content" id="tab-products" style="display:none;">
             <div class="card p-4">
                 <div class="d-flex justify-content-between align-items-center mb-3">
@@ -187,12 +178,11 @@ ADMIN_HTML = """
                     <button class="btn btn-custom btn-sm" onclick="document.getElementById('addProdBox').style.display='block'"><i class="fas fa-plus me-1"></i> Add Product</button>
                 </div>
                 <div id="addProdBox" class="p-3 mb-4 card" style="display:none;background:#13082e;">
-                    <h6>➕ Add Product</h6>
+                    <h6>➕ Add Product (Remote Supplier PID & Duration)</h6>
                     <div class="row g-3 mt-1">
                         <div class="col-md-6"><label class="small text-muted">Product Name</label><input type="text" id="ap_name" class="form-control" placeholder="AIM HACK FF NONROOT"></div>
-                        <div class="col-md-6"><label class="small text-muted">Channel Link</label><input type="text" id="ap_link" class="form-control" placeholder="https://t.me/BalaModsXyz"></div>
-                        
-                        <div class="col-md-3"><label class="small text-muted">Duration (Plan)</label><input type="text" id="ap_plan" class="form-control" placeholder="1 day"></div>
+                        <div class="col-md-6"><label class="small text-muted">Channel Link (Update File)</label><input type="text" id="ap_link" class="form-control" placeholder="https://t.me/BalaModsXyz"></div>
+                        <div class="col-md-3"><label class="small text-muted">Plan Name</label><input type="text" id="ap_plan" class="form-control" placeholder="1 day"></div>
                         <div class="col-md-3"><label class="small text-muted">User Price (₹)</label><input type="number" id="ap_price" class="form-control" placeholder="50"></div>
                         <div class="col-md-3"><label class="small text-muted">Reseller Price (₹)</label><input type="number" id="ap_rprice" class="form-control" placeholder="40"></div>
                         <div class="col-md-3"><label class="small text-muted">Category</label>
@@ -201,11 +191,8 @@ ADMIN_HTML = """
                                 <option value="ios">iOS Panels</option><option value="pc">PC Panels</option>
                             </select>
                         </div>
-                        
-                        <!-- Video Remote PID & Duration -->
-                        <div class="col-md-6"><label class="small text-info">Remote Product ID (PID from Supplier Panel)</label><input type="text" id="ap_pid" class="form-control" placeholder="e.g. 133"></div>
-                        <div class="col-md-6"><label class="small text-info">Remote Duration (from Supplier Panel)</label><input type="text" id="ap_rdur" class="form-control" placeholder="e.g. 1 Days"></div>
-                        
+                        <div class="col-md-6"><label class="small text-info">Remote Product ID (PID)</label><input type="text" id="ap_pid" class="form-control" placeholder="133"></div>
+                        <div class="col-md-6"><label class="small text-info">Remote Duration</label><input type="text" id="ap_rdur" class="form-control" placeholder="1 Days"></div>
                         <div class="col-12"><button class="btn btn-custom w-100" onclick="saveProduct()">Save Product</button></div>
                     </div>
                 </div>
@@ -216,7 +203,7 @@ ADMIN_HTML = """
                             <h5 class="fw-bold">{{ p.name }}</h5>
                             <span class="badge bg-secondary mb-2">{{ p.category }}</span>
                             <div class="small text-muted">Prices: {{ p.prices }}</div>
-                            <div class="small text-info mt-1">Remote PID: {{ p.remote_pid or 'N/A' }} | Duration: {{ p.remote_duration or 'N/A' }}</div>
+                            <div class="small text-info mt-1">PID: {{ p.remote_pid or 'None' }} | Remote Duration: {{ p.remote_duration or 'None' }}</div>
                             <div class="mt-3">
                                 <button class="btn btn-sm btn-outline-danger" onclick="deleteProduct('{{ p.prod_key }}')"><i class="fas fa-trash"></i> Delete</button>
                             </div>
@@ -227,7 +214,7 @@ ADMIN_HTML = """
             </div>
         </div>
 
-        <!-- 🔌 3. KEY DELIVERY API SETUP (Exact Video: API URL, API Key, Master Key, Test Connection) -->
+        <!-- 🔌 3. KEY DELIVERY API SETUP -->
         <div class="tab-pane-content" id="tab-api_setup" style="display:none;">
             <div class="card p-4">
                 <h5>🔌 Key Delivery API Setup</h5>
@@ -235,46 +222,32 @@ ADMIN_HTML = """
                 <div class="cyan-box">
                     <h6 class="text-info fw-bold mb-3">Reseller API Configuration</h6>
                     <div class="row g-3">
-                        <div class="col-12">
-                            <label class="small text-muted">API URL</label>
-                            <input type="text" id="sup_url" class="form-control" value="{{ api_sup.api_url }}">
-                        </div>
-                        <div class="col-12">
-                            <label class="small text-muted">API Key</label>
-                            <input type="text" id="sup_key" class="form-control" value="{{ api_sup.api_key }}" placeholder="Your reseller API key">
-                        </div>
-                        <div class="col-12">
-                            <label class="small text-muted">Master Key (Optional)</label>
-                            <input type="text" id="sup_mkey" class="form-control" value="{{ api_sup.master_key }}" placeholder="Your master key">
-                        </div>
-                        <div class="col-6">
-                            <button class="btn btn-custom w-100" onclick="saveSupplierApi()"><i class="fas fa-save me-1"></i> Save API Settings</button>
-                        </div>
-                        <div class="col-6">
-                            <button class="btn btn-outline-info w-100" onclick="testApiConn()"><i class="fas fa-flask me-1"></i> Test Connection</button>
-                        </div>
+                        <div class="col-12"><label class="small text-muted">API URL</label><input type="text" id="sup_url" class="form-control" value="{{ api_sup.api_url }}"></div>
+                        <div class="col-12"><label class="small text-muted">API Key</label><input type="text" id="sup_key" class="form-control" value="{{ api_sup.api_key }}" placeholder="Your reseller API key"></div>
+                        <div class="col-12"><label class="small text-muted">Master Key</label><input type="text" id="sup_mkey" class="form-control" value="{{ api_sup.master_key }}" placeholder="Your master key"></div>
+                        <div class="col-6"><button class="btn btn-custom w-100" onclick="saveSupplierApi()"><i class="fas fa-save me-1"></i> Save API</button></div>
+                        <div class="col-6"><button class="btn btn-outline-info w-100" onclick="testApiConn()"><i class="fas fa-flask me-1"></i> Test Connection</button></div>
                     </div>
                 </div>
             </div>
         </div>
 
-        <!-- 💳 4. UPI PAYMENT SETUP (FamPay & Paytm Business) -->
+        <!-- 💳 4. UPI PAYMENT SETUP -->
         <div class="tab-pane-content" id="tab-upi" style="display:none;">
             <div class="card p-4">
-                <h5>💳 UPI Payment Gateway Setup</h5>
+                <h5>💳 UPI Payment Setup</h5>
                 <div class="cyan-box">
-                    <h6 class="text-info fw-bold mb-3">FamPay Gateway Settings</h6>
+                    <h6 class="text-info fw-bold mb-3">FamPay Gateway</h6>
                     <div class="row g-3">
-                        <div class="col-md-6"><label class="small text-muted">FamPay UPI ID</label><input type="text" id="fp_upi" class="form-control" value="{{ gw_cfg.fampay_upi_id }}" placeholder="9544113089@fam"></div>
-                        <div class="col-md-6"><label class="small text-muted">Base URL</label><input type="text" class="form-control text-muted" value="{{ gw_cfg.fampay_base_url }}" readonly></div>
+                        <div class="col-md-12"><label class="small text-muted">FamPay Receiver UPI ID</label><input type="text" id="fp_upi" class="form-control" value="{{ gw_cfg.fampay_upi_id }}" placeholder="9544113089@fam"></div>
                         <div class="col-12"><button class="btn btn-custom" onclick="saveFamPay()"><i class="fas fa-save me-1"></i> Save FamPay</button></div>
                     </div>
                 </div>
                 <div class="gold-box">
                     <h6 class="text-warning fw-bold mb-3">Paytm Business Gateway</h6>
                     <div class="row g-3">
-                        <div class="col-md-6"><label class="small text-muted">Paytm UPI ID (e.g. paytm.s1oppzzf@pty)</label><input type="text" id="pt_upi" class="form-control" value="{{ gw_cfg.paytm_upi_id }}" placeholder="your@paytm"></div>
-                        <div class="col-md-6"><label class="small text-muted">Merchant ID</label><input type="text" id="pt_mer" class="form-control" value="{{ gw_cfg.paytm_merchant_id }}" placeholder="Merchant ID"></div>
+                        <div class="col-md-6"><label class="small text-muted">Paytm UPI ID (e.g. paytm.s1oppzzf@pty)</label><input type="text" id="pt_upi" class="form-control" value="{{ gw_cfg.paytm_upi_id }}"></div>
+                        <div class="col-md-6"><label class="small text-muted">Merchant ID</label><input type="text" id="pt_mer" class="form-control" value="{{ gw_cfg.paytm_merchant_id }}"></div>
                         <div class="col-12"><button class="btn btn-custom" onclick="savePaytm()"><i class="fas fa-save me-1"></i> Save Paytm</button></div>
                     </div>
                 </div>
@@ -288,7 +261,7 @@ ADMIN_HTML = """
                 <div class="row g-3 mt-1">
                     <div class="col-md-6"><label class="small text-muted">Support Username</label><input type="text" id="st_supp" class="form-control" value="{{ store.support_username }}"></div>
                     <div class="col-md-6"><label class="small text-muted">Tutorial Video Link</label><input type="text" id="st_how" class="form-control" value="{{ store.how_to_use_link }}"></div>
-                    <div class="col-12"><button class="btn btn-custom" onclick="saveStore()"><i class="fas fa-save me-1"></i> Save Store Settings</button></div>
+                    <div class="col-12"><button class="btn btn-custom" onclick="saveStore()"><i class="fas fa-save me-1"></i> Save Settings</button></div>
                 </div>
             </div>
         </div>
@@ -305,22 +278,17 @@ ADMIN_HTML = """
             if(window.innerWidth < 769) document.getElementById('sidebar').classList.remove('active');
         }
         function saveProduct() {
-            let name = document.getElementById('ap_name').value;
-            let link = document.getElementById('ap_link').value;
-            let plan = document.getElementById('ap_plan').value;
-            let price = document.getElementById('ap_price').value;
-            let rprice = document.getElementById('ap_rprice').value;
-            let cat = document.getElementById('ap_cat').value;
-            let pid = document.getElementById('ap_pid').value;
-            let rdur = document.getElementById('ap_rdur').value;
-            if(!name || !plan || !price) return alert('Fill required fields!');
             fetch('/api/product/save', {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({name: name, channel_link: link, plan: plan, price: parseFloat(price), reseller_price: parseFloat(rprice||price), category: cat, pid: pid, remote_duration: rdur})
+                body: JSON.stringify({
+                    name: document.getElementById('ap_name').value, channel_link: document.getElementById('ap_link').value,
+                    plan: document.getElementById('ap_plan').value, price: parseFloat(document.getElementById('ap_price').value),
+                    category: document.getElementById('ap_cat').value, pid: document.getElementById('ap_pid').value, remote_duration: document.getElementById('ap_rdur').value
+                })
             }).then(r => r.json()).then(d => { alert(d.message); location.reload(); });
         }
         function deleteProduct(k) {
-            if(!confirm('Delete this product?')) return;
+            if(!confirm('Delete?')) return;
             fetch('/api/product/delete', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({prod_key: k}) })
             .then(r => r.json()).then(d => { alert(d.message); location.reload(); });
         }
@@ -359,36 +327,32 @@ ADMIN_HTML = """
 @app.route('/login', methods=['POST'])
 def login():
     if request.form.get('password') == get_current_password():
-        session.permanent = True
-        session['admin_logged'] = True
+        session.permanent = True; session['admin_logged'] = True
         return redirect('/')
     return render_template_string(ADMIN_HTML, bot_info=BOT_INFO, error="Invalid Admin Password!")
 
 @app.route('/logout')
 def logout():
-    session.clear()
-    return redirect('/')
+    session.clear(); return redirect('/')
 
 @app.route('/')
 def dashboard():
-    if not session.get('admin_logged'):
-        return render_template_string(ADMIN_HTML, bot_info=BOT_INFO)
+    if not session.get('admin_logged'): return render_template_string(ADMIN_HTML, bot_info=BOT_INFO)
     conn = sqlite3.connect(DB_FILE); c = conn.cursor()
     c.execute('SELECT COUNT(*), SUM(wallet_balance) FROM users'); ru = c.fetchone(); u_cnt = ru[0] or 0; w_sum = ru[1] or 0.0
     c.execute('SELECT COUNT(*), SUM(amount) FROM order_history'); ro = c.fetchone(); o_cnt = ro[0] or 0; r_sum = ro[1] or 0.0
     c.execute('SELECT COUNT(*) FROM products'); p_cnt = c.fetchone()[0]
-    c.execute('SELECT COUNT(*) FROM keys_inventory WHERE is_used = 0'); k_cnt = c.fetchone()[0]
     c.execute('SELECT prod_key, name, category, prices, download_link, icon, remote_pid, remote_duration FROM products'); prods = [{"prod_key":p[0], "name":p[1], "category":p[2], "prices":json.loads(p[3]), "download_link":p[4], "icon":p[5], "remote_pid":p[6], "remote_duration":p[7]} for p in c.fetchall()]
     c.execute('SELECT api_url, api_key, master_key FROM api_supplier_config WHERE id = 1'); sup = c.fetchone() or ("", "", "")
-    c.execute('SELECT fampay_upi_id, fampay_base_url, paytm_upi_id, paytm_merchant_id FROM gateway_config WHERE id = 1'); gw = c.fetchone() or ("", "", "", "")
+    c.execute('SELECT fampay_upi_id, paytm_upi_id, paytm_merchant_id FROM gateway_config WHERE id = 1'); gw = c.fetchone() or ("", "", "")
     c.execute('SELECT support_username, how_to_use_link FROM store_settings WHERE id = 1'); st = c.fetchone() or ("@Athulsudin", "")
     conn.close()
 
     return render_template_string(
         ADMIN_HTML, bot_info=BOT_INFO,
-        stats={"users": u_cnt, "total_wallet": f"{w_sum:,.2f}", "products_count": p_cnt, "orders": o_cnt, "revenue": f"{r_sum:,.2f}", "keys": k_cnt},
+        stats={"users": u_cnt, "total_wallet": f"{w_sum:,.2f}", "products_count": p_cnt, "orders": o_cnt, "revenue": f"{r_sum:,.2f}"},
         products=prods, api_sup={"api_url": sup[0], "api_key": sup[1], "master_key": sup[2]},
-        gw_cfg={"fampay_upi_id": gw[0], "fampay_base_url": gw[1], "paytm_upi_id": gw[2], "paytm_merchant_id": gw[3]},
+        gw_cfg={"fampay_upi_id": gw[0], "paytm_upi_id": gw[1], "paytm_merchant_id": gw[2]},
         store={"support_username": st[0], "how_to_use_link": st[1]}
     )
 
