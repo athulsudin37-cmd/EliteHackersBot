@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 # ==========================================
 # ⚙️ CONFIGURATION & CONSTANTS
 # ==========================================
-BOT_TOKEN = os.environ.get("8892856619:AAGZhdOv389_AaKvbcbInlJAiDMOwQxOeHc")
+BOT_TOKEN = "8892856619:AAGZhdOv389_AaKvbcbInlJAiDMOwQxOeHc"
 ADMIN_ID = 7616127905
 DB_FILE = "bot_database.db"
 
@@ -111,37 +111,6 @@ def init_db():
             fampay_qr TEXT
         )
     ''')
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS pending_deposits (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            username TEXT,
-            amount REAL NOT NULL,
-            utr TEXT,
-            order_id TEXT UNIQUE,
-            created_at TEXT,
-            status TEXT DEFAULT 'Pending',
-            prod_key TEXT,
-            prod_name TEXT,
-            plan TEXT,
-            is_deficit INTEGER DEFAULT 0,
-            verified_at TEXT,
-            rejection_reason TEXT
-        )
-    ''')
-    # Keep the migration safe for databases created by the earlier admin file.
-    c.execute("PRAGMA table_info(pending_deposits)")
-    existing_pending_cols = {row[1] for row in c.fetchall()}
-    for col, definition in {
-        "prod_key": "TEXT",
-        "prod_name": "TEXT",
-        "plan": "TEXT",
-        "is_deficit": "INTEGER DEFAULT 0",
-        "verified_at": "TEXT",
-        "rejection_reason": "TEXT",
-    }.items():
-        if col not in existing_pending_cols:
-            c.execute(f"ALTER TABLE pending_deposits ADD COLUMN {col} {definition}")
     c.execute('''
         CREATE TABLE IF NOT EXISTS store_settings (
             id INTEGER PRIMARY KEY DEFAULT 1,
@@ -527,29 +496,6 @@ async def generate_deposit_qr(update: Update, context: ContextTypes.DEFAULT_TYPE
         'prod': prod_name, 'plan': plan_name, 'confirmed': False
     }
 
-    # Persist every QR order so an admin can verify the user's UTR later.
-    # No balance or key is delivered at this point.
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('''
-        INSERT INTO pending_deposits
-        (user_id, username, amount, utr, order_id, created_at, status,
-         prod_key, prod_name, plan, is_deficit)
-        VALUES (?, ?, ?, '', ?, ?, 'Pending', ?, ?, ?, ?)
-    ''', (
-        query.from_user.id,
-        f"@{query.from_user.username}" if query.from_user.username else "N/A",
-        amount,
-        order_id,
-        get_ist_time(),
-        context.user_data.get('pending_deficit', {}).get('prod_key') if is_deficit else None,
-        prod_name,
-        plan_name,
-        1 if is_deficit else 0,
-    ))
-    conn.commit()
-    conn.close()
-
     upi_id = UPI_CONFIG.get("fampay_token") or "9544113089@fam"
     upi_uri = f"upi://pay?pa={upi_id}&pn=ELITE_HACKERS&am={amount:.2f}&cu=INR&tn={order_id}"
     qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=500x500&data={urllib.parse.quote(upi_uri)}"
@@ -576,7 +522,7 @@ async def generate_deposit_qr(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
 
     keyboard = [
-        [InlineKeyboardButton("✅ Submit UTR", callback_data="submit_utr")],
+        [InlineKeyboardButton("✅ I have paid", callback_data="manual_check_deposit")],
         [InlineKeyboardButton("❌ Cancel Payment", callback_data="cancel_deposit")]
     ]
 
@@ -623,65 +569,64 @@ async def generate_deposit_qr(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     asyncio.create_task(expiry_watchdog())
 
-async def submit_utr_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def complete_deposit_success(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
-    dep = context.user_data.get('active_deposit')
-
-    if not dep or dep.get('confirmed') or context.user_data.get('deposit_cancelled'):
-        await query.message.reply_text("⚠️ This payment session is no longer active.")
-        return
-    context.user_data['awaiting_utr'] = True
-    await query.message.reply_text(
-        "🧾 Payment കഴിഞ്ഞെങ്കിൽ UTR / transaction ID ഇവിടെ അയക്കൂ.\n\n"
-        "Payment verify ചെയ്തതിന് ശേഷം മാത്രമേ wallet credit അല്ലെങ്കിൽ key delivery നടക്കൂ.\n"
-        "Payment ചെയ്യാത്തെങ്കിൽ UTR അയക്കരുത്."
-    )
-
-
-async def handle_utr_submission(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get('awaiting_utr'):
-        return
-
+    await query.answer("Verifying payment...", show_alert=False)
     user = update.effective_user
-    utr = (update.message.text or "").strip().replace(" ", "")
-    if not re.fullmatch(r"[A-Za-z0-9]{6,40}", utr):
-        await update.message.reply_text("⚠️ Valid UTR / transaction ID അയക്കൂ (6–40 letters or numbers).")
-        return
-
     dep = context.user_data.get('active_deposit')
-    if not dep or context.user_data.get('deposit_cancelled'):
-        context.user_data['awaiting_utr'] = False
-        await update.message.reply_text("⚠️ Payment session expired. പുതിയ payment QR എടുക്കൂ.")
+
+    if not dep or dep.get('confirmed'):
         return
 
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("SELECT id, status FROM pending_deposits WHERE utr = ? AND utr != '' LIMIT 1", (utr,))
-    duplicate = c.fetchone()
-    if duplicate:
-        conn.close()
-        await update.message.reply_text("⚠️ ഈ UTR ഇതിനകം submit ചെയ്തിട്ടുണ്ട്.")
-        return
+    dep['confirmed'] = True
+    amount = dep['amount']
+    is_deficit = dep.get('is_deficit', False)
 
-    c.execute(
-        "UPDATE pending_deposits SET utr = ? WHERE order_id = ? AND user_id = ? AND status = 'Pending'",
-        (utr, dep.get('order_id'), user.id),
-    )
-    updated = c.rowcount
-    conn.commit()
-    conn.close()
+    # 1. പച്ച ടിക്ക് നൽകി പഴയ QR ഡിലീറ്റ് ചെയ്യുന്നു
+    qr_id = context.user_data.get('qr_msg_id')
+    if qr_id:
+        try:
+            await context.bot.delete_message(chat_id=query.message.chat_id, message_id=qr_id)
+        except Exception:
+            pass
 
-    context.user_data['awaiting_utr'] = False
-    if updated != 1:
-        await update.message.reply_text("⚠️ ഈ payment session ഇനി active അല്ല. പുതിയ QR എടുക്കൂ.")
-        return
+    u_data = db_get_user(user.id)
+    curr_bal = u_data[4] if u_data else 0.0
 
-    await update.message.reply_text(
-        "✅ UTR received.\n\n"
-        "⏳ Admin payment verify ചെയ്തുകൊണ്ടിരിക്കുന്നു. Verify ചെയ്ത ശേഷം മാത്രം "
-        "wallet update അല്ലെങ്കിൽ key delivery നടക്കും."
-    )
+    if is_deficit:
+        # പ്രൊഡക്റ്റ് കീ ഡെലിവറി ചെയ്യുന്നു
+        prod_key = context.user_data.get('pending_deficit', {}).get('prod_key')
+        plan = dep.get('plan')
+        delivered_key = db_pop_auto_key(prod_key, plan) or "AUTO-KEY-DELIVERED-OK"
+        db_add_order(user.id, dep.get('prod'), plan, delivered_key, dep['amount'], "UPI_DEFICIT", get_ist_time())
+
+        key_card_text = (
+            f"✅ <b>Payment verified — here's your key!</b>\n"
+            f"⏩ ~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n"
+            f"🛒 <b>{dep.get('prod')} — {plan.replace('_', ' ')}</b>\n\n"
+            f"🗝️ Your Key:\n"
+            f"<code>{delivered_key}</code>\n\n"
+            f"💰 Remaining balance: <b>₹{curr_bal:,.2f}</b>"
+        )
+        prod_info = get_product_by_key(prod_key)
+        keyboard = []
+        if prod_info and prod_info.get("download_link"):
+            keyboard.append([InlineKeyboardButton("📥 Update File ↗️", url=prod_info["download_link"])])
+        keyboard.append([InlineKeyboardButton("➡️ Back to Menu", callback_data="main_menu")])
+
+        await context.bot.send_message(chat_id=user.id, text=key_card_text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        # വാലറ്റിലേക്ക് പൈസ കയറുന്നു
+        new_bal = curr_bal + amount
+        db_update_balance(user.id, new_bal)
+        success_msg = await context.bot.send_message(chat_id=user.id, text="✅ <b>Payment Verified Successfully!</b>\nBalance added to wallet.", parse_mode="HTML")
+        await asyncio.sleep(1.5)
+        try:
+            await success_msg.delete()
+        except Exception:
+            pass
+        # നേരെ ഹോം മെനുവിലേക്ക് ലൈവ് ബാലൻസോടെ റീഡയറക്റ്റ് ചെയ്യുന്നു
+        await start_command(update, context)
 
 async def cancel_deposit_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -988,9 +933,8 @@ def start_bot():
     app.add_handler(CallbackQueryHandler(render_numpad, pattern="^numpad_open$"))
     app.add_handler(CallbackQueryHandler(handle_numpad_input, pattern="^np_"))
     app.add_handler(CallbackQueryHandler(preset_dep_click, pattern="^preset_dep_"))
-    app.add_handler(CallbackQueryHandler(submit_utr_request, pattern="^submit_utr$"))
+    app.add_handler(CallbackQueryHandler(complete_deposit_success, pattern="^manual_check_deposit$"))
     app.add_handler(CallbackQueryHandler(cancel_deposit_click, pattern="^cancel_deposit$"))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_utr_submission))
     app.add_handler(CallbackQueryHandler(lucky_spin_home, pattern="^lucky_spin$"))
     app.add_handler(CallbackQueryHandler(perform_lucky_spin, pattern="^spin_action_play$"))
     app.add_handler(CallbackQueryHandler(referral_handler, pattern="^referral_menu$"))
