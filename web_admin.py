@@ -10,7 +10,7 @@ import pytz
 from flask import Flask, render_template_string, request, jsonify, redirect, session
 
 DB_FILE = "bot_database.db"
-BOT_TOKEN = os.environ.get("8892856619:AAGZhdOv389_AaKvbcbInlJAiDMOwQxOeHc"")
+BOT_TOKEN = os.environ.get("8892856619:AAGZhdOv389_AaKvbcbInlJAiDMOwQxOeHc")
 DEFAULT_ADMIN_PWD = os.environ.get("ADMIN_PASSWORD", "athulsudin1234")
 IST = pytz.timezone('Asia/Kolkata')
 
