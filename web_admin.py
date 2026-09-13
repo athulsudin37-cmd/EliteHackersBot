@@ -10,7 +10,7 @@ import pytz
 from flask import Flask, render_template_string, request, jsonify, redirect, session
 
 DB_FILE = "bot_database.db"
-BOT_TOKEN = os.environ.get("8892856619:AAGZhdOv389_AaKvbcbInlJAiDMOwQxOeHc")
+BOT_TOKEN = "8892856619:AAGZhdOv389_AaKvbcbInlJAiDMOwQxOeHc"
 DEFAULT_ADMIN_PWD = os.environ.get("ADMIN_PASSWORD", "athulsudin1234")
 IST = pytz.timezone('Asia/Kolkata')
 
@@ -75,28 +75,9 @@ def init_all_database_tables():
             utr TEXT,
             order_id TEXT,
             created_at TEXT,
-            status TEXT DEFAULT 'Pending',
-            prod_key TEXT,
-            prod_name TEXT,
-            plan TEXT,
-            is_deficit INTEGER DEFAULT 0,
-            verified_at TEXT,
-            rejection_reason TEXT
+            status TEXT DEFAULT 'Pending'
         )
     ''')
-    # Migrate the older pending_deposits table without deleting existing rows.
-    c.execute("PRAGMA table_info(pending_deposits)")
-    existing_pending_cols = {row[1] for row in c.fetchall()}
-    for col, definition in {
-        "prod_key": "TEXT",
-        "prod_name": "TEXT",
-        "plan": "TEXT",
-        "is_deficit": "INTEGER DEFAULT 0",
-        "verified_at": "TEXT",
-        "rejection_reason": "TEXT",
-    }.items():
-        if col not in existing_pending_cols:
-            c.execute(f"ALTER TABLE pending_deposits ADD COLUMN {col} {definition}")
     c.execute('''
         CREATE TABLE IF NOT EXISTS gateway_config (
             id INTEGER PRIMARY KEY DEFAULT 1,
@@ -360,7 +341,7 @@ ADMIN_HTML = """
                 <div class="col-6 col-md-3"><div class="stat-card" style="border-left-color:#38bdf8;"><h6>CATALOG ITEMS</h6><h2>{{ stats.products_count }}</h2></div></div>
                 <div class="col-6 col-md-3"><div class="stat-card" style="border-left-color:#10b981;"><h6>ORDERS FULFILLED</h6><h2>{{ stats.orders }}</h2></div></div>
                 <div class="col-6 col-md-3"><div class="stat-card" style="border-left-color:#facc15;"><h6>LIFETIME REVENUE</h6><h2>₹{{ stats.revenue }}</h2></div></div>
-                <div class="col-6 col-md-3"><div class="stat-card" style="border-left-color:#06b6d4;"><h6>KEYS IN STOCK</h6><h2>{{ stats['keys'] }}</h2></div></div>
+                <div class="col-6 col-md-3"><div class="stat-card" style="border-left-color:#06b6d4;"><h6>KEYS IN STOCK</h6><h2>{{ stats.keys }}</h2></div></div>
             </div>
         </div>
 
@@ -627,31 +608,9 @@ ADMIN_HTML = """
                 <h5>💳 Review Pending Deposit Requests</h5>
                 <div class="table-responsive mt-3">
                     <table class="table table-dark">
-                        <thead><tr><th>User</th><th>Amount</th><th>UTR</th><th>Order</th><th>Type</th><th>Action</th></tr></thead>
+                        <thead><tr><th>User ID</th><th>Amount</th><th>UTR</th><th>Action</th></tr></thead>
                         <tbody>
-                            {% for d in pending_deposits %}
-                            <tr>
-                                <td><code>{{ d[1] }}</code><br><small>{{ d[2] or '' }}</small></td>
-                                <td>₹{{ d[3] }}</td>
-                                <td><code>{{ d[4] or 'Not submitted' }}</code></td>
-                                <td><code>{{ d[5] }}</code></td>
-                                <td>{{ 'Product purchase' if d[9] else 'Wallet top-up' }}</td>
-                                <td>
-                                    {% if d[7] == 'Pending' and d[4] %}
-                                    <div class="d-flex gap-2">
-                                        <button class="btn btn-success btn-sm" onclick="reviewDeposit({{ d[0] }}, 'approve')">Approve</button>
-                                        <button class="btn btn-outline-danger btn-sm" onclick="reviewDeposit({{ d[0] }}, 'reject')">Reject</button>
-                                    </div>
-                                    {% elif d[7] == 'Pending' %}
-                                    <span class="text-warning small">Waiting for UTR</span>
-                                    {% else %}
-                                    <span class="badge bg-secondary">{{ d[7] }}</span>
-                                    {% endif %}
-                                </td>
-                            </tr>
-                            {% else %}
-                            <tr><td colspan="6" class="text-center text-muted">No deposit requests yet.</td></tr>
-                            {% endfor %}
+                            <tr><td colspan="4" class="text-center text-muted">No pending deposit requests.</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -785,23 +744,6 @@ ADMIN_HTML = """
             fetch('/api/gateway/paytm', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({url: u, upi: upi, merchant: m}) })
             .then(r => r.json()).then(d => alert(d.message));
         }
-        function reviewDeposit(id, action) {
-            let reason = '';
-            if (action === 'reject') {
-                reason = prompt('Reason for rejection (optional):') || '';
-            } else if (!confirm('Verify this UTR and release the payment benefit?')) {
-                return;
-            }
-            fetch('/api/deposit/' + action, {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({deposit_id: id, reason: reason})
-            }).then(async r => {
-                const d = await r.json();
-                alert(d.message || 'Request completed');
-                if (r.ok) location.reload();
-            }).catch(() => alert('Request failed. Please try again.'));
-        }
         function saveIdStock() {
             let cat = document.getElementById('id_cat').value;
             let pr = document.getElementById('id_price').value;
@@ -874,7 +816,6 @@ def dashboard():
     c.execute('SELECT prod_key, name, category, prices, icon, download_link FROM products'); prods = [{"prod_key": p[0], "name": p[1], "category": p[2], "prices": json.loads(p[3]), "icon": p[4] or "⚡", "download_link": p[5]} for p in c.fetchall()]
     c.execute('SELECT id, user_id, prod_name, plan, key_delivered, amount, utr, timestamp FROM order_history ORDER BY id DESC LIMIT 50'); all_orders = c.fetchall()
     c.execute('SELECT id, user_id, prod_name, plan, key_delivered, amount, timestamp FROM order_history WHERE key_delivered LIKE "PENDING%" ORDER BY id DESC'); pending = c.fetchall()
-    c.execute('SELECT id, user_id, username, amount, utr, order_id, created_at, status, prod_name, is_deficit FROM pending_deposits ORDER BY id DESC LIMIT 100'); pending_deposits = c.fetchall()
     c.execute('SELECT user_id, full_name, username, joined_date, orders_count, wallet_balance, total_spent, total_referrals, referral_earnings, account_type FROM users ORDER BY user_id DESC LIMIT 50'); users_list = c.fetchall()
     c.execute('SELECT support_username, how_to_use_link FROM store_settings WHERE id = 1'); st_r = c.fetchone() or ("@Athulsudin", "")
     c.execute('SELECT active_gateway, fampay_api_key, fampay_upi_id, fampay_base_url, paytm_base_url, paytm_upi_id, paytm_merchant_id FROM gateway_config WHERE id = 1'); gw_r = c.fetchone()
@@ -888,7 +829,7 @@ def dashboard():
     return render_template_string(
         ADMIN_HTML, bot_info=BOT_INFO,
         stats={"users": tot_users, "total_wallet": f"{tot_wallet:,.2f}", "products_count": tot_prods, "orders": tot_orders, "revenue": f"{tot_rev:,.2f}", "keys": tot_keys},
-        products=prods, all_orders=all_orders, pending_orders=pending, pending_deposits=pending_deposits, users_list=users_list,
+        products=prods, all_orders=all_orders, pending_orders=pending, users_list=users_list,
         gw_cfg=gw_cfg, store={"support_username": st_r[0], "how_to_use_link": st_r[1]}
     )
 
@@ -944,143 +885,6 @@ def api_del_p():
     c.execute('DELETE FROM products WHERE prod_key = ?', (request.json.get('prod_key'),))
     conn.commit(); conn.close()
     return jsonify({"message": "Product deleted!"})
-
-def _notify_user(user_id, message):
-    try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        payload = json.dumps({"chat_id": user_id, "text": message}).encode()
-        urllib.request.urlopen(
-            urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}),
-            timeout=8
-        )
-        return True
-    except Exception:
-        return False
-
-@app.route('/api/deposit/approve', methods=['POST'])
-def api_approve_deposit():
-    if not session.get('admin_logged'):
-        return jsonify({"message": "Unauthorized"}), 401
-
-    try:
-        deposit_id = int((request.json or {}).get('deposit_id'))
-    except (TypeError, ValueError):
-        return jsonify({"message": "Invalid deposit request"}), 400
-
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    try:
-        c.execute("BEGIN IMMEDIATE")
-        c.execute("SELECT * FROM pending_deposits WHERE id = ? AND status = 'Pending'", (deposit_id,))
-        dep = c.fetchone()
-        if not dep:
-            conn.rollback()
-            return jsonify({"message": "This deposit is already processed or does not exist."}), 409
-        if not (dep["utr"] or "").strip():
-            conn.rollback()
-            return jsonify({"message": "User has not submitted a UTR yet."}), 400
-
-        if int(dep["is_deficit"] or 0):
-            if not dep["prod_key"] or not dep["plan"]:
-                conn.rollback()
-                return jsonify({"message": "Product details are missing for this order."}), 400
-
-            c.execute(
-                "SELECT id, item_key FROM keys_inventory "
-                "WHERE prod_key = ? AND plan = ? AND is_used = 0 ORDER BY id ASC LIMIT 1",
-                (dep["prod_key"], dep["plan"])
-            )
-            key_row = c.fetchone()
-            if not key_row:
-                conn.rollback()
-                return jsonify({"message": "Payment is valid, but this plan is out of stock."}), 409
-
-            c.execute("UPDATE keys_inventory SET is_used = 1 WHERE id = ?", (key_row["id"],))
-            c.execute(
-                "INSERT INTO order_history "
-                "(user_id, prod_name, plan, key_delivered, amount, utr, timestamp) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (dep["user_id"], dep["prod_name"] or dep["prod_key"], dep["plan"],
-                 key_row["item_key"], dep["amount"], dep["utr"], get_ist_time())
-            )
-            c.execute(
-                "UPDATE users SET orders_count = orders_count + 1, total_spent = total_spent + ? "
-                "WHERE user_id = ?",
-                (dep["amount"], dep["user_id"])
-            )
-            c.execute(
-                "UPDATE pending_deposits SET status = 'Approved', verified_at = ? WHERE id = ?",
-                (get_ist_time(), deposit_id)
-            )
-            conn.commit()
-            message = (
-                "✅ Payment verified successfully!\n\n"
-                f"Product: {dep['prod_name'] or dep['prod_key']}\n"
-                f"Plan: {dep['plan']}\n"
-                f"Your key:\n{key_row['item_key']}\n\n"
-                "Thank you for your purchase."
-            )
-        else:
-            c.execute(
-                "UPDATE users SET wallet_balance = wallet_balance + ? WHERE user_id = ?",
-                (dep["amount"], dep["user_id"])
-            )
-            c.execute(
-                "UPDATE pending_deposits SET status = 'Approved', verified_at = ? WHERE id = ?",
-                (get_ist_time(), deposit_id)
-            )
-            conn.commit()
-            message = (
-                "✅ Payment verified successfully.\n"
-                f"₹{float(dep['amount']):,.2f} has been added to your wallet."
-            )
-    except Exception as exc:
-        conn.rollback()
-        return jsonify({"message": f"Could not approve deposit: {exc}"}), 500
-    finally:
-        conn.close()
-
-    notified = _notify_user(dep["user_id"], message)
-    note = "" if notified else " (database updated, but Telegram notification failed)"
-    return jsonify({"message": "Deposit approved" + note})
-
-@app.route('/api/deposit/reject', methods=['POST'])
-def api_reject_deposit():
-    if not session.get('admin_logged'):
-        return jsonify({"message": "Unauthorized"}), 401
-
-    try:
-        deposit_id = int((request.json or {}).get('deposit_id'))
-    except (TypeError, ValueError):
-        return jsonify({"message": "Invalid deposit request"}), 400
-
-    reason = (request.json or {}).get('reason', '').strip()[:200]
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    c.execute(
-        "SELECT user_id FROM pending_deposits WHERE id = ? AND status = 'Pending'",
-        (deposit_id,)
-    )
-    dep = c.fetchone()
-    if not dep:
-        conn.close()
-        return jsonify({"message": "This deposit is already processed or does not exist."}), 409
-
-    c.execute(
-        "UPDATE pending_deposits SET status = 'Rejected', rejection_reason = ?, verified_at = ? "
-        "WHERE id = ? AND status = 'Pending'",
-        (reason, get_ist_time(), deposit_id)
-    )
-    conn.commit()
-    conn.close()
-    _notify_user(
-        dep["user_id"],
-        "⚠️ Payment verification failed.\n"
-        + (f"Reason: {reason}" if reason else "Please contact support with your UTR.")
-    )
-    return jsonify({"message": "Deposit rejected"})
 
 @app.route('/api/pending/dispatch', methods=['POST'])
 def api_dispatch():
@@ -1179,6 +983,7 @@ def run_web():
 
 if __name__ == "__main__":
     run_web()
+    
     
     
     
