@@ -204,6 +204,42 @@ def get_product_by_key(prod_key):
 init_db()
 
 # ==========================================
+# ✨ UNIVERSAL IN-MESSAGE PAGE TRANSITION
+# ==========================================
+async def edit_page(query, text, reply_markup=None, parse_mode="HTML", animate=True):
+    """
+    Keeps navigation inside the SAME Telegram message.
+    A very short blink/transition is shown before the requested page
+    is rendered, giving every callback button the same app-like
+    nested-navigation feel without sending a new message.
+    """
+    if not query or not query.message:
+        return
+
+    if animate:
+        try:
+            await query.message.edit_text(
+                "<b>✨ Opening…</b>\n\n<code>▰▰▰▱▱▱</code>",
+                parse_mode="HTML",
+                reply_markup=None
+            )
+            await asyncio.sleep(0.12)
+        except Exception as exc:
+            logger.debug("Navigation transition step skipped: %s", exc)
+
+    try:
+        await query.message.edit_text(
+            text,
+            parse_mode=parse_mode,
+            reply_markup=reply_markup
+        )
+    except Exception as exc:
+        # Never create a second message just because a page edit failed.
+        # This keeps the single-message navigation model intact.
+        if "not modified" not in str(exc).lower():
+            logger.debug("In-message page render failed: %s", exc)
+
+# ==========================================
 # 🏠 1. MAIN MENU (10 BUTTONS & HIGHLIGHTS)
 # ==========================================
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -265,10 +301,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message:
         await update.message.reply_text(text, parse_mode="HTML", reply_markup=reply_markup)
     elif update.callback_query:
-        try:
-            await update.callback_query.message.edit_text(text, parse_mode="HTML", reply_markup=reply_markup)
-        except Exception:
-            await update.callback_query.message.reply_text(text, parse_mode="HTML", reply_markup=reply_markup)
+        await update.callback_query.answer()
+        await edit_page(update.callback_query, text, reply_markup=reply_markup)
 
 # ==========================================
 # 👤 2. MY PROFILE
@@ -310,7 +344,7 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("👑 Upgrade To Reseller", callback_data="reseller_plan")],
         [InlineKeyboardButton("🔜 Back", callback_data="main_menu")]
     ]
-    await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    await edit_page(query, text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 # ==========================================
 # 👑 3. RESELLER PLAN
@@ -343,7 +377,7 @@ async def reseller_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("Buy Reseller Plan", callback_data="buy_reseller_action")],
         [InlineKeyboardButton("🔜 Back", callback_data="main_menu")]
     ]
-    await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    await edit_page(query, text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def buy_reseller_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -361,7 +395,7 @@ async def buy_reseller_action(update: Update, context: ContextTypes.DEFAULT_TYPE
             "₹700 activation fee deducted. Your remaining ₹1800+ is safe in your wallet for purchases."
         )
         keyboard = [[InlineKeyboardButton("👤 View Profile", callback_data="my_profile")]]
-        await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+        await edit_page(query, text, reply_markup=InlineKeyboardMarkup(keyboard))
     else:
         text = (
             "⚠️ <b>Insufficient Balance!</b>\n\n"
@@ -373,7 +407,7 @@ async def buy_reseller_action(update: Update, context: ContextTypes.DEFAULT_TYPE
             [InlineKeyboardButton("💰 Add Balance", callback_data="add_balance")],
             [InlineKeyboardButton("🔜 Back", callback_data="reseller_plan")]
         ]
-        await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+        await edit_page(query, text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 # ==========================================
 # 💰 4. ADD BALANCE & NUMPAD CALCULATOR
@@ -394,7 +428,7 @@ async def add_balance_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🟠 Fam Pay", callback_data="dep_method_fampay")],
         [InlineKeyboardButton("🔜 Back", callback_data="main_menu")]
     ]
-    await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    await edit_page(query, text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def select_deposit_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -418,7 +452,7 @@ async def select_deposit_amount(update: Update, context: ContextTypes.DEFAULT_TY
         [InlineKeyboardButton("✏️ Custom Amount", callback_data="numpad_open")],
         [InlineKeyboardButton("👆 Back to Menu", callback_data="add_balance")]
     ]
-    await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    await edit_page(query, text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def render_numpad(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -443,7 +477,7 @@ async def render_numpad(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
 
     try:
-        await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+        await edit_page(query, text, reply_markup=InlineKeyboardMarkup(keyboard))
     except Exception:
         pass
 
@@ -525,6 +559,16 @@ async def generate_deposit_qr(update: Update, context: ContextTypes.DEFAULT_TYPE
         [InlineKeyboardButton("✅ I have paid", callback_data="manual_check_deposit")],
         [InlineKeyboardButton("❌ Cancel Payment", callback_data="cancel_deposit")]
     ]
+
+    try:
+        await query.message.edit_text(
+            "<b>✨ Preparing secure payment…</b>\n\n<code>▰▰▰▰▱▱</code>",
+            parse_mode="HTML",
+            reply_markup=None
+        )
+        await asyncio.sleep(0.12)
+    except Exception:
+        pass
 
     try:
         await query.message.delete()
@@ -658,7 +702,7 @@ async def lucky_spin_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🍯 Spin Now! (FREE)", callback_data="spin_action_play")],
         [InlineKeyboardButton("🔜 Back", callback_data="main_menu")]
     ]
-    await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    await edit_page(query, text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def perform_lucky_spin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -743,7 +787,7 @@ async def referral_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "💰 Invite your friends → Get a guaranteed bonus on their first purchase!"
     )
     keyboard = [[InlineKeyboardButton("🔜 Back", callback_data="main_menu")]]
-    await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    await edit_page(query, text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 # ==========================================
 # 🧾 7. ALL HISTORY (LAST 20 ORDERS)
@@ -775,7 +819,7 @@ async def history_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += "__________________________________"
 
     keyboard = [[InlineKeyboardButton("🔜 Back", callback_data="main_menu")]]
-    await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    await edit_page(query, text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 # ==========================================
 # 🛒 8. SHOP KEY & DEVICE CATALOG
@@ -793,7 +837,7 @@ async def shop_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🆔 8 Level ID", callback_data="pcat_likes")],
         [InlineKeyboardButton("👆 Back", callback_data="main_menu")]
     ]
-    await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    await edit_page(query, text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def list_category_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -806,13 +850,13 @@ async def list_category_products(update: Update, context: ContextTypes.DEFAULT_T
     if not prods:
         text = "🛒 <b>PRODUCT STORE — SHOP</b> 🛒\n\n⚠️ No products available in this category yet. Admin will restock soon!"
         keyboard = [[InlineKeyboardButton("👆 Back", callback_data="shop_key")]]
-        await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+        await edit_page(query, text, reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
     text = "🛒 <b>PRODUCT STORE — SHOP</b> 🛒\n\n🔥 Choose a product:"
     keyboard = [[InlineKeyboardButton(f"{p['icon']} {p['name']}", callback_data=f"selprod_{k}")] for k, p in prods.items()]
     keyboard.append([InlineKeyboardButton("👆 Back", callback_data="shop_key")])
-    await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    await edit_page(query, text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def show_product_plans(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -849,7 +893,7 @@ async def show_product_plans(update: Update, context: ContextTypes.DEFAULT_TYPE)
         keyboard.append([InlineKeyboardButton("🎥 Preview Video", url=prod["download_link"])])
 
     keyboard.append([InlineKeyboardButton("🔜 Back", callback_data="pcat_" + context.user_data.get('selected_cat', 'non_root'))])
-    await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    await edit_page(query, text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def process_plan_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -885,9 +929,9 @@ async def process_plan_purchase(update: Update, context: ContextTypes.DEFAULT_TY
                 keyboard.append([InlineKeyboardButton("📥 Update File ↗️", url=prod["download_link"])])
             keyboard.append([InlineKeyboardButton("➡️ Back to Menu", callback_data="main_menu")])
 
-            await query.message.edit_text(key_card_text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+            await edit_page(query, key_card_text, reply_markup=InlineKeyboardMarkup(keyboard))
         else:
-            await query.message.edit_text("⚠️ <b>Out of Stock!</b> Keys will be restocked shortly.", parse_mode="HTML")
+            await edit_page(query, "⚠️ <b>Out of Stock!</b> Keys will be restocked shortly.")
 
     # MODE B: Insufficient Balance ➔ Direct Deficit Card
     else:
@@ -909,7 +953,7 @@ async def process_plan_purchase(update: Update, context: ContextTypes.DEFAULT_TY
             [InlineKeyboardButton("🟠 Fam Pay", callback_data="def_pay_fampay")],
             [InlineKeyboardButton("🔜 Back to Plans", callback_data=f"selprod_{prod_key}")]
         ]
-        await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+        await edit_page(query, text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def def_pay_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     method = "fampay" if "fampay" in update.callback_query.data else "paytm"
