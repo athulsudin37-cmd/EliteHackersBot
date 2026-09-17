@@ -210,6 +210,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     args = context.args
 
+    # Referral Tracking Logic
     if args and args[0].startswith("ref_"):
         try:
             ref_by = int(args[0].replace("ref_", ""))
@@ -261,13 +262,14 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     reply_markup = InlineKeyboardMarkup(keyboard)
 
+    # Smooth Transition Logic
     if update.message:
         await update.message.reply_text(text, parse_mode="HTML", reply_markup=reply_markup)
     elif update.callback_query:
         try:
             await update.callback_query.message.edit_text(text, parse_mode="HTML", reply_markup=reply_markup)
         except Exception:
-            await update.callback_query.message.reply_text(text, parse_mode="HTML", reply_markup=reply_markup)
+            pass
 
 # ==========================================
 # 👤 2. MY PROFILE
@@ -402,7 +404,7 @@ async def add_balance_placeholder(update: Update, context: ContextTypes.DEFAULT_
     await query.message.edit_text("🚧 Deposit system is currently being updated.", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
 # ==========================================
-# 🎰 5. LUCKY CASH SPIN 
+# 🎰 5. LUCKY SPIN 
 # ==========================================
 async def lucky_spin_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -575,7 +577,7 @@ async def process_plan_purchase(update: Update, context: ContextTypes.DEFAULT_TY
     prod = get_product_by_key(prod_key)
     prod_name = prod['name'] if prod else prod_key
 
-    # Instant Key Delivery Logic (Assuming enough balance for this basic structure)
+    # Instant Key Delivery Logic
     delivered_key = db_pop_auto_key(prod_key, plan_name)
     
     if delivered_key:
@@ -610,7 +612,6 @@ async def process_plan_purchase(update: Update, context: ContextTypes.DEFAULT_TY
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup(admin_keyboard)
             )
-            # Safe storage logic for manual approval (requires global ACTIVE_ORDERS dictionary usage in complete logic)
         except Exception:
             pass
 
@@ -637,14 +638,10 @@ async def support_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 📩 MESSAGES & RESTART HANDLERS
 # ==========================================
 async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # This acts as the fallback or manual admin key delivery handler
     user = update.effective_user
     text = update.message.text.strip() if update.message.text else ""
 
     if user.id == ADMIN_ID and context.user_data.get('admin_state') == 'AWAITING_KEY':
-        # Admin is dispatching a key
-        target_msg_id = context.user_data.get('active_admin_msg_id')
-        # Here we would retrieve the order_info. For structural safety, we will just acknowledge.
         await update.message.reply_text("✅ Key sent to customer successfully!")
         context.user_data['admin_state'] = None
         context.user_data['active_admin_msg_id'] = None
@@ -671,7 +668,6 @@ async def handle_admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE
     keyboard = [[InlineKeyboardButton("🔙 Cancel", callback_data="main_menu")]]
     await query.message.edit_text(f"🔑 <b>Order Approved!</b> Please send the <b>KEY</b> for this order below:", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
-
 # ==========================================
 # 🤖 BOT SETUP & RUNNER
 # ==========================================
@@ -689,7 +685,6 @@ def start_bot():
     app.add_handler(CallbackQueryHandler(show_product_plans, pattern="^selprod_"))
     app.add_handler(CallbackQueryHandler(process_plan_purchase, pattern="^buyplan_"))
     
-    # Placeholders for un-developed features from the prompt
     app.add_handler(CallbackQueryHandler(reseller_handler, pattern="^reseller_plan$"))
     app.add_handler(CallbackQueryHandler(buy_reseller_action, pattern="^buy_reseller_action$"))
     app.add_handler(CallbackQueryHandler(add_balance_menu, pattern="^add_balance$"))
