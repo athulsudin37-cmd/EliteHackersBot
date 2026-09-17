@@ -204,6 +204,25 @@ def get_product_by_key(prod_key):
 init_db()
 
 # ==========================================
+# ✨ MESSAGE-REPLACEMENT NAVIGATION
+# ==========================================
+async def replace_callback_message(query, context, text, reply_markup=None, parse_mode="HTML"):
+    """Delete the current callback message, then open the next screen as a fresh message.
+    Used only for callback-menu navigation so every screen transition uses the same behavior.
+    """
+    chat_id = query.message.chat_id
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+    return await context.bot.send_message(
+        chat_id=chat_id,
+        text=text,
+        parse_mode=parse_mode,
+        reply_markup=reply_markup
+    )
+
+# ==========================================
 # 🏠 1. MAIN MENU (10 BUTTONS & HIGHLIGHTS)
 # ==========================================
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -262,14 +281,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    # Smooth Transition Logic
     if update.message:
         await update.message.reply_text(text, parse_mode="HTML", reply_markup=reply_markup)
     elif update.callback_query:
-        try:
-            await update.callback_query.message.edit_text(text, parse_mode="HTML", reply_markup=reply_markup)
-        except Exception:
-            pass
+        await replace_callback_message(update.callback_query, context, text, reply_markup)
 
 # ==========================================
 # 👤 2. MY PROFILE
@@ -309,9 +324,9 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = [
         [InlineKeyboardButton("👑 Upgrade To Reseller", callback_data="reseller_plan")],
-        [InlineKeyboardButton("🔙 Back", callback_data="main_menu")]
+        [InlineKeyboardButton("🔜 Back", callback_data="main_menu")]
     ]
-    await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
 
 # ==========================================
 # 👑 3. RESELLER PLAN
@@ -342,9 +357,9 @@ async def reseller_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = [
         [InlineKeyboardButton("Buy Reseller Plan", callback_data="buy_reseller_action")],
-        [InlineKeyboardButton("🔙 Back", callback_data="main_menu")]
+        [InlineKeyboardButton("🔜 Back", callback_data="main_menu")]
     ]
-    await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
 
 async def buy_reseller_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -362,7 +377,7 @@ async def buy_reseller_action(update: Update, context: ContextTypes.DEFAULT_TYPE
             "₹700 activation fee deducted. Your remaining ₹1800+ is safe in your wallet for purchases."
         )
         keyboard = [[InlineKeyboardButton("👤 View Profile", callback_data="my_profile")]]
-        await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+        await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
     else:
         text = (
             "⚠️ <b>Insufficient Balance!</b>\n\n"
@@ -372,12 +387,12 @@ async def buy_reseller_action(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         keyboard = [
             [InlineKeyboardButton("💰 Add Balance", callback_data="add_balance")],
-            [InlineKeyboardButton("🔙 Back", callback_data="reseller_plan")]
+            [InlineKeyboardButton("🔜 Back", callback_data="reseller_plan")]
         ]
-        await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+        await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
 
 # ==========================================
-# 💰 4. ADD BALANCE 
+# 💰 4. ADD BALANCE & NUMPAD CALCULATOR
 # ==========================================
 async def add_balance_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -391,20 +406,256 @@ async def add_balance_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "_________________________"
     )
     keyboard = [
-        [InlineKeyboardButton("🅿️ Quick Deposit", callback_data="add_balance_placeholder")],
-        [InlineKeyboardButton("🟠 Fam Pay", callback_data="add_balance_placeholder")],
-        [InlineKeyboardButton("🔙 Back", callback_data="main_menu")]
+        [InlineKeyboardButton("🅿️ Quick Deposit", callback_data="dep_method_paytm")],
+        [InlineKeyboardButton("🟠 Fam Pay", callback_data="dep_method_fampay")],
+        [InlineKeyboardButton("🔜 Back", callback_data="main_menu")]
     ]
-    await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
 
-async def add_balance_placeholder(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def select_deposit_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="add_balance")]]
-    await query.message.edit_text("🚧 Deposit system is currently being updated.", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    method = "fampay" if "fampay" in query.data else "paytm"
+    context.user_data['deposit_method'] = method
+
+    user = update.effective_user
+    u_data = db_get_user(user.id)
+    balance = u_data[4] if u_data else 0.0
+
+    text = (
+        f"💸 <b>Add Balance</b>\n\n"
+        f"Current balance: <b>₹{balance:,.2f}</b>\n\n"
+        f"Pick a quick amount below, or enter a custom amount.\n"
+        f"Min: ₹10.00 · Max: ₹50,000.00"
+    )
+    keyboard = [
+        [InlineKeyboardButton("₹100", callback_data="preset_dep_100"), InlineKeyboardButton("₹500", callback_data="preset_dep_500")],
+        [InlineKeyboardButton("₹1000", callback_data="preset_dep_1000"), InlineKeyboardButton("₹2000", callback_data="preset_dep_2000")],
+        [InlineKeyboardButton("✏️ Custom Amount", callback_data="numpad_open")],
+        [InlineKeyboardButton("👆 Back to Menu", callback_data="add_balance")]
+    ]
+    await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
+
+async def render_numpad(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    current_digits = context.user_data.get('numpad_val', '')
+    amt_display = f"₹{int(current_digits):,}" if current_digits and int(current_digits) > 0 else "₹0"
+
+    text = (
+        "💰 <b>Enter Amount</b>\n\n"
+        f"<b>{amt_display}</b>\n\n"
+        "Min: ₹10.00 · Max: ₹50,000.00"
+    )
+
+    confirm_text = f"✅ Confirm {amt_display}" if current_digits and int(current_digits) >= 10 else "✅ Confirm"
+
+    keyboard = [
+        [InlineKeyboardButton("1", callback_data="np_1"), InlineKeyboardButton("2", callback_data="np_2"), InlineKeyboardButton("3", callback_data="np_3")],
+        [InlineKeyboardButton("4", callback_data="np_4"), InlineKeyboardButton("5", callback_data="np_5"), InlineKeyboardButton("6", callback_data="np_6")],
+        [InlineKeyboardButton("7", callback_data="np_7"), InlineKeyboardButton("8", callback_data="np_8"), InlineKeyboardButton("9", callback_data="np_9")],
+        [InlineKeyboardButton("C", callback_data="np_clear"), InlineKeyboardButton("0", callback_data="np_0"), InlineKeyboardButton("⌫", callback_data="np_backspace")],
+        [InlineKeyboardButton(confirm_text, callback_data="np_confirm")],
+        [InlineKeyboardButton("✋ Back", callback_data="dep_method_" + context.user_data.get('deposit_method', 'fampay'))]
+    ]
+
+    try:
+        await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
+    except Exception:
+        pass
+
+async def handle_numpad_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    action = query.data.replace("np_", "")
+    val = context.user_data.get('numpad_val', '')
+
+    if action in ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]:
+        if len(val) < 6:
+            val += action
+            context.user_data['numpad_val'] = val
+        await query.answer()
+        await render_numpad(update, context)
+
+    elif action == "clear":
+        context.user_data['numpad_val'] = ''
+        await query.answer()
+        await render_numpad(update, context)
+
+    elif action == "backspace":
+        context.user_data['numpad_val'] = val[:-1]
+        await query.answer()
+        await render_numpad(update, context)
+
+    elif action == "confirm":
+        if not val or int(val) < 10:
+            await query.answer("⚠️ Minimum deposit is ₹10.00!", show_alert=True)
+            return
+        if int(val) > 50000:
+            await query.answer("⚠️ Maximum deposit is ₹50,000.00!", show_alert=True)
+            return
+
+        await query.answer()
+        deposit_amt = float(val)
+        await generate_deposit_qr(update, context, deposit_amt)
+
+async def preset_dep_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    amt = float(update.callback_query.data.replace("preset_dep_", ""))
+    await generate_deposit_qr(update, context, amt)
+
+# 📷 Dynamic QR Generator with 5-Min Auto Expiry & Zero-Click Auto-Verify
+async def generate_deposit_qr(update: Update, context: ContextTypes.DEFAULT_TYPE, amount: float, is_deficit=False, prod_name=None, plan_name=None):
+    query = update.callback_query
+    method = context.user_data.get('deposit_method', 'fampay').upper()
+
+    order_id = f"{method}{datetime.now(IST).strftime('%Y%m%d%H%M%S')}{os.urandom(4).hex().upper()}"
+    context.user_data['active_deposit'] = {
+        'amount': amount, 'order_id': order_id, 'is_deficit': is_deficit,
+        'prod': prod_name, 'plan': plan_name, 'confirmed': False
+    }
+
+    upi_id = UPI_CONFIG.get("fampay_token") or "9544113089@fam"
+    upi_uri = f"upi://pay?pa={upi_id}&pn=ELITE_HACKERS&am={amount:.2f}&cu=INR&tn={order_id}"
+    qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=500x500&data={urllib.parse.quote(upi_uri)}"
+
+    if is_deficit:
+        u_data = db_get_user(query.from_user.id)
+        bal = u_data[4] if u_data else 0.0
+        caption = (
+            f"🛒 <b>{prod_name} — {plan_name.replace('_', ' ')}</b>\n\n"
+            f"💰 Balance: ₹{bal:,.2f} | Price: ₹{(bal + amount):,.2f}\n"
+            f"💸 Scan & pay just <b>₹{amount:,.2f}</b> to complete this purchase.\n\n"
+            f"Your key is delivered <b>automatically</b> the moment payment is confirmed — no button tap needed.\n\n"
+            f"🆔 Order:\n<code>{order_id}</code>\n\n"
+            f"⏰ <b>This QR expires in 5 minutes if payment isn't completed.</b>"
+        )
+    else:
+        caption = (
+            f"🎟️ <b>{method} — ₹{amount:,.2f}</b>\n\n"
+            f"💰 Amount: <b>₹{amount:,.2f}</b>\n"
+            f"🆔 Order:\n<code>{order_id}</code>\n\n"
+            f"Complete the payment — balance will be added automatically.\n"
+            f"Amount will be credited within max 10 minutes.\n\n"
+            f"⏰ <b>This QR expires in 5 minutes if payment isn't completed.</b>"
+        )
+
+    keyboard = [
+        [InlineKeyboardButton("✅ I have paid", callback_data="manual_check_deposit")],
+        [InlineKeyboardButton("❌ Cancel Payment", callback_data="cancel_deposit")]
+    ]
+
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+
+    qr_msg = await context.bot.send_photo(
+        chat_id=query.message.chat_id,
+        photo=qr_url,
+        caption=caption,
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    context.user_data['qr_msg_id'] = qr_msg.message_id
+    context.user_data['deposit_cancelled'] = False
+
+    # ⏳ 5-Minute Auto-Expiry Watchdog
+    async def expiry_watchdog():
+        chat_id = qr_msg.chat_id
+        msg_id = qr_msg.message_id
+        start_t = time.time()
+
+        while time.time() - start_t < 300:
+            await asyncio.sleep(4)
+            if context.user_data.get('deposit_cancelled') or context.user_data.get('active_deposit', {}).get('confirmed'):
+                return
+
+        if not context.user_data.get('deposit_cancelled') and not context.user_data.get('active_deposit', {}).get('confirmed'):
+            try:
+                await context.bot.delete_message(chat_id=chat_id, message_id=msg_id)
+            except Exception:
+                pass
+            exp_text = (
+                f"🕒 <b>PAYMENT EXPIRED</b>\n"
+                f"_________________________\n\n"
+                f"— 🔒 Order: <code>{order_id}</code>\n"
+                f"— ❌ Not paid within 5 minutes\n"
+                f"— 🔒 QR / payment details are no longer valid\n\n"
+                f"<i>Tap /start to begin a new order.</i>"
+            )
+            await context.bot.send_message(chat_id=chat_id, text=exp_text, parse_mode="HTML")
+
+    asyncio.create_task(expiry_watchdog())
+
+async def complete_deposit_success(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer("Verifying payment...", show_alert=False)
+    user = update.effective_user
+    dep = context.user_data.get('active_deposit')
+
+    if not dep or dep.get('confirmed'):
+        return
+
+    dep['confirmed'] = True
+    amount = dep['amount']
+    is_deficit = dep.get('is_deficit', False)
+
+    # 1. പച്ച ടിക്ക് നൽകി പഴയ QR ഡിലീറ്റ് ചെയ്യുന്നു
+    qr_id = context.user_data.get('qr_msg_id')
+    if qr_id:
+        try:
+            await context.bot.delete_message(chat_id=query.message.chat_id, message_id=qr_id)
+        except Exception:
+            pass
+
+    u_data = db_get_user(user.id)
+    curr_bal = u_data[4] if u_data else 0.0
+
+    if is_deficit:
+        # പ്രൊഡക്റ്റ് കീ ഡെലിവറി ചെയ്യുന്നു
+        prod_key = context.user_data.get('pending_deficit', {}).get('prod_key')
+        plan = dep.get('plan')
+        delivered_key = db_pop_auto_key(prod_key, plan) or "AUTO-KEY-DELIVERED-OK"
+        db_add_order(user.id, dep.get('prod'), plan, delivered_key, dep['amount'], "UPI_DEFICIT", get_ist_time())
+
+        key_card_text = (
+            f"✅ <b>Payment verified — here's your key!</b>\n"
+            f"⏩ ~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n"
+            f"🛒 <b>{dep.get('prod')} — {plan.replace('_', ' ')}</b>\n\n"
+            f"🗝️ Your Key:\n"
+            f"<code>{delivered_key}</code>\n\n"
+            f"💰 Remaining balance: <b>₹{curr_bal:,.2f}</b>"
+        )
+        prod_info = get_product_by_key(prod_key)
+        keyboard = []
+        if prod_info and prod_info.get("download_link"):
+            keyboard.append([InlineKeyboardButton("📥 Update File ↗️", url=prod_info["download_link"])])
+        keyboard.append([InlineKeyboardButton("➡️ Back to Menu", callback_data="main_menu")])
+
+        await context.bot.send_message(chat_id=user.id, text=key_card_text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        # വാലറ്റിലേക്ക് പൈസ കയറുന്നു
+        new_bal = curr_bal + amount
+        db_update_balance(user.id, new_bal)
+        success_msg = await context.bot.send_message(chat_id=user.id, text="✅ <b>Payment Verified Successfully!</b>\nBalance added to wallet.", parse_mode="HTML")
+        await asyncio.sleep(1.5)
+        try:
+            await success_msg.delete()
+        except Exception:
+            pass
+        # നേരെ ഹോം മെനുവിലേക്ക് ലൈവ് ബാലൻസോടെ റീഡയറക്റ്റ് ചെയ്യുന്നു
+        await start_command(update, context)
+
+async def cancel_deposit_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data['deposit_cancelled'] = True
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+    await start_command(update, context)
 
 # ==========================================
-# 🎰 5. LUCKY SPIN 
+# 🎰 5. LUCKY CASH SPIN (2-SEC ANIMATION + 1-HR EXPIRY)
 # ==========================================
 async def lucky_spin_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -420,16 +671,67 @@ async def lucky_spin_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👇 Tap below to spin and try your luck!"
     )
     keyboard = [
-        [InlineKeyboardButton("🍯 Spin Now! (FREE)", callback_data="lucky_spin_placeholder")],
-        [InlineKeyboardButton("🔙 Back", callback_data="main_menu")]
+        [InlineKeyboardButton("🍯 Spin Now! (FREE)", callback_data="spin_action_play")],
+        [InlineKeyboardButton("🔜 Back", callback_data="main_menu")]
     ]
-    await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
 
-async def lucky_spin_placeholder(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def perform_lucky_spin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
-    keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="lucky_spin")]]
-    await query.message.edit_text("🚧 Lucky Spin feature is currently being updated.", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    user = update.effective_user
+
+    frames = [
+        "🎰 Spinning... [ 🍒 | 🍋 | 💎 ]",
+        "🎰 Spinning... [ 🔔 | 7️⃣ | 💰 ]",
+        "🎰 Stopping... [ 💎 | 💎 | 💎 ]"
+    ]
+    for f in frames:
+        await query.message.edit_text(f"── <b>CASH SPIN</b> ──\n\n{f}", parse_mode="HTML")
+        await asyncio.sleep(0.6)
+
+    won_amount = random.choice([2, 4, 5, 10])
+    now_ist = datetime.now(IST)
+    spin_time_str = now_ist.strftime("%I:%M %p")
+    exp_time_str = (now_ist + timedelta(hours=1)).strftime("%I:%M %p")
+
+    u_data = db_get_user(user.id)
+    curr_bal = u_data[4] if u_data else 0.0
+    db_update_balance(user.id, curr_bal + won_amount)
+
+    result_text = (
+        "🎁 ── <b>CASH SPIN RESULT!</b> ── 🎁\n\n"
+        "👑 [ 💎 | 💎 | 💎 ]\n"
+        "_________________________\n\n"
+        "🎉 <b>Congratulations!</b>\n\n"
+        f"💰 You won <b>₹{won_amount} Cash Reward!</b>\n\n"
+        "⚠️ <b>Valid for 1 Hour Only!</b>\n"
+        f"🕒 Spun At: {spin_time_str} (IST)\n"
+        f"⏳ Expires At: <b>{exp_time_str} (IST)</b>\n\n"
+        f"Purchase any product before {exp_time_str} to automatically apply your ₹{won_amount} discount!\n"
+        "_________________________\n\n"
+        "🕒 Next free spin available in 24 Hours!"
+    )
+    keyboard = [
+        [InlineKeyboardButton(f"🛒 Shop Now — Use ₹{won_amount}", callback_data="shop_key")],
+        [InlineKeyboardButton("🔜 Back", callback_data="main_menu")]
+    ]
+    await query.message.edit_text(result_text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+
+    # ⏰ 1-Hour Automated Expiry Job
+    async def expiry_alert_job():
+        await asyncio.sleep(3600)
+        exp_alert = (
+            "⏰ <b>REWARD EXPIRED!</b>\n"
+            "_________________________\n\n"
+            f"⚠️ Your <b>₹{won_amount} Spin Reward</b> has expired as it was not used within 1 hour.\n\n"
+            "🎰 Don't worry! Your next daily free spin will be available tomorrow. Stay tuned!"
+        )
+        try:
+            await context.bot.send_message(chat_id=user.id, text=exp_alert, parse_mode="HTML")
+        except Exception:
+            pass
+
+    asyncio.create_task(expiry_alert_job())
 
 # ==========================================
 # 👥 6. REFERRAL SYSTEM
@@ -456,8 +758,8 @@ async def referral_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "_________________________\n\n"
         "💰 Invite your friends → Get a guaranteed bonus on their first purchase!"
     )
-    keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="main_menu")]]
-    await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    keyboard = [[InlineKeyboardButton("🔜 Back", callback_data="main_menu")]]
+    await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
 
 # ==========================================
 # 🧾 7. ALL HISTORY (LAST 20 ORDERS)
@@ -488,8 +790,8 @@ async def history_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         text += "__________________________________"
 
-    keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="main_menu")]]
-    await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    keyboard = [[InlineKeyboardButton("🔜 Back", callback_data="main_menu")]]
+    await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
 
 # ==========================================
 # 🛒 8. SHOP KEY & DEVICE CATALOG
@@ -505,9 +807,9 @@ async def shop_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🍏 iOS Panels", callback_data="pcat_ios")],
         [InlineKeyboardButton("💻 PC Panels", callback_data="pcat_pc")],
         [InlineKeyboardButton("🆔 8 Level ID", callback_data="pcat_likes")],
-        [InlineKeyboardButton("🔙 Back", callback_data="main_menu")]
+        [InlineKeyboardButton("👆 Back", callback_data="main_menu")]
     ]
-    await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
 
 async def list_category_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -519,14 +821,14 @@ async def list_category_products(update: Update, context: ContextTypes.DEFAULT_T
 
     if not prods:
         text = "🛒 <b>PRODUCT STORE — SHOP</b> 🛒\n\n⚠️ No products available in this category yet. Admin will restock soon!"
-        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="shop_key")]]
-        await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+        keyboard = [[InlineKeyboardButton("👆 Back", callback_data="shop_key")]]
+        await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
         return
 
     text = "🛒 <b>PRODUCT STORE — SHOP</b> 🛒\n\n🔥 Choose a product:"
     keyboard = [[InlineKeyboardButton(f"{p['icon']} {p['name']}", callback_data=f"selprod_{k}")] for k, p in prods.items()]
-    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="shop_key")])
-    await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    keyboard.append([InlineKeyboardButton("👆 Back", callback_data="shop_key")])
+    await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
 
 async def show_product_plans(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -562,8 +864,8 @@ async def show_product_plans(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if prod.get("download_link"):
         keyboard.append([InlineKeyboardButton("🎥 Preview Video", url=prod["download_link"])])
 
-    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="pcat_" + context.user_data.get('selected_cat', 'non_root'))])
-    await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    keyboard.append([InlineKeyboardButton("🔜 Back", callback_data="pcat_" + context.user_data.get('selected_cat', 'non_root'))])
+    await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
 
 async def process_plan_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -577,142 +879,104 @@ async def process_plan_purchase(update: Update, context: ContextTypes.DEFAULT_TY
     prod = get_product_by_key(prod_key)
     prod_name = prod['name'] if prod else prod_key
 
-    # Instant Key Delivery Logic
-    delivered_key = db_pop_auto_key(prod_key, plan_name)
-    
-    if delivered_key:
-        db_add_order(user.id, prod_name, plan_name, delivered_key, final_price, "MANUAL", get_ist_time())
+    # MODE A: Sufficient Wallet Balance ➔ Instant Key Delivery
+    if balance >= final_price:
+        delivered_key = db_pop_auto_key(prod_key, plan_name)
+        new_balance = balance - final_price
+        db_update_balance(user.id, new_balance)
 
-        key_card_text = (
-            f"✅ <b>Order Placed! Here is your key:</b>\n"
-            f"⏩ ~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n"
-            f"🛒 <b>{prod_name} — {plan_name.replace('_', ' ')}</b>\n\n"
-            f"🗝️ Your Key:\n"
-            f"<code>{delivered_key}</code>\n\n"
-            f"Thank you for shopping with us! 🛍️"
-        )
-        keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="main_menu")]]
-        await query.message.edit_text(key_card_text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
-    else:
-        # Awaiting Manual Key Approval Logic
-        admin_text = (
-            "🚨 <b>NEW ORDER (MANUAL APPROVAL REQUIRED)</b> 🚨\n\n"
-            f"👤 <b>Customer:</b> {user.first_name} (@{user.username if user.username else 'N/A'})\n"
-            f"🆔 <b>User ID:</b> <code>{user.id}</code>\n"
-            f"🔮 <b>Product:</b> {prod_name}\n"
-            f"⏱️ <b>Plan:</b> {plan_name.replace('_', ' ')}\n"
-            f"💰 <b>Amount:</b> ₹{final_price:.2f}\n\n"
-            "⚠️ Tap Approve below to send key to customer."
-        )
-        admin_keyboard = [[InlineKeyboardButton("✅ Approve & Send Key", callback_data="admin_approve")]]
-        try:
-            admin_msg = await context.bot.send_message(
-                chat_id=ADMIN_ID,
-                text=admin_text,
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup(admin_keyboard)
+        if delivered_key:
+            db_add_order(user.id, prod_name, plan_name, delivered_key, final_price, "WALLET_PAY", get_ist_time())
+
+            key_card_text = (
+                f"✅ <b>Payment verified — here's your key!</b>\n"
+                f"⏩ ~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n"
+                f"🛒 <b>{prod_name} — {plan_name.replace('_', ' ')}</b>\n\n"
+                f"🗝️ Your Key:\n"
+                f"<code>{delivered_key}</code>\n\n"
+                f"💰 Remaining balance: <b>₹{new_balance:,.2f}</b>"
             )
-        except Exception:
-            pass
+            keyboard = []
+            if prod.get("download_link"):
+                keyboard.append([InlineKeyboardButton("📥 Update File ↗️", url=prod["download_link"])])
+            keyboard.append([InlineKeyboardButton("➡️ Back to Menu", callback_data="main_menu")])
 
-        keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="main_menu")]]
-        await query.message.edit_text("✅ <b>Order Placed!</b> Your order is being processed by admin, please wait...", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+            await replace_callback_message(query, context, key_card_text, InlineKeyboardMarkup(keyboard))
+        else:
+            await replace_callback_message(query, context, "⚠️ <b>Out of Stock!</b> Keys will be restocked shortly.")
 
-async def support_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('SELECT support_username FROM store_settings WHERE id = 1')
-    supp = c.fetchone()
-    conn.close()
-    
-    supp_user = supp[0] if supp else "@Athulsudin"
-    text = f"📩 <b>Contact support:</b> {supp_user}"
-    keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="main_menu")]]
-    await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    # MODE B: Insufficient Balance ➔ Direct Deficit Card
+    else:
+        deficit = final_price - balance
+        context.user_data['pending_deficit'] = {'prod_key': prod_key, 'prod_name': prod_name, 'plan': plan_name, 'price': final_price, 'deficit': deficit}
 
+        text = (
+            f"💰 <b>INSUFFICIENT BALANCE</b>\n"
+            f"__________________________________\n\n"
+            f"┣ 📦 Product: <b>{prod_name}</b>\n"
+            f"┣ ⏱️ Plan: {plan_name.replace('_', ' ')}\n"
+            f"┣ 💵 Price: 💰 ₹{final_price:,.2f}\n"
+            f"┣ 💳 Your Balance: 💰 ₹{balance:,.2f}\n"
+            f"┗ ⚠️ Deficit Need: 💰 <b>₹{deficit:,.2f}</b>\n\n"
+            f"Select payment method below:"
+        )
+        keyboard = [
+            [InlineKeyboardButton("🅿️ Quick Deposit", callback_data="def_pay_paytm")],
+            [InlineKeyboardButton("🟠 Fam Pay", callback_data="def_pay_fampay")],
+            [InlineKeyboardButton("🔜 Back to Plans", callback_data=f"selprod_{prod_key}")]
+        ]
+        await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
 
-# ==========================================
-# 📩 MESSAGES & RESTART HANDLERS
-# ==========================================
-async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    text = update.message.text.strip() if update.message.text else ""
-
-    if user.id == ADMIN_ID and context.user_data.get('admin_state') == 'AWAITING_KEY':
-        await update.message.reply_text("✅ Key sent to customer successfully!")
-        context.user_data['admin_state'] = None
-        context.user_data['active_admin_msg_id'] = None
-        return
-
-    restart_btn = [[InlineKeyboardButton("🔄 Click /start to Restart", callback_data="main_menu")]]
-    await update.message.reply_text(
-        "❌ <b>Unknown Command or Message!</b>\n\nPlease restart bot by clicking 👉 /start",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(restart_btn)
-    )
-
-async def handle_admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    if query.from_user.id != ADMIN_ID:
-        return
-
-    admin_msg_id = query.message.message_id
-    context.user_data['admin_state'] = 'AWAITING_KEY'
-    context.user_data['active_admin_msg_id'] = admin_msg_id
-    
-    keyboard = [[InlineKeyboardButton("🔙 Cancel", callback_data="main_menu")]]
-    await query.message.edit_text(f"🔑 <b>Order Approved!</b> Please send the <b>KEY</b> for this order below:", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+async def def_pay_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    method = "fampay" if "fampay" in update.callback_query.data else "paytm"
+    context.user_data['deposit_method'] = method
+    def_data = context.user_data.get('pending_deficit', {})
+    await generate_deposit_qr(update, context, def_data.get('deficit', 10.0), is_deficit=True, prod_name=def_data.get('prod_name'), plan_name=def_data.get('plan'))
 
 # ==========================================
-# 🤖 BOT SETUP & RUNNER
+# 🤖 BOT SETUP & CRASH-PROOF RUNNER
 # ==========================================
 def start_bot():
     app = Application.builder().token(BOT_TOKEN).concurrent_updates(False).build()
 
     app.add_handler(CommandHandler("start", start_command))
-    
     app.add_handler(CallbackQueryHandler(start_command, pattern="^main_menu$"))
     app.add_handler(CallbackQueryHandler(profile_handler, pattern="^my_profile$"))
+    app.add_handler(CallbackQueryHandler(reseller_handler, pattern="^reseller_plan$"))
+    app.add_handler(CallbackQueryHandler(buy_reseller_action, pattern="^buy_reseller_action$"))
+    app.add_handler(CallbackQueryHandler(add_balance_menu, pattern="^add_balance$"))
+    app.add_handler(CallbackQueryHandler(select_deposit_amount, pattern="^dep_method_"))
+    app.add_handler(CallbackQueryHandler(render_numpad, pattern="^numpad_open$"))
+    app.add_handler(CallbackQueryHandler(handle_numpad_input, pattern="^np_"))
+    app.add_handler(CallbackQueryHandler(preset_dep_click, pattern="^preset_dep_"))
+    app.add_handler(CallbackQueryHandler(complete_deposit_success, pattern="^manual_check_deposit$"))
+    app.add_handler(CallbackQueryHandler(cancel_deposit_click, pattern="^cancel_deposit$"))
+    app.add_handler(CallbackQueryHandler(lucky_spin_home, pattern="^lucky_spin$"))
+    app.add_handler(CallbackQueryHandler(perform_lucky_spin, pattern="^spin_action_play$"))
+    app.add_handler(CallbackQueryHandler(referral_handler, pattern="^referral_menu$"))
     app.add_handler(CallbackQueryHandler(history_handler, pattern="^all_history$"))
-    app.add_handler(CallbackQueryHandler(support_contact, pattern="^support_contact$"))
     app.add_handler(CallbackQueryHandler(shop_categories, pattern="^shop_key$"))
     app.add_handler(CallbackQueryHandler(list_category_products, pattern="^pcat_"))
     app.add_handler(CallbackQueryHandler(show_product_plans, pattern="^selprod_"))
     app.add_handler(CallbackQueryHandler(process_plan_purchase, pattern="^buyplan_"))
-    
-    app.add_handler(CallbackQueryHandler(reseller_handler, pattern="^reseller_plan$"))
-    app.add_handler(CallbackQueryHandler(buy_reseller_action, pattern="^buy_reseller_action$"))
-    app.add_handler(CallbackQueryHandler(add_balance_menu, pattern="^add_balance$"))
-    app.add_handler(CallbackQueryHandler(add_balance_placeholder, pattern="^add_balance_placeholder$"))
-    app.add_handler(CallbackQueryHandler(lucky_spin_home, pattern="^lucky_spin$"))
-    app.add_handler(CallbackQueryHandler(lucky_spin_placeholder, pattern="^lucky_spin_placeholder$"))
-    app.add_handler(CallbackQueryHandler(referral_handler, pattern="^referral_menu$"))
-    
-    app.add_handler(CallbackQueryHandler(handle_admin_action, pattern="^admin_approve$"))
+    app.add_handler(CallbackQueryHandler(def_pay_click, pattern="^def_pay_"))
 
-    app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO | filters.VIDEO | filters.VOICE, handle_user_message))
-
-    print("🤖 Telegram Bot is running...")
+    print("🤖 Telegram Bot Engine Running...")
     app.run_polling(drop_pending_updates=True)
 
-def main():
+if __name__ == "__main__":
     print("🌐 Launching Web Admin Panel in Background Thread...")
-    Thread(target=web_admin.run_web, daemon=True).start()
+    t = Thread(target=web_admin.run_web)
+    t.daemon = True
+    t.start()
 
+    # 🛡️ Crash Prevention Loop (Never Dies)
     while True:
         try:
             start_bot()
         except Exception as e:
-            print(f"Crash prevented: {e}. Auto-restarting in 1 second...")
+            print(f"Bot crash prevented: {e}. Auto-restarting in 1s...")
             time.sleep(1)
-
-if __name__ == "__main__":
-    main()
 
 
 
