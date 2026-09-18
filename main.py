@@ -5,7 +5,6 @@ import time
 import json
 import re
 import random
-import sqlite3
 import urllib.parse
 from threading import Thread
 from datetime import datetime, timedelta
@@ -23,6 +22,9 @@ from telegram.ext import (
 # 🌐 വെബ് അഡ്മിൻ പാനൽ ബാക്ക്ഗ്രൗണ്ടിൽ റൺ ചെയ്യുന്നു
 import web_admin
 
+# 🗄️ Persistent PostgreSQL database layer
+from database import db, init_db as init_persistent_db
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
@@ -33,7 +35,6 @@ logger = logging.getLogger(__name__)
 # ==========================================
 BOT_TOKEN = "8892856619:AAGZhdOv389_AaKvbcbInlJAiDMOwQxOeHc"
 ADMIN_ID = 7616127905
-DB_FILE = "bot_database.db"
 
 STORE_CONFIG = {
     "support_username": "@Athulsudin",
@@ -50,157 +51,110 @@ def get_ist_time():
     return datetime.now(IST).strftime("%d %b %Y, %I:%M %p (IST)")
 
 # ==========================================
-# 🗄️ SQLITE DATABASE MANAGEMENT
+# 🗄️ PERSISTENT DATABASE COMPATIBILITY LAYER
 # ==========================================
+# All existing main.py database calls are kept with the same return shapes,
+# while the actual data is stored in database.py / PostgreSQL.
+
 def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            full_name TEXT,
-            username TEXT,
-            joined_date TEXT,
-            orders_count INTEGER DEFAULT 0,
-            wallet_balance REAL DEFAULT 0.0,
-            total_spent REAL DEFAULT 0.0,
-            total_referrals INTEGER DEFAULT 0,
-            referral_earnings REAL DEFAULT 0.0,
-            account_type TEXT DEFAULT 'Regular'
-        )
-    ''')
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS order_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            prod_name TEXT,
-            plan TEXT,
-            key_delivered TEXT,
-            amount REAL,
-            utr TEXT,
-            timestamp TEXT
-        )
-    ''')
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS products (
-            prod_key TEXT PRIMARY KEY,
-            name TEXT,
-            category TEXT,
-            prices TEXT,
-            download_link TEXT,
-            icon TEXT DEFAULT '⚡',
-            maintenance INTEGER DEFAULT 0,
-            stock_out INTEGER DEFAULT 0
-        )
-    ''')
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS keys_inventory (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            prod_key TEXT,
-            plan TEXT,
-            item_key TEXT,
-            is_used INTEGER DEFAULT 0
-        )
-    ''')
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS upi_settings (
-            id INTEGER PRIMARY KEY DEFAULT 1,
-            paytm_token TEXT,
-            paytm_qr TEXT,
-            fampay_token TEXT,
-            fampay_qr TEXT
-        )
-    ''')
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS store_settings (
-            id INTEGER PRIMARY KEY DEFAULT 1,
-            support_username TEXT,
-            how_to_use_link TEXT,
-            welcome_message TEXT
-        )
-    ''')
-    conn.commit()
-    conn.close()
+    return init_persistent_db()
 
 def db_add_or_update_user(user_id, full_name, username, joined_date):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('''
-        INSERT INTO users (user_id, full_name, username, joined_date, orders_count, wallet_balance, total_spent, total_referrals, referral_earnings, account_type)
-        VALUES (?, ?, ?, ?, 0, 0.0, 0.0, 0, 0.0, 'Regular')
-        ON CONFLICT(user_id) DO UPDATE SET full_name=?, username=?
-    ''', (user_id, full_name, username, joined_date, full_name, username))
-    conn.commit()
-    conn.close()
+    db.add_or_update_user(user_id, full_name, username, joined_date)
+    # Keep the existing bot's "Regular" account label for newly created users.
+    db.execute(
+        "UPDATE users SET account_type = 'Regular' "
+        "WHERE user_id = %s AND account_type = 'Normal'",
+        (user_id,)
+    )
 
 def db_get_user(user_id):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('SELECT full_name, username, joined_date, orders_count, wallet_balance, total_spent, total_referrals, referral_earnings, account_type FROM users WHERE user_id = ?', (user_id,))
-    row = c.fetchone()
-    conn.close()
-    return row
+    row = db.get_user(user_id)
+    if not row:
+        return None
+    return (
+        row["full_name"],
+        row["username"],
+        row["joined_date"],
+        row["orders_count"],
+        float(row["wallet_balance"] or 0),
+        float(row["total_spent"] or 0),
+        row["total_referrals"],
+        float(row["referral_earnings"] or 0),
+        row["account_type"],
+    )
 
 def db_update_balance(user_id, new_balance):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('UPDATE users SET wallet_balance = ? WHERE user_id = ?', (new_balance, user_id))
-    conn.commit()
-    conn.close()
+    # main.py historically passes the target balance, so preserve that behavior.
+    db.execute(
+        "UPDATE users SET wallet_balance = %s WHERE user_id = %s",
+        (new_balance, user_id)
+    )
 
 def db_set_reseller(user_id):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("UPDATE users SET account_type = 'Reseller' WHERE user_id = ?", (user_id,))
-    conn.commit()
-    conn.close()
+    db.set_reseller(user_id)
 
 def db_add_order(user_id, prod_name, plan, key_delivered, amount, utr, timestamp):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('INSERT INTO order_history (user_id, prod_name, plan, key_delivered, amount, utr, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)',
-              (user_id, prod_name, plan, key_delivered, amount, utr, timestamp))
-    c.execute('UPDATE users SET orders_count = orders_count + 1, total_spent = total_spent + ? WHERE user_id = ?', (amount, user_id))
-    conn.commit()
-    conn.close()
+    db.add_order(user_id, prod_name, plan, key_delivered, amount, utr, timestamp)
+    # Preserve the original SQLite behavior: update order count + total spent.
+    db.execute(
+        """
+        UPDATE users
+        SET orders_count = orders_count + 1,
+            total_spent = total_spent + %s
+        WHERE user_id = %s
+        """,
+        (amount, user_id)
+    )
 
 def db_get_user_history(user_id, limit=20):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('SELECT prod_name, plan, key_delivered, timestamp, amount FROM order_history WHERE user_id = ? ORDER BY id DESC LIMIT ?', (user_id, limit))
-    rows = c.fetchall()
-    conn.close()
-    return rows
+    rows = db.get_user_history(user_id, limit)
+    return [
+        (
+            row["prod_name"],
+            row["plan"],
+            row["key_delivered"],
+            row["timestamp"],
+            float(row["amount"] or 0),
+        )
+        for row in rows
+    ]
 
 def db_pop_auto_key(prod_key, plan):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('SELECT id, item_key FROM keys_inventory WHERE prod_key = ? AND plan = ? AND is_used = 0 ORDER BY id ASC LIMIT 1', (prod_key, plan))
-    row = c.fetchone()
-    if row:
-        c.execute('UPDATE keys_inventory SET is_used = 1 WHERE id = ?', (row[0],))
-        conn.commit()
-        conn.close()
-        return row[1]
-    conn.close()
-    return None
+    return db.pop_auto_key(prod_key, plan)
 
 def get_products_by_category(category):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('SELECT prod_key, name, prices, icon, download_link FROM products WHERE category = ? AND maintenance = 0 AND stock_out = 0', (category,))
-    rows = c.fetchall()
-    conn.close()
-    return {r[0]: {"name": r[1], "prices": json.loads(r[2]), "icon": r[3] or "⚡", "download_link": r[4]} for r in rows}
+    rows = db.get_products_by_category(category)
+    result = {}
+    for row in rows:
+        if row.get("maintenance") or row.get("stock_out"):
+            continue
+        result[row["prod_key"]] = {
+            "name": row["name"],
+            "prices": row.get("prices") or [],
+            "icon": row.get("icon") or "⚡",
+            "download_link": row.get("download_link"),
+            "category": row.get("category"),
+            "maintenance": row.get("maintenance", 0),
+            "stock_out": row.get("stock_out", 0),
+        }
+    return result
 
 def get_product_by_key(prod_key):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('SELECT name, category, prices, icon, download_link FROM products WHERE prod_key = ?', (prod_key,))
-    row = c.fetchone()
-    conn.close()
-    return {"name": row[0], "category": row[1], "prices": json.loads(row[2]), "icon": row[3] or "⚡", "download_link": row[4]} if row else None
+    row = db.get_product_by_key(prod_key)
+    if not row:
+        return None
+    return {
+        "name": row["name"],
+        "category": row["category"],
+        "prices": row.get("prices") or [],
+        "icon": row.get("icon") or "⚡",
+        "download_link": row.get("download_link"),
+        "maintenance": row.get("maintenance", 0),
+        "stock_out": row.get("stock_out", 0),
+    }
 
+# Initialize the persistent PostgreSQL schema before the bot starts.
 init_db()
 
 # ==========================================
@@ -234,11 +188,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             ref_by = int(args[0].replace("ref_", ""))
             if ref_by != user.id and not db_get_user(user.id):
-                conn = sqlite3.connect(DB_FILE)
-                c = conn.cursor()
-                c.execute('UPDATE users SET total_referrals = total_referrals + 1 WHERE user_id = ?', (ref_by,))
-                conn.commit()
-                conn.close()
+                db.execute(
+                    'UPDATE users SET total_referrals = total_referrals + 1 WHERE user_id = %s',
+                    (ref_by,)
+                )
                 try:
                     await context.bot.send_message(chat_id=ref_by, text=f"🎉 <b>New Referral!</b> User <code>{user.id}</code> joined via your link.", parse_mode="HTML")
                 except Exception:
@@ -512,6 +465,19 @@ async def generate_deposit_qr(update: Update, context: ContextTypes.DEFAULT_TYPE
         'prod': prod_name, 'plan': plan_name, 'confirmed': False
     }
 
+    # Persist the pending payment in PostgreSQL.
+    try:
+        db.create_payment(
+            user_id=query.from_user.id,
+            order_id=order_id,
+            amount=amount,
+            method=method.lower(),
+            upi_id=UPI_CONFIG.get("fampay_token") or "9544113089@fam",
+            created_at=get_ist_time(),
+        )
+    except Exception as e:
+        logger.exception("Failed to save payment record: %s", e)
+
     upi_id = UPI_CONFIG.get("fampay_token") or "9544113089@fam"
     upi_uri = f"upi://pay?pa={upi_id}&pn=ELITE_HACKERS&am={amount:.2f}&cu=INR&tn={order_id}"
     qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=500x500&data={urllib.parse.quote(upi_uri)}"
@@ -598,6 +564,16 @@ async def complete_deposit_success(update: Update, context: ContextTypes.DEFAULT
     amount = dep['amount']
     is_deficit = dep.get('is_deficit', False)
 
+    try:
+        db.update_payment_status(
+            dep.get('order_id'),
+            'verified',
+            utr='UPI_DEFICIT' if is_deficit else 'WALLET_DEPOSIT',
+            verified_at=get_ist_time()
+        )
+    except Exception as e:
+        logger.exception("Failed to update payment record: %s", e)
+
     # 1. പച്ച ടിക്ക് നൽകി പഴയ QR ഡിലീറ്റ് ചെയ്യുന്നു
     qr_id = context.user_data.get('qr_msg_id')
     if qr_id:
@@ -648,6 +624,18 @@ async def cancel_deposit_click(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     await query.answer()
     context.user_data['deposit_cancelled'] = True
+
+    dep = context.user_data.get('active_deposit')
+    if dep and dep.get('order_id'):
+        try:
+            db.update_payment_status(
+                dep['order_id'],
+                'cancelled',
+                verified_at=get_ist_time()
+            )
+        except Exception as e:
+            logger.exception("Failed to update cancelled payment record: %s", e)
+
     try:
         await query.message.delete()
     except Exception:
