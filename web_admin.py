@@ -120,7 +120,6 @@ def init_all_database_tables():
             VALUES (1, "@Athulsudin", "https://t.me/chatelitehackers", "", "ELITE HACKERS", "Best Free Fire Panel Services", 10.0, 50000.0, 5, 5.0, 2.0, 10.0, 24, "3,074 monthly users")
         ''')
         
-    # Safely adding new columns for Product features without crashing existing DB
     try: c.execute("ALTER TABLE products ADD COLUMN reseller_price REAL DEFAULT 0")
     except: pass
     try: c.execute("ALTER TABLE products ADD COLUMN remote_pid TEXT DEFAULT ''")
@@ -197,11 +196,9 @@ ADMIN_HTML = """
             background-size: 36px 36px; pointer-events: none; z-index: 0;
         }
 
-        /* 🌟 Animations */
         .fade-in { animation: fadeIn 0.3s ease-in-out; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 
-        /* 🔐 SCREENSHOT-EXACT CYBER LOGIN */
         .login-box { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; position: relative; z-index: 10; }
         .login-card { background: var(--card-glass); backdrop-filter: blur(25px); border: 1px solid var(--neon-border); border-radius: 28px; padding: 42px 32px; width: 100%; max-width: 400px; text-align: center; box-shadow: 0 0 50px rgba(139, 92, 246, 0.25); }
         .avatar-ring { width: 88px; height: 88px; margin: 0 auto 20px; border-radius: 50%; padding: 3px; background: linear-gradient(135deg, #06b6d4, #a855f7, #f59e0b); display: flex; align-items: center; justify-content: center; }
@@ -212,7 +209,6 @@ ADMIN_HTML = """
         .eye-btn { position: absolute; right: 15px; top: 50%; transform: translateY(-50%); color: #a78bfa; cursor: pointer; }
         .btn-unlock { width: 100%; padding: 13px; border: none; border-radius: 14px; background: linear-gradient(135deg, #7c3aed, #6366f1); color: white; font-weight: 700; cursor: pointer; }
 
-        /* 💻 DASHBOARD LAYOUT */
         .sidebar { position: fixed; top: 0; left: -270px; width: var(--sidebar-w); height: 100vh; background: #0f0724; border-right: 1px solid var(--neon-border); padding-top: 20px; z-index: 1050; transition: 0.3s; overflow-y: auto; }
         .sidebar.active { left: 0; }
         .sidebar-link { padding: 12px 20px; color: #94a3b8; display: flex; align-items: center; gap: 12px; cursor: pointer; text-decoration: none; border-left: 4px solid transparent; }
@@ -226,7 +222,6 @@ ADMIN_HTML = """
         .form-control, .form-select { background-color: #0d0622; border: 1px solid var(--neon-border); color: white; border-radius: 10px; padding: 10px; }
         .form-control:focus { background-color: #0d0622; color: white; border-color: #a855f7; box-shadow: none; }
         
-        /* Product Cards & Delete Notification */
         .del-notify { background: #7c3aed; color: white; padding: 10px 20px; border-radius: 8px; font-weight: bold; position: fixed; top: 20px; left: 50%; transform: translateX(-50%); z-index: 9999; display: none; box-shadow: 0 4px 15px rgba(124,58,237,0.5); }
         .prod-card { background: #12072c; border: 1px solid #3b1d6e; border-radius: 16px; padding: 20px; }
         .prod-icon { background: linear-gradient(135deg, #facc15, #f59e0b); -webkit-background-clip: text; -webkit-text-fill-color: transparent; font-size: 2rem; }
@@ -272,11 +267,8 @@ ADMIN_HTML = """
         </div>
         <div class="mt-3">
             <a class="sidebar-link active" onclick="showTab('dashboard', this)"><i class="fas fa-chart-pie"></i> Dashboard</a>
-            <a class="sidebar-link" onclick="showTab('products', this)"><i class="fas fa-box-open"></i> Manage Product</a>
+            <a class="sidebar-link" onclick="showTab('products', this)"><i class="fas fa-boxes-stacked"></i> Manage Product</a>
             <a class="sidebar-link" onclick="showTab('keys_log', this)"><i class="fas fa-scroll"></i> Live Key Delivery Logs</a>
-            <a class="sidebar-link" onclick="showTab('coupons', this)"><i class="fas fa-ticket"></i> Coupon Manager</a>
-            <a class="sidebar-link" onclick="showTab('upi', this)"><i class="fas fa-credit-card"></i> UPI Payment Setup</a>
-            <a class="sidebar-link" onclick="showTab('store', this)"><i class="fas fa-sliders"></i> Store Settings</a>
             <a href="/logout" class="sidebar-link text-danger mt-4"><i class="fas fa-right-from-bracket"></i> Logout</a>
         </div>
     </div>
@@ -460,7 +452,6 @@ ADMIN_HTML = """
             if(!confirm('Are you sure you want to delete this product?')) return;
             fetch('/api/product/delete', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({prod_key: k}) })
             .then(r => r.json()).then(d => { 
-                // Show notification and reload
                 let notif = document.getElementById('delNotify');
                 notif.style.display = 'block';
                 setTimeout(() => { location.reload(); }, 1500);
@@ -494,10 +485,19 @@ def dashboard():
 
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
+    
+    # Global Stats
     c.execute('SELECT COUNT(*), SUM(wallet_balance) FROM users'); r_u = c.fetchone(); tot_users = r_u[0] or 0; tot_wallet = r_u[1] or 0.0
     c.execute('SELECT COUNT(*), SUM(amount) FROM order_history'); r_o = c.fetchone(); tot_orders = r_o[0] or 0; tot_rev = r_o[1] or 0.0
     c.execute('SELECT COUNT(*) FROM products'); p_cnt = c.fetchone()[0]
     c.execute('SELECT COUNT(*) FROM keys_inventory WHERE is_used = 0'); k_cnt = c.fetchone()[0]
+    
+    # Today's Analytics
+    today_str = datetime.now(IST).strftime("%d %b %Y")
+    c.execute("SELECT COUNT(*), SUM(amount) FROM order_history WHERE timestamp LIKE ?", (f"%{today_str}%",))
+    r_today = c.fetchone()
+    today_orders = r_today[0] or 0
+    today_rev = r_today[1] or 0.0
     
     # Products with stock count
     prods = []
@@ -507,13 +507,6 @@ def dashboard():
         scount = c.fetchone()[0]
         prods.append({"prod_key": p[0], "name": p[1], "category": p[2], "prices": json.loads(p[3]), "icon": p[4] or "⚡", "stock_count": scount})
     
-    # Today's Analytics
-    today_str = datetime.now(IST).strftime("%d %b %Y")
-    c.execute("SELECT COUNT(*), SUM(amount) FROM order_history WHERE timestamp LIKE ?", (f"%{today_str}%",))
-    r_today = c.fetchone()
-    today_orders = r_today[0] or 0
-    today_rev = r_today[1] or 0.0
-
     # All Orders for Delivery Logs
     c.execute('''
         SELECT o.user_id, u.full_name, o.prod_name, o.plan, o.key_delivered, o.amount, o.timestamp 
