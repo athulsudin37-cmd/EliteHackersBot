@@ -3,291 +3,172 @@ import json
 import sqlite3
 import re
 import urllib.request
+import urllib.parse
 from datetime import timedelta, datetime
 from threading import Thread
-import logging
 import pytz
 from flask import Flask, render_template_string, request, jsonify, redirect, session
 
-# ============================================================
-# CONFIGURATION
-# ============================================================
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8892856619:AAGZhdOv389_AaKvbcbInlJAiDMOwQxOeHc").strip()
+DB_FILE = "bot_database.db"
+BOT_TOKEN = "8892856619:AAGZhdOv389_AaKvbcbInlJAiDMOwQxOeHc"
 DEFAULT_ADMIN_PWD = os.environ.get("ADMIN_PASSWORD", "athulsudin1234")
-DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
-DB_FILE = os.environ.get("ADMIN_SQLITE_FILE", "bot_database.db")
-IST = pytz.timezone("Asia/Kolkata")
-
-logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
-logger = logging.getLogger("web_admin")
+IST = pytz.timezone('Asia/Kolkata')
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("ADMIN_SESSION_SECRET") or os.urandom(32)
+app.secret_key = os.urandom(32)
 app.permanent_session_lifetime = timedelta(days=30)
-
-try:
-    import psycopg2
-    from psycopg2.extras import Json
-    HAVE_PSYCOPG2 = True
-except Exception:
-    psycopg2 = None
-    Json = None
-    HAVE_PSYCOPG2 = False
-
-
-class DBLayer:
-    """Use Main Pi PostgreSQL when DATABASE_URL is available; otherwise SQLite.
-
-    The original admin panel used a second local SQLite database. That meant
-    product/user/order changes were not visible to the Main Pi, whose main.py
-    uses PostgreSQL. This layer keeps the admin UI intact while sharing the
-    same PostgreSQL data when configured.
-    """
-    def __init__(self):
-        self.mode = "postgres" if DATABASE_URL and HAVE_PSYCOPG2 else "sqlite"
-        if DATABASE_URL and not HAVE_PSYCOPG2:
-            logger.warning("DATABASE_URL is set but psycopg2 is unavailable; using SQLite fallback.")
-
-    @property
-    def is_postgres(self):
-        return self.mode == "postgres"
-
-    def connect(self):
-        if self.is_postgres:
-            return psycopg2.connect(DATABASE_URL, connect_timeout=10)
-        conn = sqlite3.connect(DB_FILE, timeout=15)
-        conn.row_factory = sqlite3.Row
-        return conn
-
-    def q(self, sql):
-        return sql.replace("?", "%s") if self.is_postgres else sql
-
-    def execute(self, sql, params=(), fetch=None, commit=True):
-        conn = self.connect()
-        try:
-            cur = conn.cursor()
-            cur.execute(self.q(sql), params)
-            result = None
-            if fetch == "one":
-                result = cur.fetchone()
-            elif fetch == "all":
-                result = cur.fetchall()
-            if commit:
-                conn.commit()
-            return result
-        finally:
-            conn.close()
-
-    def executemany(self, sql, seq, commit=True):
-        conn = self.connect()
-        try:
-            cur = conn.cursor()
-            cur.executemany(self.q(sql), seq)
-            if commit:
-                conn.commit()
-        finally:
-            conn.close()
-
-
-db = DBLayer()
-
 
 def get_ist_time():
     return datetime.now(IST).strftime("%d %b %Y, %I:%M %p (IST)")
 
-
-def _json_param(value):
-    if db.is_postgres and Json is not None:
-        return Json(value)
-    return json.dumps(value, ensure_ascii=False)
-
-
-def _parse_json(value, default=None):
-    if default is None:
-        default = []
-    if value is None:
-        return default
-    if isinstance(value, (list, dict)):
-        return value
-    try:
-        return json.loads(value)
-    except Exception:
-        return default
-
-
+# ==========================================
+# 🗄️ DATABASE SCHEMA & INITIALIZATION
+# ==========================================
 def init_all_database_tables():
-    # These tables are compatible with the structures used by main.py.
-    if db.is_postgres:
-        statements = [
-            """CREATE TABLE IF NOT EXISTS users (
-                user_id BIGINT PRIMARY KEY,
-                full_name TEXT,
-                username TEXT,
-                joined_date TEXT,
-                orders_count INTEGER DEFAULT 0,
-                wallet_balance DOUBLE PRECISION DEFAULT 0,
-                total_spent DOUBLE PRECISION DEFAULT 0,
-                total_referrals INTEGER DEFAULT 0,
-                referral_earnings DOUBLE PRECISION DEFAULT 0,
-                account_type TEXT DEFAULT 'Regular'
-            )""",
-            """CREATE TABLE IF NOT EXISTS products (
-                prod_key TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                category TEXT NOT NULL,
-                prices JSONB,
-                download_link TEXT,
-                icon TEXT,
-                maintenance INTEGER DEFAULT 0,
-                stock_out INTEGER DEFAULT 0
-            )""",
-            """CREATE TABLE IF NOT EXISTS keys_inventory (
-                id SERIAL PRIMARY KEY,
-                prod_key TEXT NOT NULL,
-                plan TEXT NOT NULL,
-                item_key TEXT NOT NULL,
-                is_used INTEGER DEFAULT 0
-            )""",
-            """CREATE TABLE IF NOT EXISTS order_history (
-                id SERIAL PRIMARY KEY,
-                user_id BIGINT,
-                prod_name TEXT,
-                plan TEXT,
-                key_delivered TEXT,
-                amount DOUBLE PRECISION DEFAULT 0,
-                utr TEXT,
-                timestamp TEXT
-            )""",
-            """CREATE TABLE IF NOT EXISTS admin_auth (id INTEGER PRIMARY KEY, password TEXT)""",
-            """CREATE TABLE IF NOT EXISTS coupons (
-                id SERIAL PRIMARY KEY,
-                code TEXT UNIQUE,
-                discount_type TEXT,
-                discount_val DOUBLE PRECISION,
-                usage_limit INTEGER,
-                used_count INTEGER DEFAULT 0,
-                is_active INTEGER DEFAULT 1
-            )""",
-            """CREATE TABLE IF NOT EXISTS id_accounts (
-                id SERIAL PRIMARY KEY,
-                category_name TEXT,
-                account_data TEXT,
-                price DOUBLE PRECISION,
-                is_sold INTEGER DEFAULT 0
-            )""",
-            """CREATE TABLE IF NOT EXISTS broadcast_history (
-                id SERIAL PRIMARY KEY,
-                message TEXT,
-                media_type TEXT,
-                sent_at TEXT,
-                recipients INTEGER
-            )""",
-            """CREATE TABLE IF NOT EXISTS pending_deposits (
-                id SERIAL PRIMARY KEY,
-                user_id BIGINT,
-                username TEXT,
-                amount DOUBLE PRECISION,
-                utr TEXT,
-                order_id TEXT,
-                created_at TEXT,
-                status TEXT DEFAULT 'Pending'
-            )""",
-            """CREATE TABLE IF NOT EXISTS gateway_config (
-                id INTEGER PRIMARY KEY,
-                active_gateway TEXT DEFAULT 'fampay',
-                fampay_api_key TEXT DEFAULT '',
-                fampay_upi_id TEXT DEFAULT '9544113089@fam',
-                fampay_base_url TEXT DEFAULT 'https://xyzcheats.com/gateway',
-                paytm_base_url TEXT DEFAULT 'https://xyzcheats.com',
-                paytm_upi_id TEXT DEFAULT '',
-                paytm_merchant_id TEXT DEFAULT ''
-            )""",
-            """CREATE TABLE IF NOT EXISTS store_settings (
-                id INTEGER PRIMARY KEY,
-                support_username TEXT DEFAULT '@Athulsudin',
-                how_to_use_link TEXT DEFAULT 'https://t.me/chatelitehackers',
-                welcome_message TEXT DEFAULT '',
-                shop_name TEXT DEFAULT 'ELITE HACKERS',
-                tagline TEXT DEFAULT 'Best Free Fire Panel Services',
-                min_deposit DOUBLE PRECISION DEFAULT 10,
-                max_deposit DOUBLE PRECISION DEFAULT 50000,
-                qr_expiry_min INTEGER DEFAULT 5,
-                referral_bonus DOUBLE PRECISION DEFAULT 5,
-                spin_min DOUBLE PRECISION DEFAULT 2,
-                spin_max DOUBLE PRECISION DEFAULT 10,
-                spin_cooldown_hours INTEGER DEFAULT 24,
-                monthly_users TEXT DEFAULT '3,074 monthly users',
-                pending_notice_template TEXT DEFAULT ''
-            )""",
-        ]
-    else:
-        statements = [
-            """CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, full_name TEXT, username TEXT, joined_date TEXT, orders_count INTEGER DEFAULT 0, wallet_balance REAL DEFAULT 0, total_spent REAL DEFAULT 0, total_referrals INTEGER DEFAULT 0, referral_earnings REAL DEFAULT 0, account_type TEXT DEFAULT 'Regular')""",
-            """CREATE TABLE IF NOT EXISTS products (prod_key TEXT PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL, prices TEXT, download_link TEXT, icon TEXT, maintenance INTEGER DEFAULT 0, stock_out INTEGER DEFAULT 0)""",
-            """CREATE TABLE IF NOT EXISTS keys_inventory (id INTEGER PRIMARY KEY AUTOINCREMENT, prod_key TEXT NOT NULL, plan TEXT NOT NULL, item_key TEXT NOT NULL, is_used INTEGER DEFAULT 0)""",
-            """CREATE TABLE IF NOT EXISTS order_history (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, prod_name TEXT, plan TEXT, key_delivered TEXT, amount REAL DEFAULT 0, utr TEXT, timestamp TEXT)""",
-            """CREATE TABLE IF NOT EXISTS admin_auth (id INTEGER PRIMARY KEY, password TEXT)""",
-            """CREATE TABLE IF NOT EXISTS coupons (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE, discount_type TEXT, discount_val REAL, usage_limit INTEGER, used_count INTEGER DEFAULT 0, is_active INTEGER DEFAULT 1)""",
-            """CREATE TABLE IF NOT EXISTS id_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, category_name TEXT, account_data TEXT, price REAL, is_sold INTEGER DEFAULT 0)""",
-            """CREATE TABLE IF NOT EXISTS broadcast_history (id INTEGER PRIMARY KEY AUTOINCREMENT, message TEXT, media_type TEXT, sent_at TEXT, recipients INTEGER)""",
-            """CREATE TABLE IF NOT EXISTS pending_deposits (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, username TEXT, amount REAL, utr TEXT, order_id TEXT, created_at TEXT, status TEXT DEFAULT 'Pending')""",
-            """CREATE TABLE IF NOT EXISTS gateway_config (id INTEGER PRIMARY KEY, active_gateway TEXT DEFAULT 'fampay', fampay_api_key TEXT DEFAULT '', fampay_upi_id TEXT DEFAULT '9544113089@fam', fampay_base_url TEXT DEFAULT 'https://xyzcheats.com/gateway', paytm_base_url TEXT DEFAULT 'https://xyzcheats.com', paytm_upi_id TEXT DEFAULT '', paytm_merchant_id TEXT DEFAULT '')""",
-            """CREATE TABLE IF NOT EXISTS store_settings (id INTEGER PRIMARY KEY, support_username TEXT DEFAULT '@Athulsudin', how_to_use_link TEXT DEFAULT 'https://t.me/chatelitehackers', welcome_message TEXT DEFAULT '', shop_name TEXT DEFAULT 'ELITE HACKERS', tagline TEXT DEFAULT 'Best Free Fire Panel Services', min_deposit REAL DEFAULT 10, max_deposit REAL DEFAULT 50000, qr_expiry_min INTEGER DEFAULT 5, referral_bonus REAL DEFAULT 5, spin_min REAL DEFAULT 2, spin_max REAL DEFAULT 10, spin_cooldown_hours INTEGER DEFAULT 24, monthly_users TEXT DEFAULT '3,074 monthly users', pending_notice_template TEXT DEFAULT '')""",
-        ]
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS admin_auth (
+            id INTEGER PRIMARY KEY DEFAULT 1,
+            password TEXT
+        )
+    ''')
+    c.execute('SELECT password FROM admin_auth WHERE id = 1')
+    if not c.fetchone():
+        c.execute('INSERT INTO admin_auth (id, password) VALUES (1, ?)', (DEFAULT_ADMIN_PWD,))
 
-    for stmt in statements:
-        db.execute(stmt)
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS coupons (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            code TEXT UNIQUE,
+            discount_type TEXT,
+            discount_val REAL,
+            usage_limit INTEGER,
+            used_count INTEGER DEFAULT 0,
+            is_active INTEGER DEFAULT 1
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS id_accounts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            category_name TEXT,
+            account_data TEXT,
+            price REAL,
+            is_sold INTEGER DEFAULT 0
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS broadcast_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            message TEXT,
+            media_type TEXT,
+            sent_at TEXT,
+            recipients INTEGER
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS pending_deposits (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            username TEXT,
+            amount REAL,
+            utr TEXT,
+            order_id TEXT,
+            created_at TEXT,
+            status TEXT DEFAULT 'Pending'
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS gateway_config (
+            id INTEGER PRIMARY KEY DEFAULT 1,
+            active_gateway TEXT DEFAULT 'fampay',
+            fampay_api_key TEXT DEFAULT '',
+            fampay_upi_id TEXT DEFAULT '9544113089@fam',
+            fampay_base_url TEXT DEFAULT 'https://xyzcheats.com/gateway',
+            paytm_base_url TEXT DEFAULT 'https://xyzcheats.com',
+            paytm_upi_id TEXT DEFAULT '',
+            paytm_merchant_id TEXT DEFAULT ''
+        )
+    ''')
+    c.execute('SELECT id FROM gateway_config WHERE id = 1')
+    if not c.fetchone():
+        c.execute('INSERT INTO gateway_config VALUES (1, "fampay", "", "9544113089@fam", "https://xyzcheats.com/gateway", "https://xyzcheats.com", "", "")')
 
-    if not db.execute("SELECT password FROM admin_auth WHERE id = 1", fetch="one"):
-        db.execute("INSERT INTO admin_auth (id, password) VALUES (1, ?)", (DEFAULT_ADMIN_PWD,))
-    if not db.execute("SELECT id FROM gateway_config WHERE id = 1", fetch="one"):
-        db.execute("INSERT INTO gateway_config (id, active_gateway, fampay_api_key, fampay_upi_id, fampay_base_url, paytm_base_url, paytm_upi_id, paytm_merchant_id) VALUES (1, 'fampay', '', '9544113089@fam', 'https://xyzcheats.com/gateway', 'https://xyzcheats.com', '', '')")
-    if not db.execute("SELECT id FROM store_settings WHERE id = 1", fetch="one"):
-        db.execute("INSERT INTO store_settings (id, support_username, how_to_use_link, welcome_message, shop_name, tagline, min_deposit, max_deposit, qr_expiry_min, referral_bonus, spin_min, spin_max, spin_cooldown_hours, monthly_users) VALUES (1, '@Athulsudin', 'https://t.me/chatelitehackers', '', 'ELITE HACKERS', 'Best Free Fire Panel Services', 10, 50000, 5, 5, 2, 10, 24, '3,074 monthly users')")
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS store_settings (
+            id INTEGER PRIMARY KEY DEFAULT 1,
+            support_username TEXT DEFAULT '@Athulsudin',
+            how_to_use_link TEXT DEFAULT 'https://t.me/chatelitehackers',
+            welcome_message TEXT DEFAULT '',
+            shop_name TEXT DEFAULT 'ELITE HACKERS',
+            tagline TEXT DEFAULT 'Best Free Fire Panel Services',
+            min_deposit REAL DEFAULT 10.0,
+            max_deposit REAL DEFAULT 50000.0,
+            qr_expiry_min INTEGER DEFAULT 5,
+            referral_bonus REAL DEFAULT 5.0,
+            spin_min REAL DEFAULT 2.0,
+            spin_max REAL DEFAULT 10.0,
+            spin_cooldown_hours INTEGER DEFAULT 24,
+            monthly_users TEXT DEFAULT '3,074 monthly users',
+            pending_notice_template TEXT DEFAULT '✅ Payment Verified & Received!\\n\\n⚠️ NOTICE: Auto-stock for {product} ({plan}) is currently restocking!\\n\\n🛡️ 100% SECURE: Admin is preparing your fresh key right now. It will be delivered directly to this chat shortly!'
+        )
+    ''')
+    c.execute('SELECT id FROM store_settings WHERE id = 1')
+    if not c.fetchone():
+        c.execute('''
+            INSERT INTO store_settings (id, support_username, how_to_use_link, welcome_message, shop_name, tagline, min_deposit, max_deposit, qr_expiry_min, referral_bonus, spin_min, spin_max, spin_cooldown_hours, monthly_users)
+            VALUES (1, "@Athulsudin", "https://t.me/chatelitehackers", "", "ELITE HACKERS", "Best Free Fire Panel Services", 10.0, 50000.0, 5, 5.0, 2.0, 10.0, 24, "3,074 monthly users")
+        ''')
+        
+    # Safely adding new columns for Product features without crashing existing DB
+    try: c.execute("ALTER TABLE products ADD COLUMN reseller_price REAL DEFAULT 0")
+    except: pass
+    try: c.execute("ALTER TABLE products ADD COLUMN remote_pid TEXT DEFAULT ''")
+    except: pass
+    try: c.execute("ALTER TABLE products ADD COLUMN remote_duration TEXT DEFAULT ''")
+    except: pass
 
+    conn.commit()
+    conn.close()
+
+def get_current_password():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('SELECT password FROM admin_auth WHERE id = 1')
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else DEFAULT_ADMIN_PWD
 
 init_all_database_tables()
 
+# Dynamic Bot Avatar & Username Fetcher
 BOT_INFO = {"name": "Bot Control Center", "username": "@EliteBot", "avatar": None}
-
-
 def refresh_bot_meta():
-    if not BOT_TOKEN:
-        return
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/getMe"
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=5) as resp:
             d = json.loads(resp.read().decode())
-        if d.get("ok"):
-            BOT_INFO["name"] = d["result"].get("first_name", "Bot Control Center")
-            BOT_INFO["username"] = f"@{d['result'].get('username', 'Bot')}"
-    except Exception as exc:
-        logger.debug("Bot meta refresh failed: %s", exc)
-
+            if d.get("ok"):
+                BOT_INFO["name"] = d["result"].get("first_name", "Bot Control Center")
+                BOT_INFO["username"] = f"@{d['result'].get('username', 'Bot')}"
+        p_url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUserProfilePhotos?user_id={BOT_TOKEN.split(':')[0]}&limit=1"
+        with urllib.request.urlopen(urllib.request.Request(p_url, headers={"User-Agent": "Mozilla/5.0"}), timeout=5) as resp2:
+            pd = json.loads(resp2.read().decode())
+            if pd.get("ok") and pd["result"]["total_count"] > 0:
+                fid = pd["result"]["photos"][0][-1]["file_id"]
+                with urllib.request.urlopen(urllib.request.Request(f"https://api.telegram.org/bot{BOT_TOKEN}/getFile?file_id={fid}"), timeout=5) as resp3:
+                    fd = json.loads(resp3.read().decode())
+                    if fd.get("ok"):
+                        BOT_INFO["avatar"] = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{fd['result']['file_path']}"
+    except Exception:
+        pass
 
 Thread(target=refresh_bot_meta, daemon=True).start()
 
-
-def get_current_password():
-    row = db.execute('SELECT password FROM admin_auth WHERE id = 1', fetch='one')
-    return row[0] if row else DEFAULT_ADMIN_PWD
-
-
-def send_telegram_message(chat_id, text, parse_mode="HTML"):
-    if not BOT_TOKEN:
-        return False, "BOT_TOKEN is not configured"
-    try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        payload = json.dumps({"chat_id": chat_id, "text": text, "parse_mode": parse_mode}).encode()
-        req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            data = json.loads(resp.read().decode())
-        if data.get("ok"):
-            return True, ""
-        return False, str(data.get("description", "Telegram API error"))
-    except Exception as exc:
-        return False, str(exc)
+# ==========================================
+# 🎨 COMPLETE CYBER ADMIN DASHBOARD HTML
+# ==========================================
 ADMIN_HTML = """
 <!DOCTYPE html>
 <html lang="en">
@@ -303,10 +184,11 @@ ADMIN_HTML = """
             --card-glass: rgba(22, 13, 44, 0.94);
             --neon-border: rgba(147, 51, 234, 0.35);
             --sidebar-w: 270px;
+            --text-main: #f8fafc;
         }
         body {
             background: radial-gradient(circle at top center, #1b0c3f 0%, #0c051d 60%, #05020c 100%);
-            background-attachment: fixed; color: #f8fafc; font-family: -apple-system, system-ui, sans-serif;
+            background-attachment: fixed; color: var(--text-main); font-family: -apple-system, system-ui, sans-serif;
             min-height: 100vh; margin: 0; overflow-x: hidden;
         }
         body::before {
@@ -314,6 +196,10 @@ ADMIN_HTML = """
             background-image: linear-gradient(rgba(147, 51, 234, 0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(147, 51, 234, 0.05) 1px, transparent 1px);
             background-size: 36px 36px; pointer-events: none; z-index: 0;
         }
+
+        /* 🌟 Animations */
+        .fade-in { animation: fadeIn 0.3s ease-in-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 
         /* 🔐 SCREENSHOT-EXACT CYBER LOGIN */
         .login-box { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; position: relative; z-index: 10; }
@@ -340,18 +226,17 @@ ADMIN_HTML = """
         .form-control, .form-select { background-color: #0d0622; border: 1px solid var(--neon-border); color: white; border-radius: 10px; padding: 10px; }
         .form-control:focus { background-color: #0d0622; color: white; border-color: #a855f7; box-shadow: none; }
         
-        .gold-box { border: 1px solid rgba(250, 204, 21, 0.4); border-radius: 16px; padding: 20px; background: rgba(22, 13, 44, 0.95); margin-bottom: 20px; }
-        .cyan-box { border: 1px solid rgba(56, 189, 248, 0.4); border-radius: 16px; padding: 20px; background: rgba(22, 13, 44, 0.95); margin-bottom: 20px; }
-        
-        .modal-bg { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0, 0, 0, 0.8); backdrop-filter: blur(10px); z-index: 2000; display: none; align-items: center; justify-content: center; padding: 20px; }
-        .modal-card { background: #13072e; border: 1px solid #8b5cf6; border-radius: 24px; padding: 30px; width: 100%; max-width: 600px; max-height: 90vh; overflow-y: auto; box-shadow: 0 0 50px rgba(139, 92, 246, 0.4); }
+        /* Product Cards & Delete Notification */
+        .del-notify { background: #7c3aed; color: white; padding: 10px 20px; border-radius: 8px; font-weight: bold; position: fixed; top: 20px; left: 50%; transform: translateX(-50%); z-index: 9999; display: none; box-shadow: 0 4px 15px rgba(124,58,237,0.5); }
+        .prod-card { background: #12072c; border: 1px solid #3b1d6e; border-radius: 16px; padding: 20px; }
+        .prod-icon { background: linear-gradient(135deg, #facc15, #f59e0b); -webkit-background-clip: text; -webkit-text-fill-color: transparent; font-size: 2rem; }
     </style>
 </head>
 <body>
 
     {% if not session.get('admin_logged') %}
     <!-- 🔐 LOGIN SCREEN -->
-    <div class="login-box">
+    <div class="login-box fade-in">
         <div class="login-card">
             <div class="avatar-ring">
                 <div class="avatar-inner">
@@ -365,181 +250,168 @@ ADMIN_HTML = """
             <form method="POST" action="/login">
                 <div class="pwd-field">
                     <input type="password" id="pInput" name="password" placeholder="Admin password" required autofocus>
-                    <span class="eye-btn" onclick="togglePwd()"><i id="eyeI" class="fa-regular fa-eye"></i></span>
+                    <span class="eye-btn" onclick="let p=document.getElementById('pInput');p.type=p.type==='password'?'text':'password';"><i class="fa-regular fa-eye"></i></span>
                 </div>
                 <button type="submit" class="btn-unlock">Unlock</button>
             </form>
             <div style="margin-top:20px;font-size:0.78rem;color:#d8b4fe;">🔐 Owner-only · session remembered for 30 days</div>
         </div>
     </div>
-    <script>
-        function togglePwd() {
-            let p = document.getElementById('pInput');
-            let e = document.getElementById('eyeI');
-            p.type = p.type === 'password' ? 'text' : 'password';
-            e.className = p.type === 'password' ? 'fa-regular fa-eye' : 'fa-regular fa-eye-slash';
-        }
-    </script>
     {% else %}
+
+    <!-- Notification Banner -->
+    <div id="delNotify" class="del-notify fade-in"><i class="fas fa-trash me-2"></i> Product deleted.</div>
 
     <!-- 🌟 SIDEBAR DRAWER -->
     <div class="sidebar" id="sidebar">
-        <div class="px-3 pb-3 border-bottom border-secondary d-flex align-items-center gap-2">
-            <span class="fs-4">⚡</span>
-            <strong class="text-info">{{ bot_info.name }}</strong>
+        <div class="px-3 pb-3 border-bottom border-secondary d-flex justify-content-between align-items-center">
+            <div class="d-flex align-items-center gap-2">
+                <span class="fs-4">⚡</span><strong class="text-info">{{ bot_info.name }}</strong>
+            </div>
+            <button class="btn-close btn-close-white d-md-none" onclick="document.getElementById('sidebar').classList.remove('active')"></button>
         </div>
         <div class="mt-3">
-            <a class="sidebar-link active" onclick="showTab('dashboard', this)"><i class="fas fa-chart-line"></i> Dashboard</a>
-            <a class="sidebar-link" onclick="showTab('products', this)"><i class="fas fa-boxes-stacked"></i> Manage Product</a>
-            <a class="sidebar-link" onclick="showTab('keys', this)"><i class="fas fa-key"></i> Manage Keys</a>
-            <a class="sidebar-link" onclick="showTab('pending_keys', this)"><i class="fas fa-clock"></i> Pending Keys Queue</a>
-            <a class="sidebar-link" onclick="showTab('id_stock', this)"><i class="fas fa-id-badge"></i> ID Stock</a>
-            <a class="sidebar-link" onclick="showTab('members', this)"><i class="fas fa-users"></i> Members & Wallets</a>
-            <a class="sidebar-link" onclick="showTab('resellers', this)"><i class="fas fa-handshake"></i> Resellers</a>
-            <a class="sidebar-link" onclick="showTab('broadcast', this)"><i class="fas fa-bullhorn"></i> Broadcast</a>
+            <a class="sidebar-link active" onclick="showTab('dashboard', this)"><i class="fas fa-chart-pie"></i> Dashboard</a>
+            <a class="sidebar-link" onclick="showTab('products', this)"><i class="fas fa-box-open"></i> Manage Product</a>
+            <a class="sidebar-link" onclick="showTab('keys_log', this)"><i class="fas fa-scroll"></i> Live Key Delivery Logs</a>
             <a class="sidebar-link" onclick="showTab('coupons', this)"><i class="fas fa-ticket"></i> Coupon Manager</a>
             <a class="sidebar-link" onclick="showTab('upi', this)"><i class="fas fa-credit-card"></i> UPI Payment Setup</a>
-            <a class="sidebar-link" onclick="showTab('topups', this)"><i class="fas fa-wallet"></i> Top-ups Queue</a>
-            <a class="sidebar-link" onclick="showTab('links', this)"><i class="fas fa-link"></i> Product Links</a>
-            <a class="sidebar-link" onclick="showTab('security', this)"><i class="fas fa-shield-halved"></i> Security & Sessions</a>
             <a class="sidebar-link" onclick="showTab('store', this)"><i class="fas fa-sliders"></i> Store Settings</a>
-            <a href="/logout" class="sidebar-link text-danger mt-4"><i class="fas fa-lock"></i> Logout</a>
-        </div>
-    </div>
-
-    <!-- 🌟 1. CUSTOMER PROFILE INSPECTOR MODAL -->
-    <div class="modal-bg" id="userModal">
-        <div class="modal-card">
-            <div class="d-flex justify-content-between align-items-center mb-3">
-                <h5 class="fw-bold m-0 text-info"><i class="fas fa-user-shield me-2"></i>Customer Profile Inspector</h5>
-                <button class="btn-close btn-close-white" onclick="document.getElementById('userModal').style.display='none'"></button>
-            </div>
-            <div class="card p-3 mb-3" style="background:#1a0c3d;">
-                <div class="row g-2 small">
-                    <div class="col-6"><strong>Name:</strong> <span id="m_name"></span></div>
-                    <div class="col-6"><strong>Telegram ID:</strong> <code id="m_id"></code></div>
-                    <div class="col-6"><strong>Username:</strong> <span id="m_user"></span></div>
-                    <div class="col-6"><strong>Account Role:</strong> <span id="m_role" class="badge bg-warning text-dark"></span></div>
-                    <div class="col-12"><strong>Joined:</strong> <span id="m_joined"></span></div>
-                </div>
-            </div>
-            <div class="card p-3 mb-3" style="background:#1a0c3d;">
-                <h6 class="text-success fw-bold">💰 Financials & Balance</h6>
-                <div class="row g-2 mb-3">
-                    <div class="col-6">Current Balance: <h4 class="text-warning m-0">₹<span id="m_bal"></span></h4></div>
-                    <div class="col-6">Lifetime Spent: <h5 class="text-muted m-0">₹<span id="m_spent"></span></h5></div>
-                </div>
-                <div class="d-flex gap-2 mb-2">
-                    <button class="btn btn-sm btn-outline-success" onclick="quickAddBal(50)">+₹50</button>
-                    <button class="btn btn-sm btn-outline-success" onclick="quickAddBal(100)">+₹100</button>
-                    <button class="btn btn-sm btn-outline-success" onclick="quickAddBal(500)">+₹500</button>
-                    <button class="btn btn-sm btn-outline-danger" onclick="quickAddBal(-50)">-₹50</button>
-                </div>
-                <div class="d-flex gap-2">
-                    <input type="number" id="m_custom_bal" class="form-control form-control-sm" placeholder="Custom amount (+150 or -50)">
-                    <button class="btn btn-sm btn-custom" onclick="applyCustomBal()">Apply</button>
-                </div>
-            </div>
-            <div class="d-flex justify-content-between">
-                <a id="m_dm_link" href="#" target="_blank" class="btn btn-primary btn-sm"><i class="fab fa-telegram me-1"></i> Send DM on Telegram</a>
-                <button class="btn btn-secondary btn-sm" onclick="document.getElementById('userModal').style.display='none'">Close</button>
-            </div>
+            <a href="/logout" class="sidebar-link text-danger mt-4"><i class="fas fa-right-from-bracket"></i> Logout</a>
         </div>
     </div>
 
     <div class="main-content">
         <div class="d-flex justify-content-between align-items-center mb-4">
             <div class="d-flex align-items-center gap-3">
-                <button class="btn btn-dark d-md-none" onclick="document.getElementById('sidebar').classList.toggle('active')"><i class="fas fa-bars"></i></button>
+                <button class="btn btn-dark d-md-none" onclick="document.getElementById('sidebar').classList.add('active')"><i class="fas fa-bars"></i></button>
                 <h4 class="fw-bold m-0 title-grad">Bot Control Center</h4>
             </div>
-            <a href="/logout" class="btn btn-outline-danger btn-sm"><i class="fas fa-arrow-right-from-bracket"></i></a>
+            <a href="/logout" class="btn btn-outline-danger btn-sm"><i class="fas fa-lock me-1"></i></a>
         </div>
 
-        <!-- 1️⃣ 📊 TAB: DASHBOARD -->
-        <div class="tab-pane-content" id="tab-dashboard">
+        <!-- 📊 1. DASHBOARD -->
+        <div class="tab-pane-content fade-in" id="tab-dashboard">
             <div class="card p-4 mb-4" style="background:linear-gradient(135deg,#1f1042,#110729);">
                 <small class="text-info fw-bold">⚡ BOT CONTROL CENTER</small>
                 <h3 class="fw-bold mt-1">Welcome back.</h3>
                 <span class="text-muted">Here's how {{ bot_info.username }} is doing right now.</span>
             </div>
-            <div class="row g-3 mb-4">
+            <div class="row g-3">
                 <div class="col-6 col-md-3"><div class="stat-card"><h6>MEMBERS</h6><h2>{{ stats.users }}</h2></div></div>
                 <div class="col-6 col-md-3"><div class="stat-card" style="border-left-color:#10b981;"><h6>WALLET (ALL)</h6><h2>₹{{ stats.total_wallet }}</h2></div></div>
                 <div class="col-6 col-md-3"><div class="stat-card" style="border-left-color:#38bdf8;"><h6>CATALOG ITEMS</h6><h2>{{ stats.products_count }}</h2></div></div>
-                <div class="col-6 col-md-3"><div class="stat-card" style="border-left-color:#10b981;"><h6>ORDERS FULFILLED</h6><h2>{{ stats.orders }}</h2></div></div>
                 <div class="col-6 col-md-3"><div class="stat-card" style="border-left-color:#facc15;"><h6>LIFETIME REVENUE</h6><h2>₹{{ stats.revenue }}</h2></div></div>
-                <div class="col-6 col-md-3"><div class="stat-card" style="border-left-color:#06b6d4;"><h6>KEYS IN STOCK</h6><h2>{{ stats.keys }}</h2></div></div>
             </div>
         </div>
 
-        <!-- 2️⃣ 📦 TAB: MANAGE PRODUCTS -->
-        <div class="tab-pane-content" id="tab-products" style="display:none;">
-            <div class="card p-4">
-                <div class="d-flex justify-content-between align-items-center mb-3">
-                    <h5 class="m-0 fw-bold">📦 Manage Products</h5>
-                    <button class="btn btn-custom btn-sm" onclick="document.getElementById('addProdBox').style.display='block'"><i class="fas fa-plus me-1"></i> Add Product</button>
+        <!-- 📦 2. MANAGE PRODUCTS (CARDS + ADD FORM) -->
+        <div class="tab-pane-content fade-in" id="tab-products" style="display:none;">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <div>
+                    <h5 class="m-0 fw-bold"><i class="fas fa-box me-2 text-warning"></i> Manage Product</h5>
+                    <small class="text-muted">Add products, plans, pricing, and API auto-restock links.</small>
                 </div>
-                <div id="addProdBox" class="p-3 mb-4 card" style="display:none;background:#13082e;">
-                    <h6>➕ Add Product Specification</h6>
-                    <div class="row g-3 mt-1">
-                        <div class="col-md-4"><label class="small text-muted">Product Name</label><input type="text" id="ap_name" class="form-control" placeholder="BALA MOD NON ROOT"></div>
-                        <div class="col-md-4">
-                            <label class="small text-muted">Category</label>
-                            <select id="ap_cat" class="form-select">
-                                <option value="non_root">Non-Root Mobile</option><option value="root">Root Mobile</option>
-                                <option value="ios">iOS Panels</option><option value="pc">PC Panels</option><option value="likes">8 Level ID / Likes</option>
-                            </select>
-                        </div>
-                        <div class="col-md-4"><label class="small text-muted">Icon / Emoji</label><input type="text" id="ap_icon" class="form-control" placeholder="⚡"></div>
-                        <div class="col-md-4"><label class="small text-muted">Plan Name</label><input type="text" id="ap_plan" class="form-control" placeholder="10_Days"></div>
-                        <div class="col-md-4"><label class="small text-muted">Regular Price (₹)</label><input type="number" id="ap_price" class="form-control" placeholder="400"></div>
-                        <div class="col-md-4"><label class="small text-muted">Reseller Price (₹)</label><input type="number" id="ap_rprice" class="form-control" placeholder="250"></div>
-                        <div class="col-12"><label class="small text-muted">Download Link</label><input type="text" id="ap_link" class="form-control"></div>
-                        <div class="col-12"><label class="small text-muted">Bulk Keys (One per line)</label><textarea id="ap_keys" class="form-control" rows="3" placeholder="KEY1&#10;KEY2"></textarea></div>
-                        <div class="col-12"><button class="btn btn-custom w-100" onclick="saveProduct()">Save Product</button></div>
-                    </div>
+                <button class="btn btn-custom" onclick="document.getElementById('addProdBox').style.display='block'; window.scrollTo(0,0);"><i class="fas fa-plus me-1"></i> Add Product</button>
+            </div>
+            
+            <!-- ADD PRODUCT FORM -->
+            <div id="addProdBox" class="p-4 mb-4 card" style="display:none;background:#13082e;">
+                <div class="d-flex justify-content-between">
+                    <h6 class="fw-bold text-info"><i class="fas fa-plus me-2"></i>Add Product</h6>
+                    <button class="btn-close btn-close-white" onclick="document.getElementById('addProdBox').style.display='none'"></button>
                 </div>
-                <div class="row g-3">
-                    {% for p in products %}
+                <div class="row g-3 mt-1">
+                    <div class="col-md-6"><label class="small text-muted">Product Name</label><input type="text" id="ap_name" class="form-control" placeholder="e.g. Netflix Premium"></div>
                     <div class="col-md-6">
-                        <div class="card p-3" style="background:#12072c;border:1px solid #3b1d6e;">
-                            <div class="d-flex justify-content-between align-items-center">
-                                <span class="fs-4">{{ p.icon }}</span>
-                                <span class="badge bg-secondary">{{ p.category }}</span>
+                        <label class="small text-muted">Device Category (optional)</label>
+                        <select id="ap_cat" class="form-select">
+                            <option value="non_root">Non-Root Mobile</option><option value="root">Root Mobile</option>
+                            <option value="ios">iOS Panels</option><option value="pc">PC Panels</option><option value="likes">8 Level ID / Likes</option>
+                        </select>
+                    </div>
+                    <div class="col-md-12"><label class="small text-muted">Channel Link (optional)</label><input type="text" id="ap_link" class="form-control" placeholder="e.g. https://t.me/yourchannel"></div>
+                    
+                    <div class="col-12 mt-4"><h6 class="text-secondary m-0">➕ Plans (optional)</h6></div>
+                    <div class="col-md-6"><label class="small text-muted">Plan Name</label><input type="text" id="ap_plan" class="form-control" placeholder="e.g. 1 Day / 30 Days"></div>
+                    <div class="col-md-6"><label class="small text-muted">Price (₹)</label><input type="number" id="ap_price" class="form-control" placeholder="Price (₹)"></div>
+                    <div class="col-md-12"><label class="small text-warning"><i class="fas fa-handshake me-1"></i> Reseller Price (₹) (optional)</label><input type="number" id="ap_rprice" class="form-control" placeholder="optional"></div>
+                    
+                    <div class="col-md-6"><label class="small text-info">Remote Product ID (API)</label><input type="text" id="ap_pid" class="form-control" placeholder="e.g. PID_123"></div>
+                    <div class="col-md-6"><label class="small text-info">Remote Duration (API)</label><input type="text" id="ap_rdur" class="form-control" placeholder="e.g. 1 Day"></div>
+                    
+                    <div class="col-12"><button class="btn btn-custom w-100 mt-2" onclick="saveProduct()">➕ Add Product</button></div>
+                </div>
+            </div>
+
+            <!-- PRODUCT CARDS GRID -->
+            <div class="row g-3">
+                {% for p in products %}
+                <div class="col-md-6">
+                    <div class="prod-card">
+                        <div class="d-flex justify-content-between align-items-center mb-3">
+                            <div class="prod-icon"><i class="fas fa-folder text-warning"></i></div>
+                            <span class="badge" style="border: 1px solid #facc15; color: #facc15; background: transparent;">❓ NOT CATEGORIZED</span>
+                        </div>
+                        <div class="d-flex justify-content-between">
+                            <div>
+                                <small class="text-muted">PRODUCT</small>
+                                <h5 class="fw-bold m-0">{{ p.name }}</h5>
                             </div>
-                            <h5 class="fw-bold mt-2">{{ p.name }}</h5>
-                            <div class="text-muted small">Prices: {{ p.prices }}</div>
-                            <div class="d-flex gap-2 mt-3">
-                                <button class="btn btn-sm btn-outline-danger" onclick="deleteProduct('{{ p.prod_key }}')"><i class="fas fa-trash"></i> Delete</button>
+                            <div class="text-end">
+                                <small class="text-muted">STOCK</small>
+                                <h5 class="fw-bold m-0">{{ p.stock_count }} key(s)</h5>
                             </div>
                         </div>
+                        <div class="text-end mt-1"><small class="text-success fw-bold">🟢 ACTIVE</small></div>
+                        <div class="d-flex flex-wrap gap-2 mt-3">
+                            <button class="btn btn-sm btn-outline-light"><i class="fas fa-pen"></i> Edit</button>
+                            <button class="btn btn-sm btn-outline-warning"><i class="fas fa-pause"></i> Disable</button>
+                            <button class="btn btn-sm btn-outline-secondary"><i class="fas fa-tools"></i> Maintenance</button>
+                            <button class="btn btn-sm btn-outline-danger" onclick="deleteProduct('{{ p.prod_key }}')"><i class="fas fa-trash"></i> Delete</button>
+                        </div>
                     </div>
-                    {% endfor %}
                 </div>
+                {% endfor %}
             </div>
         </div>
 
-        <!-- 3️⃣ 🗝️ TAB: MANAGE KEYS & SALES ANALYTICS -->
-        <div class="tab-pane-content" id="tab-keys" style="display:none;">
+        <!-- 📜 3. LIVE KEY DELIVERY LOGS (SALES ANALYTICS) -->
+        <div class="tab-pane-content fade-in" id="tab-keys_log" style="display:none;">
+            <h5 class="fw-bold mb-3"><i class="fas fa-scroll text-warning me-2"></i> Live Key Delivery & Global Orders</h5>
+            <p class="text-muted small">Track all API keys delivered to customers with exact timestamps.</p>
+            
+            <div class="row g-3 mb-4">
+                <div class="col-6 col-md-3"><div class="stat-card" style="border-left-color:#38bdf8;"><h6>🛍️ TOTAL SOLD</h6><h3 class="m-0 mt-1">{{ stats.orders }}</h3></div></div>
+                <div class="col-6 col-md-3"><div class="stat-card" style="border-left-color:#10b981;"><h6>📈 SOLD TODAY</h6><h3 class="m-0 mt-1">{{ stats.today_orders }}</h3></div></div>
+                <div class="col-6 col-md-3"><div class="stat-card" style="border-left-color:#facc15;"><h6>💎 TODAY'S REVENUE</h6><h3 class="m-0 mt-1">₹{{ stats.today_rev }}</h3></div></div>
+                <div class="col-6 col-md-3"><div class="stat-card" style="border-left-color:#8b5cf6;"><h6>📦 LIVE PRODUCTS</h6><h3 class="m-0 mt-1">{{ stats.products_count }}</h3></div></div>
+            </div>
+
             <div class="card p-4">
-                <h5>🗝️ Manage Keys & Sales Analytics</h5>
-                <input type="text" id="keySearch" class="form-control mt-3 mb-3" placeholder="🔍 Search by Telegram ID, User, Product, Key..." onkeyup="filterTable('keySearch', 'keysTable')">
+                <h6 class="text-success fw-bold mb-3">🔑 Delivered Keys & Orders Log</h6>
+                <input type="text" id="logSearch" class="form-control mb-3" placeholder="🔍 Search by Telegram ID, User, Product, or Key..." onkeyup="filterTable('logSearch', 'logTable')">
                 <div class="table-responsive">
-                    <table class="table table-dark align-middle" id="keysTable">
-                        <thead><tr><th>User ID</th><th>Product</th><th>Plan</th><th>Paid</th><th>Delivered Key</th><th>Date (IST)</th></tr></thead>
+                    <table class="table table-dark align-middle" id="logTable">
+                        <thead><tr class="text-muted small"><th>USER (ID)</th><th>PRODUCT & PLAN</th><th>PRICE PAID</th><th>DELIVERED KEY</th><th>DATE & TIME</th></tr></thead>
                         <tbody>
                             {% for o in all_orders %}
                             <tr>
-                                <td><code>{{ o[1] }}</code></td>
-                                <td>{{ o[2] }}</td>
-                                <td>{{ o[3] }}</td>
-                                <td>₹{{ o[5] }}</td>
-                                <td><code>{{ o[4] }}</code></td>
-                                <td>{{ o[7] }}</td>
+                                <td>
+                                    <strong>{{ o.user_name }}</strong><br>
+                                    <a href="tg://user?id={{ o.user_id }}" class="text-info text-decoration-none small"><i class="fas fa-comment-dots"></i> {{ o.user_id }}</a>
+                                </td>
+                                <td><strong>{{ o.prod_name }}</strong><br><small class="text-muted">⏱️ {{ o.plan }}</small></td>
+                                <td><strong class="text-success">₹{{ o.amount }}</strong></td>
+                                <td>
+                                    <span class="badge bg-secondary mb-1">{% if 'API' in o.key %}🌐 API{% else %}📦 LOCAL{% endif %}</span><br>
+                                    <code class="text-light">{{ o.key }}</code>
+                                    <i class="fas fa-copy text-muted ms-2" style="cursor:pointer;" onclick="navigator.clipboard.writeText('{{ o.key }}'); alert('Key Copied!');"></i>
+                                </td>
+                                <td class="small">{{ o.date }}</td>
                             </tr>
                             {% else %}
-                            <tr><td colspan="6" class="text-center text-muted">No key delivery history logged yet.</td></tr>
+                            <tr><td colspan="5" class="text-center text-muted py-4">No key delivery history logged yet.</td></tr>
                             {% endfor %}
                         </tbody>
                     </table>
@@ -547,281 +419,17 @@ ADMIN_HTML = """
             </div>
         </div>
 
-        <!-- 4️⃣ ⏳ TAB: PENDING KEYS QUEUE -->
-        <div class="tab-pane-content" id="tab-pending_keys" style="display:none;">
-            <div class="card p-4">
-                <h5>⏳ Pending Keys Queue (Out-of-Stock Manual Dispatch)</h5>
-                <p class="text-muted small">Orders waiting for stock. Enter fresh key and click send to dispatch directly to customer Telegram!</p>
-                <div class="table-responsive">
-                    <table class="table table-dark">
-                        <thead><tr><th>User ID</th><th>Product</th><th>Plan</th><th>Paid</th><th>Action</th></tr></thead>
-                        <tbody>
-                            {% for pk in pending_orders %}
-                            <tr>
-                                <td><code>{{ pk[1] }}</code></td>
-                                <td>{{ pk[2] }}</td>
-                                <td>{{ pk[3] }}</td>
-                                <td>₹{{ pk[5] }}</td>
-                                <td>
-                                    <div class="d-flex gap-2">
-                                        <input type="text" id="key_disp_{{ pk[0] }}" class="form-control form-control-sm" placeholder="Paste Fresh Key">
-                                        <button class="btn btn-success btn-sm" onclick="dispatchKey({{ pk[0] }}, '{{ pk[1] }}')">Send</button>
-                                    </div>
-                                </td>
-                            </tr>
-                            {% else %}
-                            <tr><td colspan="5" class="text-center text-muted">No pending orders in queue. All keys delivered!</td></tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-
-        <!-- 5️⃣ 🆔 TAB: ID STOCK -->
-        <div class="tab-pane-content" id="tab-id_stock" style="display:none;">
-            <div class="card p-4">
-                <h5>🆔 ID Stock (Accounts Management)</h5>
-                <div class="row g-3 mt-1">
-                    <div class="col-md-4"><label class="small text-muted">Account Type</label>
-                        <select id="id_cat" class="form-select">
-                            <option value="8 Level ID">8 Level ID (Ranked Ready)</option>
-                            <option value="Facebook ID">Facebook ID</option>
-                            <option value="Gmail ID">Gmail ID</option>
-                            <option value="Instagram ID">Instagram ID</option>
-                            <option value="WhatsApp ID">WhatsApp ID</option>
-                        </select>
-                    </div>
-                    <div class="col-md-4"><label class="small text-muted">Price (₹)</label><input type="number" id="id_price" class="form-control" placeholder="45"></div>
-                    <div class="col-md-4"><label class="small text-muted">Credentials (Username/Number:Pass)</label><input type="text" id="id_cred" class="form-control" placeholder="9847123456:Pass@123"></div>
-                    <div class="col-12"><button class="btn btn-custom" onclick="saveIdStock()"><i class="fas fa-plus me-1"></i> Add Account to Stock</button></div>
-                </div>
-            </div>
-        </div>
-
-        <!-- 6️⃣ 👥 TAB: MEMBERS & WALLETS (INSPECTOR) -->
-        <div class="tab-pane-content" id="tab-members" style="display:none;">
-            <div class="card p-4">
-                <h5>👥 Members & Wallets Management</h5>
-                <input type="text" id="memSearch" class="form-control mt-2 mb-3" placeholder="🔍 Search by name, @username, or Telegram ID..." onkeyup="filterTable('memSearch', 'memTable')">
-                <div class="table-responsive">
-                    <table class="table table-dark align-middle" id="memTable">
-                        <thead><tr><th>Telegram ID</th><th>Name</th><th>Role</th><th>Balance</th><th>Orders</th><th>Action</th></tr></thead>
-                        <tbody>
-                            {% for u in users_list %}
-                            <tr>
-                                <td><code>{{ u[0] }}</code></td>
-                                <td>{{ u[1] }} <small class="text-muted">({{ u[2] }})</small></td>
-                                <td><span class="badge {{ 'bg-warning text-dark' if u[9]=='Reseller' else 'bg-secondary' }}">{{ u[9] }}</span></td>
-                                <td><strong>₹{{ u[5] }}</strong></td>
-                                <td>{{ u[4] }}</td>
-                                <td>
-                                    <button class="btn btn-sm btn-custom" onclick='openInspector({{ u[0] }}, {{ u[1]|tojson }}, {{ u[2]|tojson }}, {{ u[3]|tojson }}, {{ u[5] }}, {{ u[6] }}, {{ u[9]|tojson }})'><i class="fas fa-eye me-1"></i> Inspect Profile</button>
-                                </td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-
-        <!-- 7️⃣ 🤝 TAB: RESELLERS -->
-        <div class="tab-pane-content" id="tab-resellers" style="display:none;">
-            <div class="card p-4">
-                <h5>🤝 Resellers Management</h5>
-                <div class="table-responsive mt-3">
-                    <table class="table table-dark align-middle">
-                        <thead><tr><th>Telegram ID</th><th>Name</th><th>Wallet</th><th>Promote / Demote</th></tr></thead>
-                        <tbody>
-                            {% for u in users_list %}
-                            <tr>
-                                <td><code>{{ u[0] }}</code></td>
-                                <td>{{ u[1] }}</td>
-                                <td>₹{{ u[5] }}</td>
-                                <td>
-                                    {% if u[9] == 'Reseller' %}
-                                        <button class="btn btn-sm btn-outline-warning" onclick="toggleResellerRole({{ u[0] }}, 'Regular')">Revoke Reseller</button>
-                                    {% else %}
-                                        <button class="btn btn-sm btn-custom" onclick="toggleResellerRole({{ u[0] }}, 'Reseller')"><i class="fas fa-handshake me-1"></i> Make Reseller</button>
-                                    {% endif %}
-                                </td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-
-        <!-- 8️⃣ 📢 TAB: BROADCAST -->
-        <div class="tab-pane-content" id="tab-broadcast" style="display:none;">
-            <div class="card p-4">
-                <h5>📢 Broadcast Announcement to All Users</h5>
-                <textarea id="bc_msg" class="form-control mt-3" rows="6" placeholder="Type announcement message (HTML supported)..."></textarea>
-                <button class="btn btn-custom mt-3" onclick="sendBroadcast()"><i class="fas fa-paper-plane me-2"></i> Send to All Users</button>
-            </div>
-        </div>
-
-        <!-- 9️⃣ 🎟️ TAB: COUPON MANAGER -->
-        <div class="tab-pane-content" id="tab-coupons" style="display:none;">
-            <div class="card p-4">
-                <h5>🎟️ Coupon & Promo Codes Manager</h5>
-                <div class="row g-3 mt-1">
-                    <div class="col-md-4"><label class="small text-muted">Promo Code</label><input type="text" id="cp_code" class="form-control" placeholder="OFF50"></div>
-                    <div class="col-md-4"><label class="small text-muted">Discount Value (₹)</label><input type="number" id="cp_val" class="form-control" placeholder="50"></div>
-                    <div class="col-md-4"><label class="small text-muted">Usage Limit (Users)</label><input type="number" id="cp_limit" class="form-control" placeholder="50"></div>
-                    <div class="col-12"><button class="btn btn-custom" onclick="saveCoupon()"><i class="fas fa-plus me-1"></i> Create Promo Code</button></div>
-                </div>
-            </div>
-        </div>
-
-        <!-- 🔟 💳 TAB: UPI PAYMENT SETUP -->
-        <div class="tab-pane-content" id="tab-upi" style="display:none;">
-            <div class="card p-4 mb-4">
-                <h5 class="text-success fw-bold mb-3"><i class="fas fa-toggle-on me-2"></i>Active Payment Gateway</h5>
-                <div class="row g-3">
-                    <div class="col-md-6">
-                        <select id="gw_select" class="form-select">
-                            <option value="fampay" {% if gw_cfg.active_gateway == 'fampay' %}selected{% endif %}>FamPay Anti-Fraud Gateway</option>
-                            <option value="paytm" {% if gw_cfg.active_gateway == 'paytm' %}selected{% endif %}>Paytm Gateway</option>
-                        </select>
-                    </div>
-                    <div class="col-md-6 d-flex align-items-end">
-                        <button class="btn btn-custom w-100" onclick="saveGatewaySelection()"><i class="fas fa-save me-1"></i> Set Active Gateway</button>
-                    </div>
-                </div>
-            </div>
-            <div class="cyan-box">
-                <h5 class="text-info fw-bold mb-3"><i class="fas fa-shield-halved me-2"></i>UPI Auto-Payment (FamPay Anti-Fraud Gateway)</h5>
-                <a href="https://xyzcheats.com/gateway" target="_blank" class="btn btn-outline-warning w-100 mb-3 fw-bold"><i class="fas fa-link me-2"></i> Go to FamPay Setup / Get API Key ↗️</a>
-                <div class="row g-3">
-                    <div class="col-md-12">
-                        <label class="small text-muted">API Key</label>
-                        <div class="pwd-field m-0">
-                            <input type="password" id="fp_api_key" class="form-control" value="{{ gw_cfg.fampay_api_key }}" placeholder="FP_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx">
-                            <span class="eye-btn" onclick="let x=document.getElementById('fp_api_key'); x.type = x.type==='password'?'text':'password';"><i class="fa-regular fa-eye"></i></span>
-                        </div>
-                    </div>
-                    <div class="col-md-6">
-                        <label class="small text-muted">FamPay UPI ID Endpoint</label>
-                        <input type="text" id="fp_upi_id" class="form-control" value="{{ gw_cfg.fampay_upi_id }}" placeholder="9544113089@fam">
-                    </div>
-                    <div class="col-md-6">
-                        <label class="small text-muted">API Base URL (locked — cannot be changed)</label>
-                        <input type="text" class="form-control text-muted" value="{{ gw_cfg.fampay_base_url }}" readonly>
-                    </div>
-                    <div class="col-12">
-                        <div class="small text-warning"><i class="fas fa-lock me-1"></i> <strong>Bank Alert Cross-Match & Strict UTR Double Verification Active.</strong></div>
-                    </div>
-                    <div class="col-12">
-                        <button class="btn btn-custom w-100" onclick="saveFamPayGateway()"><i class="fas fa-save me-1"></i> Save FamPay Settings</button>
-                    </div>
-                </div>
-            </div>
-            <div class="gold-box">
-                <h5 class="text-warning fw-bold mb-3"><i class="fas fa-wallet me-2"></i>UPI Auto-Payment (Paytm Gateway)</h5>
-                <div class="row g-3">
-                    <div class="col-md-6"><label class="small text-muted">API Base URL</label><input type="text" id="pt_url" class="form-control" value="{{ gw_cfg.paytm_base_url }}"></div>
-                    <div class="col-md-6"><label class="small text-muted">Paytm UPI ID</label><input type="text" id="pt_upi" class="form-control" value="{{ gw_cfg.paytm_upi_id }}"></div>
-                    <div class="col-12"><label class="small text-muted">Merchant / API Key</label><input type="text" id="pt_merchant" class="form-control" value="{{ gw_cfg.paytm_merchant_id }}"></div>
-                    <div class="col-12"><button class="btn btn-custom w-100" onclick="savePaytmGateway()"><i class="fas fa-save me-1"></i> Save Paytm Settings</button></div>
-                </div>
-            </div>
-        </div>
-
-        <!-- 1️⃣1️⃣ 💳 TAB: TOP-UPS QUEUE -->
-        <div class="tab-pane-content" id="tab-topups" style="display:none;">
-            <div class="card p-4">
-                <h5>💳 Review Pending Deposit Requests</h5>
-                <div class="table-responsive mt-3">
-                    <table class="table table-dark">
-                        <thead><tr><th>User ID</th><th>Amount</th><th>UTR</th><th>Action</th></tr></thead>
-                        <tbody>
-                            <tr><td colspan="4" class="text-center text-muted">No pending deposit requests.</td></tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-
-        <!-- 1️⃣2️⃣ 🔗 TAB: PRODUCT LINKS -->
-        <div class="tab-pane-content" id="tab-links" style="display:none;">
-            <div class="card p-4">
-                <h5>🔗 Product Direct Deep Links</h5>
-                <div class="table-responsive mt-3">
-                    <table class="table table-dark align-middle">
-                        <thead><tr><th>Product</th><th>Direct Buy Link</th><th>Action</th></tr></thead>
-                        <tbody>
-                            {% for p in products %}
-                            <tr>
-                                <td>{{ p.name }}</td>
-                                <td><code>https://t.me/{{ bot_info.username.replace('@','') }}?start=buy_{{ p.prod_key }}</code></td>
-                                <td><button class="btn btn-sm btn-custom" onclick="navigator.clipboard.writeText('https://t.me/{{ bot_info.username.replace('@','') }}?start=buy_{{ p.prod_key }}'); alert('Link Copied!');">Copy</button></td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-
-        <!-- 1️⃣3️⃣ 🛡️ TAB: SECURITY & SESSIONS -->
-        <div class="tab-pane-content" id="tab-security" style="display:none;">
-            <div class="card p-4">
-                <h5>🛡️ Change Master Admin Password</h5>
-                <div class="row g-3 mt-1">
-                    <div class="col-md-6"><label class="small text-muted">New Password</label><input type="password" id="sec_pwd" class="form-control" placeholder="New Password"></div>
-                    <div class="col-12"><button class="btn btn-warning" onclick="changePwd()">Update Password</button></div>
-                </div>
-            </div>
-        </div>
-
-        <!-- 1️⃣4️⃣ ⚙️ TAB: STORE SETTINGS -->
-        <div class="tab-pane-content" id="tab-store" style="display:none;">
-            <div class="card p-4">
-                <h5>⚙️ Store Branding & Limits</h5>
-                <div class="row g-3 mt-1">
-                    <div class="col-md-6"><label class="small text-muted">Support Username</label><input type="text" id="st_supp" class="form-control" value="{{ store.support_username }}"></div>
-                    <div class="col-md-6"><label class="small text-muted">Tutorial Video Link</label><input type="text" id="st_how" class="form-control" value="{{ store.how_to_use_link }}"></div>
-                    <div class="col-12"><button class="btn btn-custom" onclick="saveStore()">Save Store Settings</button></div>
-                </div>
-            </div>
-        </div>
     </div>
     {% endif %}
 
     <script>
-        let currentInspectUid = null;
-        function openInspector(uid, name, user, joined, bal, spent, role) {
-            currentInspectUid = uid;
-            document.getElementById('m_id').innerText = uid;
-            document.getElementById('m_name').innerText = name;
-            document.getElementById('m_user').innerText = user;
-            document.getElementById('m_joined').innerText = joined;
-            document.getElementById('m_bal').innerText = parseFloat(bal).toFixed(2);
-            document.getElementById('m_spent').innerText = parseFloat(spent).toFixed(2);
-            document.getElementById('m_role').innerText = role;
-            document.getElementById('m_dm_link').href = 'tg://user?id=' + uid;
-            document.getElementById('userModal').style.display = 'flex';
-        }
-        function quickAddBal(delta) {
-            if(!currentInspectUid) return;
-            fetch('/api/user/adjust_balance', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({user_id: currentInspectUid, delta: delta}) })
-            .then(r => r.json()).then(d => { alert(d.message); location.reload(); });
-        }
-        function applyCustomBal() {
-            let val = parseFloat(document.getElementById('m_custom_bal').value);
-            if(isNaN(val)) return alert('Enter valid number');
-            quickAddBal(val);
-        }
         function showTab(t, el) {
             document.querySelectorAll('.tab-pane-content').forEach(d => d.style.display = 'none');
             let target = document.getElementById('tab-' + t);
-            if (target) target.style.display = 'block';
+            if(target) target.style.display = 'block';
             document.querySelectorAll('.sidebar-link').forEach(l => l.classList.remove('active'));
-            if (el) el.classList.add('active');
-            if (window.innerWidth < 769) document.getElementById('sidebar').classList.remove('active');
+            if(el) el.classList.add('active');
+            if(window.innerWidth < 769) document.getElementById('sidebar').classList.remove('active');
         }
         function filterTable(inputId, tableId) {
             let filter = document.getElementById(inputId).value.toLowerCase();
@@ -831,82 +439,32 @@ ADMIN_HTML = """
         function saveProduct() {
             let name = document.getElementById('ap_name').value;
             let cat = document.getElementById('ap_cat').value;
-            let icon = document.getElementById('ap_icon').value;
             let plan = document.getElementById('ap_plan').value;
             let price = document.getElementById('ap_price').value;
             let rprice = document.getElementById('ap_rprice').value;
             let link = document.getElementById('ap_link').value;
-            let keys = document.getElementById('ap_keys').value;
+            let pid = document.getElementById('ap_pid').value;
+            let rdur = document.getElementById('ap_rdur').value;
+            
             if(!name || !plan || !price) return alert('Fill required fields!');
+            
             fetch('/api/product/save', {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({name: name, category: cat, icon: icon, prices: [[plan, parseFloat(price)]], reseller_price: parseFloat(rprice||price), download_link: link, keys: keys})
-            }).then(r => r.json()).then(d => { alert(d.message); location.reload(); });
+                body: JSON.stringify({name: name, category: cat, prices: [[plan, parseFloat(price)]], reseller_price: parseFloat(rprice||price), download_link: link, pid: pid, remote_duration: rdur})
+            }).then(r => r.json()).then(d => { 
+                alert(d.message); 
+                location.reload(); 
+            });
         }
         function deleteProduct(k) {
-            if(!confirm('Delete this product?')) return;
+            if(!confirm('Are you sure you want to delete this product?')) return;
             fetch('/api/product/delete', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({prod_key: k}) })
-            .then(r => r.json()).then(d => { alert(d.message); location.reload(); });
-        }
-        function dispatchKey(oid, uid) {
-            let key = document.getElementById('key_disp_' + oid).value;
-            if(!key) return alert('Enter key!');
-            fetch('/api/pending/dispatch', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({order_id: oid, user_id: uid, key: key}) })
-            .then(r => r.json()).then(d => { alert(d.message); location.reload(); });
-        }
-        function saveGatewaySelection() {
-            let gw = document.getElementById('gw_select').value;
-            fetch('/api/gateway/set_active', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({gateway: gw}) })
-            .then(r => r.json()).then(d => alert(d.message));
-        }
-        function saveFamPayGateway() {
-            let k = document.getElementById('fp_api_key').value;
-            let u = document.getElementById('fp_upi_id').value;
-            fetch('/api/gateway/fampay', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({api_key: k, upi_id: u}) })
-            .then(r => r.json()).then(d => alert(d.message));
-        }
-        function savePaytmGateway() {
-            let u = document.getElementById('pt_url').value;
-            let upi = document.getElementById('pt_upi').value;
-            let m = document.getElementById('pt_merchant').value;
-            fetch('/api/gateway/paytm', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({url: u, upi: upi, merchant: m}) })
-            .then(r => r.json()).then(d => alert(d.message));
-        }
-        function saveIdStock() {
-            let cat = document.getElementById('id_cat').value;
-            let pr = document.getElementById('id_price').value;
-            let cred = document.getElementById('id_cred').value;
-            if(!pr || !cred) return alert('Fill fields!');
-            fetch('/api/id_stock/add', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({category: cat, price: parseFloat(pr), credentials: cred}) })
-            .then(r => r.json()).then(d => { alert(d.message); location.reload(); });
-        }
-        function saveCoupon() {
-            let c = document.getElementById('cp_code').value;
-            let v = document.getElementById('cp_val').value;
-            let l = document.getElementById('cp_limit').value;
-            if(!c || !v) return alert('Fill fields!');
-            fetch('/api/coupon/save', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({code: c, val: parseFloat(v), limit: parseInt(l||100)}) })
-            .then(r => r.json()).then(d => { alert(d.message); location.reload(); });
-        }
-        function toggleResellerRole(uid, role) {
-            fetch('/api/user/set_role', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({user_id: uid, role: role}) })
-            .then(r => r.json()).then(d => { alert(d.message); location.reload(); });
-        }
-        function sendBroadcast() {
-            let msg = document.getElementById('bc_msg').value;
-            if(!msg) return alert('Enter message!');
-            fetch('/api/broadcast/send', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({message: msg}) })
-            .then(r => r.json()).then(d => alert(d.message));
-        }
-        function saveStore() {
-            fetch('/api/store/save', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({support_username: document.getElementById('st_supp').value, how_to_use_link: document.getElementById('st_how').value}) })
-            .then(r => r.json()).then(d => alert(d.message));
-        }
-        function changePwd() {
-            let p = document.getElementById('sec_pwd').value;
-            if(!p) return alert('Enter new password!');
-            fetch('/api/security/change_pwd', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({password: p}) })
-            .then(r => r.json()).then(d => alert(d.message));
+            .then(r => r.json()).then(d => { 
+                // Show notification and reload
+                let notif = document.getElementById('delNotify');
+                notif.style.display = 'block';
+                setTimeout(() => { location.reload(); }, 1500);
+            });
         }
     </script>
 </body>
@@ -914,7 +472,7 @@ ADMIN_HTML = """
 """
 
 # ==========================================
-# 🌐 BACKEND API ENDPOINTS
+# 🌐 FLASK BACKEND ENDPOINTS
 # ==========================================
 @app.route('/login', methods=['POST'])
 def login():
@@ -924,315 +482,78 @@ def login():
         return redirect('/')
     return render_template_string(ADMIN_HTML, bot_info=BOT_INFO, error="Invalid Admin Password!")
 
-
 @app.route('/logout')
 def logout():
     session.clear()
     return redirect('/')
 
-
 @app.route('/')
 def dashboard():
     if not session.get('admin_logged'):
         return render_template_string(ADMIN_HTML, bot_info=BOT_INFO)
-    try:
-        r_u = db.execute('SELECT COUNT(*), COALESCE(SUM(wallet_balance),0) FROM users', fetch='one') or (0, 0)
-        r_o = db.execute('SELECT COUNT(*), COALESCE(SUM(amount),0) FROM order_history', fetch='one') or (0, 0)
-        r_p = db.execute('SELECT COUNT(*) FROM products', fetch='one') or (0,)
-        r_k = db.execute('SELECT COUNT(*) FROM keys_inventory WHERE is_used = 0', fetch='one') or (0,)
 
-        p_rows = db.execute('SELECT prod_key, name, category, prices, icon, download_link FROM products ORDER BY name', fetch='all') or []
-        prods = [{
-            "prod_key": p[0], "name": p[1], "category": p[2], "prices": _parse_json(p[3], []),
-            "icon": p[4] or "⚡", "download_link": p[5] or ""
-        } for p in p_rows]
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('SELECT COUNT(*), SUM(wallet_balance) FROM users'); r_u = c.fetchone(); tot_users = r_u[0] or 0; tot_wallet = r_u[1] or 0.0
+    c.execute('SELECT COUNT(*), SUM(amount) FROM order_history'); r_o = c.fetchone(); tot_orders = r_o[0] or 0; tot_rev = r_o[1] or 0.0
+    c.execute('SELECT COUNT(*) FROM products'); p_cnt = c.fetchone()[0]
+    c.execute('SELECT COUNT(*) FROM keys_inventory WHERE is_used = 0'); k_cnt = c.fetchone()[0]
+    
+    # Products with stock count
+    prods = []
+    c.execute('SELECT prod_key, name, category, prices, icon FROM products')
+    for p in c.fetchall():
+        c.execute('SELECT COUNT(*) FROM keys_inventory WHERE prod_key=? AND is_used=0', (p[0],))
+        scount = c.fetchone()[0]
+        prods.append({"prod_key": p[0], "name": p[1], "category": p[2], "prices": json.loads(p[3]), "icon": p[4] or "⚡", "stock_count": scount})
+    
+    # Today's Analytics
+    today_str = datetime.now(IST).strftime("%d %b %Y")
+    c.execute("SELECT COUNT(*), SUM(amount) FROM order_history WHERE timestamp LIKE ?", (f"%{today_str}%",))
+    r_today = c.fetchone()
+    today_orders = r_today[0] or 0
+    today_rev = r_today[1] or 0.0
 
-        all_orders = db.execute('SELECT id, user_id, prod_name, plan, key_delivered, amount, utr, timestamp FROM order_history ORDER BY id DESC LIMIT 50', fetch='all') or []
-        pending = db.execute("SELECT id, user_id, prod_name, plan, key_delivered, amount, timestamp FROM order_history WHERE key_delivered LIKE 'PENDING%' ORDER BY id DESC", fetch='all') or []
-        users_list = db.execute('SELECT user_id, full_name, username, joined_date, orders_count, wallet_balance, total_spent, total_referrals, referral_earnings, account_type FROM users ORDER BY user_id DESC LIMIT 100', fetch='all') or []
-        st_r = db.execute('SELECT support_username, how_to_use_link FROM store_settings WHERE id = 1', fetch='one') or ('@Athulsudin', '')
-        gw_r = db.execute('SELECT active_gateway, fampay_api_key, fampay_upi_id, fampay_base_url, paytm_base_url, paytm_upi_id, paytm_merchant_id FROM gateway_config WHERE id = 1', fetch='one') or ('fampay', '', '9544113089@fam', 'https://xyzcheats.com/gateway', 'https://xyzcheats.com', '', '')
+    # All Orders for Delivery Logs
+    c.execute('''
+        SELECT o.user_id, u.full_name, o.prod_name, o.plan, o.key_delivered, o.amount, o.timestamp 
+        FROM order_history o 
+        LEFT JOIN users u ON o.user_id = u.user_id 
+        ORDER BY o.id DESC LIMIT 100
+    ''')
+    all_orders = [{"user_id": r[0], "user_name": r[1] or "Unknown", "prod_name": r[2], "plan": r[3], "key": r[4], "amount": r[5], "date": r[6]} for r in c.fetchall()]
 
-        gw_cfg = {
-            "active_gateway": gw_r[0], "fampay_api_key": gw_r[1], "fampay_upi_id": gw_r[2],
-            "fampay_base_url": gw_r[3], "paytm_base_url": gw_r[4], "paytm_upi_id": gw_r[5], "paytm_merchant_id": gw_r[6]
-        }
-        return render_template_string(
-            ADMIN_HTML, bot_info=BOT_INFO,
-            stats={"users": r_u[0] or 0, "total_wallet": f"{float(r_u[1] or 0):,.2f}",
-                   "products_count": r_p[0] or 0, "orders": r_o[0] or 0,
-                   "revenue": f"{float(r_o[1] or 0):,.2f}", "keys": r_k[0] or 0},
-            products=prods, all_orders=all_orders, pending_orders=pending, users_list=users_list,
-            gw_cfg=gw_cfg, store={"support_username": st_r[0], "how_to_use_link": st_r[1]}
-        )
-    except Exception as exc:
-        logger.exception("Dashboard load failed")
-        return render_template_string(
-            ADMIN_HTML, bot_info=BOT_INFO, error=f"Dashboard database error: {exc}",
-            stats={"users": 0, "total_wallet": "0.00", "products_count": 0, "orders": 0, "revenue": "0.00", "keys": 0},
-            products=[], all_orders=[], pending_orders=[], users_list=[],
-            gw_cfg={"active_gateway":"fampay","fampay_api_key":"","fampay_upi_id":"","fampay_base_url":"","paytm_base_url":"","paytm_upi_id":"","paytm_merchant_id":""},
-            store={"support_username":"", "how_to_use_link":""}
-        ), 500
+    conn.close()
 
-
-@app.route('/api/gateway/set_active', methods=['POST'])
-def api_set_gw():
-    if not session.get('admin_logged'):
-        return jsonify({"message": "Unauthorized"}), 401
-    gw = (request.json or {}).get('gateway', 'fampay')
-    if gw not in ('fampay', 'paytm'):
-        return jsonify({"message": "Invalid gateway selected."}), 400
-    db.execute('UPDATE gateway_config SET active_gateway = ? WHERE id = 1', (gw,))
-    return jsonify({"message": f"Active Gateway set to {gw.upper()}!"})
-
-
-# Payment setup logic is intentionally not changed in this revision.
-@app.route('/api/gateway/fampay', methods=['POST'])
-def api_fampay_save():
-    if not session.get('admin_logged'):
-        return jsonify({"message": "Unauthorized"}), 401
-    d = request.json or {}
-    db.execute('UPDATE gateway_config SET fampay_api_key = ?, fampay_upi_id = ? WHERE id = 1', (d.get('api_key', ''), d.get('upi_id', '')))
-    return jsonify({"message": "FamPay Anti-Fraud Gateway Settings Saved!"})
-
-
-@app.route('/api/gateway/paytm', methods=['POST'])
-def api_paytm_save():
-    if not session.get('admin_logged'):
-        return jsonify({"message": "Unauthorized"}), 401
-    d = request.json or {}
-    db.execute('UPDATE gateway_config SET paytm_base_url = ?, paytm_upi_id = ?, paytm_merchant_id = ? WHERE id = 1',
-               (d.get('url', ''), d.get('upi', ''), d.get('merchant', '')))
-    return jsonify({"message": "Paytm Gateway Settings Saved!"})
-
+    return render_template_string(
+        ADMIN_HTML, bot_info=BOT_INFO,
+        stats={"users": tot_users, "total_wallet": f"{tot_wallet:,.2f}", "products_count": p_cnt, "orders": tot_orders, "revenue": f"{tot_rev:,.2f}", "keys": k_cnt, "today_orders": today_orders, "today_rev": f"{today_rev:,.2f}"},
+        products=prods, all_orders=all_orders
+    )
 
 @app.route('/api/product/save', methods=['POST'])
 def api_save_p():
-    if not session.get('admin_logged'):
-        return jsonify({"message": "Unauthorized"}), 401
-    d = request.json or {}
-    name = str(d.get('name', '')).strip()
-    category = str(d.get('category', '')).strip()
-    icon = str(d.get('icon', '⚡')).strip() or '⚡'
-    prices = d.get('prices') or []
-    if not name or not category or not prices:
-        return jsonify({"message": "Product name, category and at least one plan are required."}), 400
-    try:
-        k = re.sub(r'[^a-zA-Z0-9]', '_', name).strip('_').lower() or f"product_{int(datetime.now().timestamp())}"
-        if db.is_postgres:
-            db.execute(
-                '''INSERT INTO products (prod_key, name, category, prices, download_link, icon, maintenance, stock_out)
-                   VALUES (?, ?, ?, ?, ?, ?, 0, 0)
-                   ON CONFLICT (prod_key) DO UPDATE SET
-                     name = EXCLUDED.name,
-                     category = EXCLUDED.category,
-                     prices = EXCLUDED.prices,
-                     download_link = EXCLUDED.download_link,
-                     icon = EXCLUDED.icon''',
-                (k, name, category, _json_param(prices), d.get('download_link', ''), icon)
-            )
-        else:
-            db.execute(
-                '''INSERT OR REPLACE INTO products (prod_key, name, category, prices, download_link, icon, maintenance, stock_out)
-                   VALUES (?, ?, ?, ?, ?, ?, COALESCE((SELECT maintenance FROM products WHERE prod_key = ?),0), COALESCE((SELECT stock_out FROM products WHERE prod_key = ?),0))''',
-                (k, name, category, json.dumps(prices, ensure_ascii=False), d.get('download_link', ''), icon, k, k)
-            )
-
-        keys_txt = str(d.get('keys', '') or '')
-        if keys_txt:
-            rows = []
-            for key_item in keys_txt.splitlines():
-                key_item = key_item.strip()
-                if key_item:
-                    rows.append((k, str(prices[0][0]), key_item))
-            if rows:
-                db.executemany('INSERT INTO keys_inventory (prod_key, plan, item_key, is_used) VALUES (?, ?, ?, 0)', rows)
-        return jsonify({"message": "Product and keys saved successfully!"})
-    except Exception as exc:
-        logger.exception("Product save failed")
-        return jsonify({"message": f"Product save failed: {exc}"}), 500
-
+    if not session.get('admin_logged'): return jsonify({"message": "Unauthorized"}), 401
+    d = request.json
+    k = re.sub(r'[^a-zA-Z0-9]', '_', d['name']).strip('_').lower()
+    conn = sqlite3.connect(DB_FILE); c = conn.cursor()
+    c.execute('''INSERT OR REPLACE INTO products (prod_key, name, category, prices, download_link, icon, maintenance, stock_out, reseller_price, remote_pid, remote_duration)
+                 VALUES (?, ?, ?, ?, ?, "⚡", 0, 0, ?, ?, ?)''',
+              (k, d['name'], d['category'], json.dumps(d['prices']), d.get('download_link',''), d.get('reseller_price',0), d.get('pid',''), d.get('remote_duration','')))
+    conn.commit(); conn.close()
+    return jsonify({"message": "Product saved successfully!"})
 
 @app.route('/api/product/delete', methods=['POST'])
 def api_del_p():
-    if not session.get('admin_logged'):
-        return jsonify({"message": "Unauthorized"}), 401
-    k = str((request.json or {}).get('prod_key', '')).strip()
-    if not k:
-        return jsonify({"message": "Product key is required."}), 400
-    try:
-        db.execute('DELETE FROM keys_inventory WHERE prod_key = ?', (k,))
-        db.execute('DELETE FROM products WHERE prod_key = ?', (k,))
-        return jsonify({"message": "Product deleted!"})
-    except Exception as exc:
-        logger.exception("Product delete failed")
-        return jsonify({"message": f"Product delete failed: {exc}"}), 500
-
-
-@app.route('/api/pending/dispatch', methods=['POST'])
-def api_dispatch():
-    if not session.get('admin_logged'):
-        return jsonify({"message": "Unauthorized"}), 401
-    d = request.json or {}
-    try:
-        oid = int(d.get('order_id'))
-        uid = int(d.get('user_id'))
-        key = str(d.get('key', '')).strip()
-    except Exception:
-        return jsonify({"message": "Invalid order/user ID."}), 400
-    if not key:
-        return jsonify({"message": "Enter a key first."}), 400
-
-    row = db.execute('SELECT prod_name, plan, key_delivered FROM order_history WHERE id = ?', (oid,), fetch='one')
-    if not row:
-        return jsonify({"message": "Pending order not found."}), 404
-    if row[2] and not str(row[2]).startswith('PENDING'):
-        return jsonify({"message": "This order already has a delivered key."}), 409
-
-    db.execute('UPDATE order_history SET key_delivered = ? WHERE id = ?', (key, oid))
-    msg = (
-        "✅ <b>Payment verified — here's your key!</b>\n"
-        "⏩ ~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n"
-        f"🛒 <b>{row[0]}</b> — <b>{row[1]}</b>\n\n"
-        "🗝️ Your Key:\n"
-        f"<code>{key}</code>\n\n"
-        "Thank you for shopping with us!"
-    )
-    ok, err = send_telegram_message(uid, msg)
-    if ok:
-        return jsonify({"message": "Key dispatched directly to customer!"})
-    return jsonify({"message": f"Key saved, but Telegram delivery failed: {err}"}), 502
-
-
-@app.route('/api/user/adjust_balance', methods=['POST'])
-def api_adj_bal():
-    if not session.get('admin_logged'):
-        return jsonify({"message": "Unauthorized"}), 401
-    d = request.json or {}
-    try:
-        uid = int(d.get('user_id'))
-        delta = float(d.get('delta'))
-    except Exception:
-        return jsonify({"message": "Invalid user ID or amount."}), 400
-    row = db.execute('SELECT wallet_balance FROM users WHERE user_id = ?', (uid,), fetch='one')
-    if not row:
-        return jsonify({"message": "User not found."}), 404
-    new_balance = max(0.0, float(row[0] or 0) + delta)
-    db.execute('UPDATE users SET wallet_balance = ? WHERE user_id = ?', (new_balance, uid))
-    return jsonify({"message": f"Wallet balance updated to ₹{new_balance:,.2f}."})
-
-
-@app.route('/api/user/set_role', methods=['POST'])
-def api_set_role():
-    if not session.get('admin_logged'):
-        return jsonify({"message": "Unauthorized"}), 401
-    d = request.json or {}
-    try:
-        uid = int(d.get('user_id'))
-    except Exception:
-        return jsonify({"message": "Invalid user ID."}), 400
-    role = str(d.get('role', 'Regular')).strip()
-    if role not in ('Regular', 'Reseller'):
-        return jsonify({"message": "Invalid role."}), 400
-    if not db.execute('SELECT user_id FROM users WHERE user_id = ?', (uid,), fetch='one'):
-        return jsonify({"message": "User not found."}), 404
-    db.execute('UPDATE users SET account_type = ? WHERE user_id = ?', (role, uid))
-    return jsonify({"message": f"Role updated to {role}!"})
-
-
-@app.route('/api/id_stock/add', methods=['POST'])
-def api_id_stock():
-    if not session.get('admin_logged'):
-        return jsonify({"message": "Unauthorized"}), 401
-    d = request.json or {}
-    try:
-        category = str(d.get('category', '')).strip()
-        cred = str(d.get('credentials', '')).strip()
-        price = float(d.get('price'))
-    except Exception:
-        return jsonify({"message": "Invalid stock details."}), 400
-    if not category or not cred or price < 0:
-        return jsonify({"message": "Category, credentials and a valid price are required."}), 400
-    db.execute('INSERT INTO id_accounts (category_name, account_data, price, is_sold) VALUES (?, ?, ?, 0)', (category, cred, price))
-    return jsonify({"message": "Account added to ID Stock!"})
-
-
-@app.route('/api/coupon/save', methods=['POST'])
-def api_coupon():
-    if not session.get('admin_logged'):
-        return jsonify({"message": "Unauthorized"}), 401
-    d = request.json or {}
-    code = str(d.get('code', '')).strip().upper()
-    try:
-        val = float(d.get('val'))
-        limit = int(d.get('limit') or 100)
-    except Exception:
-        return jsonify({"message": "Invalid coupon values."}), 400
-    if not code or val < 0 or limit < 1:
-        return jsonify({"message": "Enter a valid code, discount and usage limit."}), 400
-    if db.is_postgres:
-        db.execute('''INSERT INTO coupons (code, discount_type, discount_val, usage_limit, used_count, is_active)
-                      VALUES (?, 'flat', ?, ?, 0, 1)
-                      ON CONFLICT (code) DO UPDATE SET discount_type='flat', discount_val=EXCLUDED.discount_val,
-                      usage_limit=EXCLUDED.usage_limit, is_active=1''', (code, val, limit))
-    else:
-        db.execute('INSERT OR REPLACE INTO coupons (code, discount_type, discount_val, usage_limit, used_count, is_active) VALUES (?, "flat", ?, ?, 0, 1)', (code, val, limit))
-    return jsonify({"message": "Promo code activated!"})
-
-
-@app.route('/api/broadcast/send', methods=['POST'])
-def api_bc():
-    if not session.get('admin_logged'):
-        return jsonify({"message": "Unauthorized"}), 401
-    msg = str((request.json or {}).get('message', '')).strip()
-    if not msg:
-        return jsonify({"message": "Enter a message."}), 400
-
-    def _run():
-        sent = 0
-        rows = db.execute('SELECT user_id FROM users', fetch='all') or []
-        for (uid,) in rows:
-            ok, _ = send_telegram_message(uid, msg)
-            if ok:
-                sent += 1
-        try:
-            db.execute('INSERT INTO broadcast_history (message, media_type, sent_at, recipients) VALUES (?, ?, ?, ?)',
-                       (msg, 'text', get_ist_time(), sent))
-        except Exception:
-            logger.exception("Failed to save broadcast history")
-        logger.info("Broadcast completed: %s/%s recipients", sent, len(rows))
-
-    Thread(target=_run, daemon=True).start()
-    return jsonify({"message": "Broadcast started. Delivery results are logged after completion."})
-
-
-@app.route('/api/store/save', methods=['POST'])
-def api_save_st():
-    if not session.get('admin_logged'):
-        return jsonify({"message": "Unauthorized"}), 401
-    d = request.json or {}
-    support = str(d.get('support_username', '')).strip()
-    link = str(d.get('how_to_use_link', '')).strip()
-    db.execute('UPDATE store_settings SET support_username=?, how_to_use_link=? WHERE id=1', (support, link))
-    return jsonify({"message": "Store settings saved!"})
-
-
-@app.route('/api/security/change_pwd', methods=['POST'])
-def api_pwd():
-    if not session.get('admin_logged'):
-        return jsonify({"message": "Unauthorized"}), 401
-    np = str((request.json or {}).get('password', '')).strip()
-    if not np:
-        return jsonify({"message": "Password cannot be empty!"}), 400
-    db.execute('UPDATE admin_auth SET password = ? WHERE id = 1', (np,))
-    return jsonify({"message": "Password updated successfully!"})
-
+    if not session.get('admin_logged'): return jsonify({"message": "Unauthorized"}), 401
+    conn = sqlite3.connect(DB_FILE); c = conn.cursor()
+    c.execute('DELETE FROM products WHERE prod_key = ?', (request.json.get('prod_key'),))
+    conn.commit(); conn.close()
+    return jsonify({"message": "Product deleted!"})
 
 def run_web():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
-
 
 if __name__ == "__main__":
     run_web()
