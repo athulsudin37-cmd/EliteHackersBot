@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 # ==========================================
 # ⚙️ CONFIGURATION & CONSTANTS
 # ==========================================
-BOT_TOKEN = "8892856619:AAGZhdOv389_AaKvbcbInlJAiDMOwQxOeHc"
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8892856619:AAGZhdOv389_AaKvbcbInlJAiDMOwQxOeHc")
 ADMIN_ID = 7616127905
 
 STORE_CONFIG = {
@@ -847,7 +847,7 @@ async def show_product_plans(update: Update, context: ContextTypes.DEFAULT_TYPE)
     keyboard = []
     for pl_name, reg_price in prod.get("prices", []):
         final_price = reg_price * 0.6 if is_reseller else reg_price
-        keyboard.append([InlineKeyboardButton(f"🕒 {pl_name.replace('_', ' ')} | ₹{final_price:,.0f}", callback_data=f"buyplan_{prod_key}_{pl_name}_{final_price}")])
+        keyboard.append([InlineKeyboardButton(f"🕒 {pl_name.replace('_', ' ')} | ₹{final_price:,.0f}", callback_data=f"buyplan|{prod_key}|{pl_name}|{final_price}")])
 
     if prod.get("download_link"):
         keyboard.append([InlineKeyboardButton("🎥 Preview Video", url=prod["download_link"])])
@@ -858,7 +858,7 @@ async def show_product_plans(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def process_plan_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    _, prod_key, plan_name, price_str = query.data.split("_", 3)
+    _, prod_key, plan_name, price_str = query.data.split("|", 3)
     final_price = float(price_str)
     user = update.effective_user
 
@@ -946,7 +946,7 @@ def start_bot():
     app.add_handler(CallbackQueryHandler(shop_categories, pattern="^shop_key$"))
     app.add_handler(CallbackQueryHandler(list_category_products, pattern="^pcat_"))
     app.add_handler(CallbackQueryHandler(show_product_plans, pattern="^selprod_"))
-    app.add_handler(CallbackQueryHandler(process_plan_purchase, pattern="^buyplan_"))
+    app.add_handler(CallbackQueryHandler(process_plan_purchase, pattern=r"^buyplan\|"))
     app.add_handler(CallbackQueryHandler(def_pay_click, pattern="^def_pay_"))
 
     print("🤖 Telegram Bot Engine Running...")
