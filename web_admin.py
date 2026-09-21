@@ -1,6 +1,5 @@
 import os
 import json
-import sqlite3
 import re
 import urllib.request
 import urllib.parse
@@ -9,8 +8,11 @@ from threading import Thread
 import pytz
 from flask import Flask, render_template_string, request, jsonify, redirect, session
 
-DB_FILE = "bot_database.db"
-BOT_TOKEN = "8892856619:AAGZhdOv389_AaKvbcbInlJAiDMOwQxOeHc"
+# 🗄️ Same persistent PostgreSQL layer the bot (main.py) uses — the panel
+# and the bot now read and write the exact same database.
+from database import db
+
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8892856619:AAGZhdOv389_AaKvbcbInlJAiDMOwQxOeHc")
 DEFAULT_ADMIN_PWD = os.environ.get("ADMIN_PASSWORD", "athulsudin1234")
 IST = pytz.timezone('Asia/Kolkata')
 
@@ -21,76 +23,84 @@ app.permanent_session_lifetime = timedelta(days=30)
 def get_ist_time():
     return datetime.now(IST).strftime("%d %b %Y, %I:%M %p (IST)")
 
+def row_tuple(row):
+    # psycopg returns dict rows (dict_row). Convert to a plain tuple, in
+    # column-select order, so the rest of this file can keep indexing rows
+    # the same way the old sqlite3 version did (row[0], row[1], ...).
+    return tuple(row.values()) if row else row
+
+def rows_tuple(rows):
+    return [tuple(r.values()) for r in rows]
+
+def parse_plans(raw):
+    try:
+        data = json.loads(raw or '[]')
+    except Exception:
+        return []
+    if isinstance(data, dict):
+        data = list(data.items())
+    return [(str(x[0]), x[1]) for x in data if isinstance(x, (list, tuple)) and len(x) >= 2]
+
 # ==========================================
-# 🗄️ DATABASE SCHEMA & INITIALIZATION
+# 🗄️ ADMIN-ONLY TABLES
 # ==========================================
-def init_all_database_tables():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('''
+# main.py / database.py already create users, order_history, products,
+# keys_inventory, upi_settings, store_settings and payment_records.
+# The tables below belong only to this admin panel, so we create them here
+# (Postgres, same DATABASE_URL) instead of duplicating them in database.py.
+def init_admin_extra_tables():
+    if db is None:
+        return
+    db.execute('''
         CREATE TABLE IF NOT EXISTS admin_auth (
-            id INTEGER PRIMARY KEY DEFAULT 1,
+            id INTEGER PRIMARY KEY,
             password TEXT
         )
     ''')
-    c.execute('SELECT password FROM admin_auth WHERE id = 1')
-    if not c.fetchone():
-        c.execute('INSERT INTO admin_auth (id, password) VALUES (1, ?)', (DEFAULT_ADMIN_PWD,))
-
-    c.execute('''
+    db.execute('''
         CREATE TABLE IF NOT EXISTS coupons (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id BIGSERIAL PRIMARY KEY,
             code TEXT UNIQUE,
             discount_type TEXT,
-            discount_val REAL,
+            discount_val DOUBLE PRECISION,
             usage_limit INTEGER,
             used_count INTEGER DEFAULT 0,
             is_active INTEGER DEFAULT 1
         )
     ''')
-    c.execute('''
+    db.execute('''
         CREATE TABLE IF NOT EXISTS id_accounts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id BIGSERIAL PRIMARY KEY,
             category_name TEXT,
             account_data TEXT,
-            price REAL,
+            price DOUBLE PRECISION,
             is_sold INTEGER DEFAULT 0
         )
     ''')
-    c.execute('''
+    db.execute('''
         CREATE TABLE IF NOT EXISTS broadcast_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id BIGSERIAL PRIMARY KEY,
             message TEXT,
             media_type TEXT,
             sent_at TEXT,
             recipients INTEGER
         )
     ''')
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS plan_meta (
-            prod_key TEXT,
-            plan TEXT,
-            reseller_price REAL,
-            remote_pid TEXT DEFAULT '',
-            remote_duration TEXT DEFAULT '',
-            PRIMARY KEY (prod_key, plan)
-        )
-    ''')
-    c.execute('''
+    db.execute('''
         CREATE TABLE IF NOT EXISTS pending_deposits (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
+            id BIGSERIAL PRIMARY KEY,
+            user_id BIGINT,
             username TEXT,
-            amount REAL,
+            amount DOUBLE PRECISION,
             utr TEXT,
             order_id TEXT,
             created_at TEXT,
             status TEXT DEFAULT 'Pending'
         )
     ''')
-    c.execute('''
+    db.execute('''
         CREATE TABLE IF NOT EXISTS gateway_config (
-            id INTEGER PRIMARY KEY DEFAULT 1,
+            id INTEGER PRIMARY KEY,
             active_gateway TEXT DEFAULT 'fampay',
             fampay_api_key TEXT DEFAULT '',
             fampay_upi_id TEXT DEFAULT '9544113089@fam',
@@ -100,53 +110,33 @@ def init_all_database_tables():
             paytm_merchant_id TEXT DEFAULT ''
         )
     ''')
-    c.execute('SELECT id FROM gateway_config WHERE id = 1')
-    if not c.fetchone():
-        c.execute('INSERT INTO gateway_config VALUES (1, "fampay", "", "9544113089@fam", "https://xyzcheats.com/gateway", "https://xyzcheats.com", "", "")')
-
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS store_settings (
-            id INTEGER PRIMARY KEY DEFAULT 1,
-            support_username TEXT DEFAULT '@Athulsudin',
-            how_to_use_link TEXT DEFAULT 'https://t.me/chatelitehackers',
-            welcome_message TEXT DEFAULT '',
-            shop_name TEXT DEFAULT 'ELITE HACKERS',
-            tagline TEXT DEFAULT 'Best Free Fire Panel Services',
-            min_deposit REAL DEFAULT 10.0,
-            max_deposit REAL DEFAULT 50000.0,
-            qr_expiry_min INTEGER DEFAULT 5,
-            referral_bonus REAL DEFAULT 5.0,
-            spin_min REAL DEFAULT 2.0,
-            spin_max REAL DEFAULT 10.0,
-            spin_cooldown_hours INTEGER DEFAULT 24,
-            monthly_users TEXT DEFAULT '3,074 monthly users',
-            pending_notice_template TEXT DEFAULT '✅ Payment Verified & Received!\\n\\n⚠️ NOTICE: Auto-stock for {product} ({plan}) is currently restocking!\\n\\n🛡️ 100% SECURE: Admin is preparing your fresh key right now. It will be delivered directly to this chat shortly!'
+    db.execute('''
+        CREATE TABLE IF NOT EXISTS plan_meta (
+            prod_key TEXT,
+            plan TEXT,
+            reseller_price DOUBLE PRECISION,
+            remote_pid TEXT DEFAULT '',
+            remote_duration TEXT DEFAULT '',
+            PRIMARY KEY (prod_key, plan)
         )
     ''')
-    c.execute('SELECT id FROM store_settings WHERE id = 1')
-    if not c.fetchone():
-        c.execute('''
-            INSERT INTO store_settings (id, support_username, how_to_use_link, welcome_message, shop_name, tagline, min_deposit, max_deposit, qr_expiry_min, referral_bonus, spin_min, spin_max, spin_cooldown_hours, monthly_users)
-            VALUES (1, "@Athulsudin", "https://t.me/chatelitehackers", "", "ELITE HACKERS", "Best Free Fire Panel Services", 10.0, 50000.0, 5, 5.0, 2.0, 10.0, 24, "3,074 monthly users")
-        ''')
-    conn.commit()
-    conn.close()
+    # Seed default rows the same way the old sqlite version did.
+    if not db.fetchone('SELECT 1 FROM admin_auth WHERE id = 1'):
+        db.execute('INSERT INTO admin_auth (id, password) VALUES (1, %s)', (DEFAULT_ADMIN_PWD,))
+    if not db.fetchone('SELECT 1 FROM gateway_config WHERE id = 1'):
+        db.execute('INSERT INTO gateway_config (id) VALUES (1)')
+    if not db.fetchone('SELECT 1 FROM store_settings WHERE id = 1'):
+        db.execute(
+            "INSERT INTO store_settings (id, support_username, how_to_use_link, welcome_message) "
+            "VALUES (1, %s, %s, %s)",
+            ("@Athulsudin", "https://t.me/chatelitehackers", "")
+        )
 
-def parse_plans(raw):
-    try: data = json.loads(raw or '[]')
-    except Exception: return []
-    if isinstance(data, dict): data = list(data.items())
-    return [(str(x[0]), x[1]) for x in data if isinstance(x, (list, tuple)) and len(x) >= 2]
+init_admin_extra_tables()
 
 def get_current_password():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('SELECT password FROM admin_auth WHERE id = 1')
-    row = c.fetchone()
-    conn.close()
-    return row[0] if row else DEFAULT_ADMIN_PWD
-
-init_all_database_tables()
+    row = db.fetchone('SELECT password FROM admin_auth WHERE id = 1')
+    return row['password'] if row else DEFAULT_ADMIN_PWD
 
 # Dynamic Bot Avatar & Username Fetcher
 BOT_INFO = {"name": "Bot Control Center", "username": "@EliteBot", "avatar": None}
@@ -897,16 +887,16 @@ def dashboard():
     if not session.get('admin_logged'):
         return render_template_string(ADMIN_HTML, bot_info=BOT_INFO)
 
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('SELECT COUNT(*), SUM(wallet_balance) FROM users'); r_u = c.fetchone(); tot_users = r_u[0] or 0; tot_wallet = r_u[1] or 0.0
-    c.execute('SELECT COUNT(*), SUM(amount) FROM order_history'); r_o = c.fetchone(); tot_orders = r_o[0] or 0; tot_rev = r_o[1] or 0.0
-    c.execute('SELECT COUNT(*) FROM products'); tot_prods = c.fetchone()[0]
-    c.execute('SELECT COUNT(*) FROM keys_inventory WHERE is_used = 0'); tot_keys = c.fetchone()[0]
-    
-    c.execute('SELECT prod_key, plan, reseller_price, remote_pid, remote_duration FROM plan_meta'); meta = {(m[0], m[1]): m for m in c.fetchall()}
-    c.execute('SELECT prod_key, name, category, prices, icon, download_link, maintenance, stock_out FROM products'); prods = []
-    for p in c.fetchall():
+    r_u = row_tuple(db.fetchone('SELECT COUNT(*) AS c, SUM(wallet_balance) AS s FROM users')); tot_users = r_u[0] or 0; tot_wallet = r_u[1] or 0.0
+    r_o = row_tuple(db.fetchone('SELECT COUNT(*) AS c, SUM(amount) AS s FROM order_history')); tot_orders = r_o[0] or 0; tot_rev = r_o[1] or 0.0
+    tot_prods = row_tuple(db.fetchone('SELECT COUNT(*) AS c FROM products'))[0]
+    tot_keys = row_tuple(db.fetchone('SELECT COUNT(*) AS c FROM keys_inventory WHERE is_used = 0'))[0]
+
+    meta_rows = rows_tuple(db.fetchall('SELECT prod_key, plan, reseller_price, remote_pid, remote_duration FROM plan_meta'))
+    meta = {(m[0], m[1]): m for m in meta_rows}
+    prod_rows = rows_tuple(db.fetchall('SELECT prod_key, name, category, prices, icon, download_link, maintenance, stock_out FROM products'))
+    prods = []
+    for p in prod_rows:
         plans = []
         for pn, pp in parse_plans(p[3]):
             m = meta.get((p[0], pn))
@@ -915,12 +905,12 @@ def dashboard():
         prods.append({"prod_key": p[0], "name": p[1], "category": p[2], "prices": [[x["name"], x["price"]] for x in plans],
                       "plans": plans, "icon": p[4] or "⚡", "download_link": p[5] or "",
                       "maintenance": p[6] or 0, "stock_out": p[7] or 0})
-    c.execute('SELECT id, user_id, prod_name, plan, key_delivered, amount, utr, timestamp FROM order_history ORDER BY id DESC LIMIT 50'); all_orders = c.fetchall()
-    c.execute('SELECT id, user_id, prod_name, plan, key_delivered, amount, timestamp FROM order_history WHERE key_delivered LIKE "PENDING%" ORDER BY id DESC'); pending = c.fetchall()
-    c.execute('SELECT user_id, full_name, username, joined_date, orders_count, wallet_balance, total_spent, total_referrals, referral_earnings, account_type FROM users ORDER BY user_id DESC LIMIT 50'); users_list = c.fetchall()
-    c.execute('SELECT support_username, how_to_use_link FROM store_settings WHERE id = 1'); st_r = c.fetchone() or ("@Athulsudin", "")
-    c.execute('SELECT active_gateway, fampay_api_key, fampay_upi_id, fampay_base_url, paytm_base_url, paytm_upi_id, paytm_merchant_id FROM gateway_config WHERE id = 1'); gw_r = c.fetchone()
-    conn.close()
+
+    all_orders = rows_tuple(db.fetchall('SELECT id, user_id, prod_name, plan, key_delivered, amount, utr, timestamp FROM order_history ORDER BY id DESC LIMIT 50'))
+    pending = rows_tuple(db.fetchall("SELECT id, user_id, prod_name, plan, key_delivered, amount, timestamp FROM order_history WHERE key_delivered LIKE 'PENDING%' ORDER BY id DESC"))
+    users_list = rows_tuple(db.fetchall('SELECT user_id, full_name, username, joined_date, orders_count, wallet_balance, total_spent, total_referrals, referral_earnings, account_type FROM users ORDER BY user_id DESC LIMIT 50'))
+    st_r = row_tuple(db.fetchone('SELECT support_username, how_to_use_link FROM store_settings WHERE id = 1')) or ("@Athulsudin", "")
+    gw_r = row_tuple(db.fetchone('SELECT active_gateway, fampay_api_key, fampay_upi_id, fampay_base_url, paytm_base_url, paytm_upi_id, paytm_merchant_id FROM gateway_config WHERE id = 1'))
 
     gw_cfg = {
         "active_gateway": gw_r[0], "fampay_api_key": gw_r[1], "fampay_upi_id": gw_r[2],
@@ -938,29 +928,23 @@ def dashboard():
 def api_set_gw():
     if not session.get('admin_logged'): return jsonify({"message": "Unauthorized"}), 401
     gw = request.json.get('gateway', 'fampay')
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor()
-    c.execute('UPDATE gateway_config SET active_gateway = ? WHERE id = 1', (gw,))
-    conn.commit(); conn.close()
+    db.execute('UPDATE gateway_config SET active_gateway = %s WHERE id = 1', (gw,))
     return jsonify({"message": f"Active Gateway set to {gw.upper()}!"})
 
 @app.route('/api/gateway/fampay', methods=['POST'])
 def api_fampay_save():
     if not session.get('admin_logged'): return jsonify({"message": "Unauthorized"}), 401
     d = request.json
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor()
-    c.execute('UPDATE gateway_config SET fampay_api_key = ?, fampay_upi_id = ? WHERE id = 1', (d.get('api_key',''), d.get('upi_id','')))
-    c.execute('UPDATE upi_settings SET fampay_token = ? WHERE id = 1', (d.get('upi_id',''),))
-    conn.commit(); conn.close()
+    db.execute('UPDATE gateway_config SET fampay_api_key = %s, fampay_upi_id = %s WHERE id = 1', (d.get('api_key', ''), d.get('upi_id', '')))
+    db.execute('UPDATE upi_settings SET fampay_token = %s WHERE id = 1', (d.get('upi_id', ''),))
     return jsonify({"message": "FamPay Anti-Fraud Gateway Settings Saved!"})
 
 @app.route('/api/gateway/paytm', methods=['POST'])
 def api_paytm_save():
     if not session.get('admin_logged'): return jsonify({"message": "Unauthorized"}), 401
     d = request.json
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor()
-    c.execute('UPDATE gateway_config SET paytm_base_url = ?, paytm_upi_id = ?, paytm_merchant_id = ? WHERE id = 1', (d.get('url',''), d.get('upi',''), d.get('merchant','')))
-    c.execute('UPDATE upi_settings SET paytm_token = ? WHERE id = 1', (d.get('upi',''),))
-    conn.commit(); conn.close()
+    db.execute('UPDATE gateway_config SET paytm_base_url = %s, paytm_upi_id = %s, paytm_merchant_id = %s WHERE id = 1', (d.get('url', ''), d.get('upi', ''), d.get('merchant', '')))
+    db.execute('UPDATE upi_settings SET paytm_token = %s WHERE id = 1', (d.get('upi', ''),))
     return jsonify({"message": "Paytm Gateway Settings Saved!"})
 
 @app.route('/api/product/save', methods=['POST'])
@@ -983,23 +967,22 @@ def api_save_p():
                       "rdur": (p.get('remote_duration') or '').strip(), "keys": p.get('keys') or ''})
     k = d.get('prod_key') or re.sub(r'[^a-zA-Z0-9]', '_', name).strip('_').lower()
     prices = json.dumps([[p["name"], p["price"]] for p in plans])
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor()
-    c.execute('SELECT 1 FROM products WHERE prod_key = ?', (k,))
-    is_edit = c.fetchone() is not None
+    is_edit = db.fetchone('SELECT 1 FROM products WHERE prod_key = %s', (k,)) is not None
     if is_edit:  # UPDATE keeps the Disable / Maintenance flags as they are
-        c.execute('UPDATE products SET name=?, category=?, prices=?, download_link=?, icon=? WHERE prod_key=?',
+        db.execute('UPDATE products SET name=%s, category=%s, prices=%s, download_link=%s, icon=%s WHERE prod_key=%s',
                   (name, d.get('category', ''), prices, d.get('download_link', ''), d.get('icon') or '⚡', k))
     else:
-        c.execute('INSERT INTO products (prod_key, name, category, prices, download_link, icon, maintenance, stock_out) VALUES (?, ?, ?, ?, ?, ?, 0, 0)',
+        db.execute('INSERT INTO products (prod_key, name, category, prices, download_link, icon, maintenance, stock_out) VALUES (%s, %s, %s, %s, %s, %s, 0, 0)',
                   (k, name, d.get('category', ''), prices, d.get('download_link', ''), d.get('icon') or '⚡'))
-    c.execute('DELETE FROM plan_meta WHERE prod_key = ?', (k,))
+    db.execute('DELETE FROM plan_meta WHERE prod_key = %s', (k,))
     for p in plans:
-        c.execute('INSERT OR REPLACE INTO plan_meta (prod_key, plan, reseller_price, remote_pid, remote_duration) VALUES (?, ?, ?, ?, ?)',
+        db.execute('''INSERT INTO plan_meta (prod_key, plan, reseller_price, remote_pid, remote_duration) VALUES (%s, %s, %s, %s, %s)
+                      ON CONFLICT (prod_key, plan) DO UPDATE SET reseller_price=EXCLUDED.reseller_price,
+                      remote_pid=EXCLUDED.remote_pid, remote_duration=EXCLUDED.remote_duration''',
                   (k, p["name"], p["rprice"], p["rpid"], p["rdur"]))
         for key_item in p["keys"].split('\n'):
             if key_item.strip():
-                c.execute('INSERT INTO keys_inventory (prod_key, plan, item_key, is_used) VALUES (?, ?, ?, 0)', (k, p["name"], key_item.strip()))
-    conn.commit(); conn.close()
+                db.execute('INSERT INTO keys_inventory (prod_key, plan, item_key, is_used) VALUES (%s, %s, %s, 0)', (k, p["name"], key_item.strip()))
     plan_txt = ", ".join(f'"{p["name"]}"' for p in plans)
     if is_edit: msg = "Product updated."
     elif plans: msg = f"Product added with plan {plan_txt}." if len(plans) == 1 else f"Product added with plans {plan_txt}."
@@ -1012,13 +995,10 @@ def api_toggle_p():
     d = request.json or {}
     col = {"disable": "stock_out", "maintenance": "maintenance"}.get(d.get('field'))
     if not col: return jsonify({"message": "Invalid action!"}), 400
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor()
-    c.execute(f'UPDATE products SET {col} = CASE WHEN {col} = 1 THEN 0 ELSE 1 END WHERE prod_key = ?', (d.get('prod_key'),))
-    c.execute(f'SELECT {col} FROM products WHERE prod_key = ?', (d.get('prod_key'),))
-    row = c.fetchone()
-    conn.commit(); conn.close()
+    db.execute(f'UPDATE products SET {col} = CASE WHEN {col} = 1 THEN 0 ELSE 1 END WHERE prod_key = %s', (d.get('prod_key'),))
+    row = db.fetchone(f'SELECT {col} FROM products WHERE prod_key = %s', (d.get('prod_key'),))
     if not row: return jsonify({"message": "Product not found!"}), 404
-    on = bool(row[0])
+    on = bool(list(row.values())[0])
     if col == "stock_out": msg = "Product disabled." if on else "Product enabled."
     else: msg = "Maintenance mode ON." if on else "Maintenance mode OFF."
     return jsonify({"message": msg})
@@ -1027,10 +1007,8 @@ def api_toggle_p():
 def api_del_p():
     if not session.get('admin_logged'): return jsonify({"message": "Unauthorized"}), 401
     k = request.json.get('prod_key')
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor()
-    c.execute('DELETE FROM products WHERE prod_key = ?', (k,))
-    c.execute('DELETE FROM plan_meta WHERE prod_key = ?', (k,))
-    conn.commit(); conn.close()
+    db.execute('DELETE FROM products WHERE prod_key = %s', (k,))
+    db.execute('DELETE FROM plan_meta WHERE prod_key = %s', (k,))
     return jsonify({"message": "Product deleted."})
 
 @app.route('/api/pending/dispatch', methods=['POST'])
@@ -1038,9 +1016,7 @@ def api_dispatch():
     if not session.get('admin_logged'): return jsonify({"message": "Unauthorized"}), 401
     d = request.json
     oid = d['order_id']; uid = d['user_id']; key = d['key'].strip()
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor()
-    c.execute('UPDATE order_history SET key_delivered = ? WHERE id = ?', (key, oid))
-    conn.commit(); conn.close()
+    db.execute('UPDATE order_history SET key_delivered = %s WHERE id = %s', (key, oid))
     try:
         msg = f"✅ <b>Payment verified — here's your key!</b>\n⏩ ~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n🗝️ Your Key:\n<code>{key}</code>\n\nThank you for shopping with us!"
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -1053,38 +1029,31 @@ def api_dispatch():
 def api_adj_bal():
     if not session.get('admin_logged'): return jsonify({"message": "Unauthorized"}), 401
     d = request.json
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor()
-    c.execute('UPDATE users SET wallet_balance = wallet_balance + ? WHERE user_id = ?', (d['delta'], d['user_id']))
-    conn.commit(); conn.close()
+    db.execute('UPDATE users SET wallet_balance = wallet_balance + %s WHERE user_id = %s', (d['delta'], d['user_id']))
     return jsonify({"message": "Wallet balance updated!"})
 
 @app.route('/api/user/set_role', methods=['POST'])
 def api_set_role():
     if not session.get('admin_logged'): return jsonify({"message": "Unauthorized"}), 401
     d = request.json
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor()
-    c.execute('UPDATE users SET account_type = ? WHERE user_id = ?', (d['role'], d['user_id']))
-    conn.commit(); conn.close()
+    db.execute('UPDATE users SET account_type = %s WHERE user_id = %s', (d['role'], d['user_id']))
     return jsonify({"message": f"Role updated to {d['role']}!"})
 
 @app.route('/api/id_stock/add', methods=['POST'])
 def api_id_stock():
     if not session.get('admin_logged'): return jsonify({"message": "Unauthorized"}), 401
     d = request.json
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor()
-    c.execute('INSERT INTO id_accounts (category_name, account_data, price, is_sold) VALUES (?, ?, ?, 0)',
+    db.execute('INSERT INTO id_accounts (category_name, account_data, price, is_sold) VALUES (%s, %s, %s, 0)',
               (d['category'], d['credentials'], d['price']))
-    conn.commit(); conn.close()
     return jsonify({"message": "Account added to ID Stock!"})
 
 @app.route('/api/coupon/save', methods=['POST'])
 def api_coupon():
     if not session.get('admin_logged'): return jsonify({"message": "Unauthorized"}), 401
     d = request.json
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor()
-    c.execute('INSERT OR REPLACE INTO coupons (code, discount_type, discount_val, usage_limit, used_count, is_active) VALUES (?, "flat", ?, ?, 0, 1)',
+    db.execute('''INSERT INTO coupons (code, discount_type, discount_val, usage_limit, used_count, is_active) VALUES (%s, 'flat', %s, %s, 0, 1)
+                  ON CONFLICT (code) DO UPDATE SET discount_val=EXCLUDED.discount_val, usage_limit=EXCLUDED.usage_limit, is_active=1''',
               (d['code'].upper(), d['val'], d['limit']))
-    conn.commit(); conn.close()
     return jsonify({"message": "Promo code activated!"})
 
 @app.route('/api/broadcast/send', methods=['POST'])
@@ -1092,9 +1061,7 @@ def api_bc():
     if not session.get('admin_logged'): return jsonify({"message": "Unauthorized"}), 401
     msg = request.json.get('message', '')
     def _run():
-        conn = sqlite3.connect(DB_FILE); c = conn.cursor()
-        c.execute('SELECT user_id FROM users'); uids = [r[0] for r in c.fetchall()]
-        conn.close()
+        uids = [r['user_id'] for r in db.fetchall('SELECT user_id FROM users')]
         for u in uids:
             try:
                 url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -1108,9 +1075,7 @@ def api_bc():
 def api_save_st():
     if not session.get('admin_logged'): return jsonify({"message": "Unauthorized"}), 401
     d = request.json
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor()
-    c.execute('UPDATE store_settings SET support_username=?, how_to_use_link=? WHERE id = 1', (d.get('support_username',''), d.get('how_to_use_link','')))
-    conn.commit(); conn.close()
+    db.execute('UPDATE store_settings SET support_username=%s, how_to_use_link=%s WHERE id = 1', (d.get('support_username', ''), d.get('how_to_use_link', '')))
     return jsonify({"message": "Store settings saved!"})
 
 @app.route('/api/security/change_pwd', methods=['POST'])
@@ -1118,9 +1083,7 @@ def api_pwd():
     if not session.get('admin_logged'): return jsonify({"message": "Unauthorized"}), 401
     np = request.json.get('password', '').strip()
     if np:
-        conn = sqlite3.connect(DB_FILE); c = conn.cursor()
-        c.execute('UPDATE admin_auth SET password = ? WHERE id = 1', (np,))
-        conn.commit(); conn.close()
+        db.execute('UPDATE admin_auth SET password = %s WHERE id = 1', (np,))
         return jsonify({"message": "Password updated successfully!"})
     return jsonify({"message": "Password cannot be empty!"}), 400
 
@@ -1130,6 +1093,7 @@ def run_web():
 
 if __name__ == "__main__":
     run_web()
+
     
 
     
