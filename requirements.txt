@@ -1,7 +1,4 @@
-flask
-python-telegram-bot
-motor
-pymongo
-dnspython
+python-telegram-bot>=22.0
+flask>=3.0
 pytz
-
+psycopg[binary]>=3.1
