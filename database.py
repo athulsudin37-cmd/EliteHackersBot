@@ -307,3 +307,4 @@ def init_db():
         )
     db.init_db()
     return db
+
