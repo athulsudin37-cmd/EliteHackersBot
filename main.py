@@ -6,6 +6,7 @@ import json
 import re
 import random
 import urllib.parse
+import html
 from threading import Thread
 from datetime import datetime, timedelta
 import pytz
@@ -18,6 +19,7 @@ from telegram.ext import (
     ContextTypes,
     filters
 )
+from telegram.error import BadRequest
 
 # 🌐 വെബ് അഡ്മിൻ പാനൽ ബാക്ക്ഗ്രൗണ്ടിൽ റൺ ചെയ്യുന്നു
 import web_admin
@@ -33,8 +35,10 @@ logger = logging.getLogger(__name__)
 # ==========================================
 # ⚙️ CONFIGURATION & CONSTANTS
 # ==========================================
-BOT_TOKEN = "8892856619:AAGZhdOv389_AaKvbcbInlJAiDMOwQxOeHc"
-ADMIN_ID = 7616127905
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN is not set. Add it in Render Environment Variables.")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "7616127905"))
 
 STORE_CONFIG = {
     "support_username": "@Athulsudin",
@@ -51,22 +55,48 @@ def get_ist_time():
     return datetime.now(IST).strftime("%d %b %Y, %I:%M %p (IST)")
 
 # ==========================================
-# 🗄️ PERSISTENT DATABASE COMPATIBILITY LAYER
+# 🗄️ DATABASE HELPERS (PostgreSQL via database.py)
 # ==========================================
-# All existing main.py database calls are kept with the same return shapes,
-# while the actual data is stored in database.py / PostgreSQL.
+_bg_tasks = set()
+
+def spawn(coro):
+    """Run a background task and keep a reference so it is not garbage-collected."""
+    task = asyncio.create_task(coro)
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+    return task
 
 def init_db():
     return init_persistent_db()
 
+def get_store_config():
+    """Support username / tutorial link: values saved in the web admin, with fallback to defaults."""
+    cfg = dict(STORE_CONFIG)
+    try:
+        row = db.fetchone("SELECT support_username, how_to_use_link FROM store_settings WHERE id = 1")
+        if row:
+            if row.get("support_username"):
+                cfg["support_username"] = row["support_username"]
+            if row.get("how_to_use_link"):
+                cfg["how_to_use_link"] = row["how_to_use_link"]
+    except Exception:
+        logger.exception("Could not load store settings")
+    return cfg
+
+def get_fampay_upi():
+    try:
+        row = db.fetchone("SELECT fampay_upi_id FROM gateway_config WHERE id = 1")
+        if row and row.get("fampay_upi_id"):
+            return row["fampay_upi_id"]
+    except Exception:
+        logger.exception("Could not load FamPay UPI ID")
+    return UPI_CONFIG.get("fampay_token") or "9544113089@fam"
+
+def valid_url(url):
+    return isinstance(url, str) and url.strip().lower().startswith(("http://", "https://", "tg://"))
+
 def db_add_or_update_user(user_id, full_name, username, joined_date):
     db.add_or_update_user(user_id, full_name, username, joined_date)
-    # Keep the existing bot's "Regular" account label for newly created users.
-    db.execute(
-        "UPDATE users SET account_type = 'Regular' "
-        "WHERE user_id = %s AND account_type = 'Normal'",
-        (user_id,)
-    )
 
 def db_get_user(user_id):
     row = db.get_user(user_id)
@@ -84,19 +114,12 @@ def db_get_user(user_id):
         row["account_type"],
     )
 
-def db_update_balance(user_id, new_balance):
-    # main.py historically passes the target balance, so preserve that behavior.
-    db.execute(
-        "UPDATE users SET wallet_balance = %s WHERE user_id = %s",
-        (new_balance, user_id)
-    )
-
 def db_set_reseller(user_id):
     db.set_reseller(user_id)
 
 def db_add_order(user_id, prod_name, plan, key_delivered, amount, utr, timestamp):
     db.add_order(user_id, prod_name, plan, key_delivered, amount, utr, timestamp)
-    # Preserve the original SQLite behavior: update order count + total spent.
+    # Update order count + total spent.
     db.execute(
         """
         UPDATE users
@@ -154,6 +177,84 @@ def get_product_by_key(prod_key):
         "stock_out": row.get("stock_out", 0),
     }
 
+# ---------- pricing & purchase ----------
+RESELLER_FACTOR = 0.6
+
+def unit_price(reg_price, is_reseller):
+    return round(float(reg_price) * RESELLER_FACTOR, 2) if is_reseller else float(reg_price)
+
+def fmt_price(value):
+    value = float(value)
+    return f"₹{value:,.0f}" if value.is_integer() else f"₹{value:,.2f}"
+
+def purchase_with_wallet(user_id, prod_key, plan_name, allow_pending=False, utr="WALLET_PAY"):
+    """Charge the wallet and deliver a key. The price is always calculated here on the
+    server, and the money is only taken when the balance is enough (atomic).
+
+    Returns a dict with a "status": ok | pending | insufficient | out_of_stock |
+    no_product | no_plan | unavailable.
+    """
+    prod = get_product_by_key(prod_key)
+    if not prod:
+        return {"status": "no_product"}
+    if prod.get("maintenance") or prod.get("stock_out"):
+        return {"status": "unavailable", "prod": prod}
+
+    u_data = db_get_user(user_id)
+    is_reseller = bool(u_data and u_data[8] == "Reseller")
+    reg_price = next((p for n, p in prod["prices"] if n == plan_name), None)
+    if reg_price is None:
+        return {"status": "no_plan", "prod": prod}
+
+    price = unit_price(reg_price, is_reseller)
+    new_balance = db.try_deduct(user_id, price)
+    if new_balance is None:
+        balance = u_data[4] if u_data else 0.0
+        return {"status": "insufficient", "prod": prod, "price": price, "balance": balance}
+
+    try:
+        key = db_pop_auto_key(prod_key, plan_name)
+        status = "ok"
+        if not key:
+            if not allow_pending:
+                db.update_balance(user_id, price)  # nothing delivered -> give the money back
+                return {"status": "out_of_stock", "prod": prod, "price": price}
+            # Customer already paid by UPI: queue the order, admin dispatches from the web panel.
+            key, status = "PENDING", "pending"
+        db_add_order(user_id, prod["name"], plan_name, key, price, utr, get_ist_time())
+    except Exception:
+        db.update_balance(user_id, price)
+        raise
+
+    return {"status": status, "prod": prod, "price": price, "key": key, "balance": new_balance}
+
+def build_key_card(prod_name, plan_name, key, balance):
+    return (
+        f"✅ <b>Payment verified — here's your key!</b>\n"
+        f"⏩ ~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n"
+        f"🛒 <b>{html.escape(prod_name)} — {html.escape(plan_name.replace('_', ' '))}</b>\n\n"
+        f"🗝️ Your Key:\n"
+        f"<code>{html.escape(key)}</code>\n\n"
+        f"💰 Remaining balance: <b>₹{balance:,.2f}</b>"
+    )
+
+def build_pending_notice(prod_name, plan_name):
+    return (
+        "✅ <b>Payment Verified &amp; Received!</b>\n\n"
+        f"⚠️ NOTICE: Auto-stock for <b>{html.escape(prod_name)}</b> ({html.escape(plan_name.replace('_', ' '))}) is currently restocking!\n\n"
+        "🛡️ 100% SECURE: Admin is preparing your fresh key right now. It will be delivered directly to this chat shortly!"
+    )
+
+def key_card_keyboard(prod):
+    keyboard = []
+    if prod and valid_url(prod.get("download_link")):
+        keyboard.append([InlineKeyboardButton("📥 Update File ↗️", url=prod["download_link"])])
+    keyboard.append([InlineKeyboardButton("➡️ Back to Menu", callback_data="main_menu")])
+    return InlineKeyboardMarkup(keyboard)
+
+def back_to_menu_markup():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("➡️ Back to Menu", callback_data="main_menu")]])
+
 # Initialize the persistent PostgreSQL schema before the bot starts.
 init_db()
 
@@ -182,6 +283,7 @@ async def replace_callback_message(query, context, text, reply_markup=None, pars
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     args = context.args
+    cfg = get_store_config()
 
     # Referral Tracking Logic
     if args and args[0].startswith("ref_"):
@@ -200,12 +302,20 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
     db_add_or_update_user(user.id, user.full_name, f"@{user.username}" if user.username else "N/A", get_ist_time())
+
+    # Direct buy link from the admin panel: /start buy_<product_key>
+    if args and args[0].startswith("buy_") and update.message:
+        view = build_plans_view(user.id, args[0][len("buy_"):])
+        if view:
+            await update.message.reply_text(view[0], parse_mode="HTML", reply_markup=view[1])
+            return
+
     u_data = db_get_user(user.id)
     balance = u_data[4] if u_data else 0.0
 
     text = (
         f"🛒 ── <b>ELITE HACKERS STORE</b> ── 🛒\n\n"
-        f"👏 Welcome, <b>{user.first_name}!</b> 🥷\n\n"
+        f"👏 Welcome, <b>{html.escape(user.first_name or 'there')}!</b> 🥷\n\n"
         f"📈 ── <b>STORE HIGHLIGHTS</b> ── 📈\n\n"
         f"🗝️ Premium Game Keys\n"
         f"⚡ Instant Delivery 24/7\n"
@@ -220,10 +330,14 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🚀 Tap Shop Now to Start!"
     )
 
+    tutorial_link = cfg.get("how_to_use_link")
+    if not valid_url(tutorial_link):
+        tutorial_link = "https://t.me/chatelitehackers"
+
     keyboard = [
         [InlineKeyboardButton("🛒 Shop Key", callback_data="shop_key"), InlineKeyboardButton("👤 My Profile", callback_data="my_profile")],
         [InlineKeyboardButton("💰 Add Balance", callback_data="add_balance"), InlineKeyboardButton("🧾 All History", callback_data="all_history")],
-        [InlineKeyboardButton("▶️ Tutorial watch", url=STORE_CONFIG.get("how_to_use_link", "https://t.me/chatelitehackers")), InlineKeyboardButton("👑 Reseller", callback_data="reseller_plan")],
+        [InlineKeyboardButton("▶️ Tutorial watch", url=tutorial_link), InlineKeyboardButton("👑 Reseller", callback_data="reseller_plan")],
         [InlineKeyboardButton("💼 Selling Proof ↗️", url="https://t.me/+fJrFACSrntgwNjll"), InlineKeyboardButton("💬 Support", callback_data="support_contact")],
         [InlineKeyboardButton("🎰 Lucky Spin", callback_data="lucky_spin"), InlineKeyboardButton("👥 Referral", callback_data="referral_menu")]
     ]
@@ -240,6 +354,28 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await replace_callback_message(update.callback_query, context, text, reply_markup)
 
 # ==========================================
+# 💬 SUPPORT
+# ==========================================
+async def support_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    username = (get_store_config().get("support_username") or "").strip()
+    handle = username.lstrip("@")
+
+    text = (
+        "💬 <b>SUPPORT</b>\n"
+        "_________________________\n\n"
+        "Need help with an order or payment? Contact our support team:\n\n"
+        f"👤 {html.escape(username) if username else 'Support not configured yet'}\n\n"
+        "⏱️ We usually reply within a few hours."
+    )
+    keyboard = []
+    if handle:
+        keyboard.append([InlineKeyboardButton("💬 Contact Support", url=f"https://t.me/{handle}")])
+    keyboard.append([InlineKeyboardButton("🔜 Back", callback_data="main_menu")])
+    await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
+
+# ==========================================
 # 👤 2. MY PROFILE
 # ==========================================
 async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -248,7 +384,7 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     u_data = db_get_user(user.id)
 
-    name = u_data[0] if u_data else user.full_name
+    name = html.escape(u_data[0] or "") if u_data else html.escape(user.full_name or "")
     joined = u_data[2] if u_data else get_ist_time()
     orders_cnt = u_data[3] if u_data else 0
     balance = u_data[4] if u_data else 0.0
@@ -321,8 +457,7 @@ async def buy_reseller_action(update: Update, context: ContextTypes.DEFAULT_TYPE
     u_data = db_get_user(user.id)
     balance = u_data[4] if u_data else 0.0
 
-    if balance >= 2500:
-        db_update_balance(user.id, balance - 700)
+    if balance >= 2500 and db.try_deduct(user.id, 700) is not None:
         db_set_reseller(user.id)
         text = (
             "🎉 <b>CONGRATULATIONS!</b>\n\n"
@@ -389,6 +524,10 @@ async def select_deposit_amount(update: Update, context: ContextTypes.DEFAULT_TY
     ]
     await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
 
+async def numpad_open(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    await render_numpad(update, context)
+
 async def render_numpad(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     current_digits = context.user_data.get('numpad_val', '')
@@ -410,11 +549,14 @@ async def render_numpad(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton(confirm_text, callback_data="np_confirm")],
         [InlineKeyboardButton("✋ Back", callback_data="dep_method_" + context.user_data.get('deposit_method', 'fampay'))]
     ]
+    markup = InlineKeyboardMarkup(keyboard)
 
     try:
-        await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
-    except Exception:
-        pass
+        await query.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
+    except BadRequest as e:
+        if "not modified" in str(e).lower():
+            return
+        await replace_callback_message(query, context, text, markup)
 
 async def handle_numpad_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -448,48 +590,54 @@ async def handle_numpad_input(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         await query.answer()
         deposit_amt = float(val)
+        context.user_data['numpad_val'] = ''
         await generate_deposit_qr(update, context, deposit_amt)
 
 async def preset_dep_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
     amt = float(update.callback_query.data.replace("preset_dep_", ""))
     await generate_deposit_qr(update, context, amt)
 
-# 📷 Dynamic QR Generator with 5-Min Auto Expiry & Zero-Click Auto-Verify
-async def generate_deposit_qr(update: Update, context: ContextTypes.DEFAULT_TYPE, amount: float, is_deficit=False, prod_name=None, plan_name=None):
+# 📷 Dynamic QR Generator with 5-Min Auto Expiry
+async def generate_deposit_qr(update: Update, context: ContextTypes.DEFAULT_TYPE, amount: float,
+                              is_deficit=False, prod_name=None, plan_name=None, prod_key=None):
     query = update.callback_query
+    user_id = query.from_user.id
+    chat_id = query.message.chat_id
     method = context.user_data.get('deposit_method', 'fampay').upper()
 
     order_id = f"{method}{datetime.now(IST).strftime('%Y%m%d%H%M%S')}{os.urandom(4).hex().upper()}"
-    context.user_data['active_deposit'] = {
-        'amount': amount, 'order_id': order_id, 'is_deficit': is_deficit,
-        'prod': prod_name, 'plan': plan_name, 'confirmed': False
-    }
+    upi_id = get_fampay_upi()
 
-    # Persist the pending payment in PostgreSQL.
+    # Persist the pending payment in PostgreSQL (the payment record is the source of truth).
     try:
         db.create_payment(
-            user_id=query.from_user.id,
+            user_id=user_id,
             order_id=order_id,
             amount=amount,
             method=method.lower(),
-            upi_id=UPI_CONFIG.get("fampay_token") or "9544113089@fam",
+            upi_id=upi_id,
             created_at=get_ist_time(),
+            prod_key=prod_key,
+            plan=plan_name,
+            is_deficit=is_deficit,
         )
     except Exception as e:
         logger.exception("Failed to save payment record: %s", e)
+        await context.bot.send_message(chat_id=chat_id, text="⚠️ Could not create the payment. Please try again in a moment.")
+        return
 
-    upi_id = UPI_CONFIG.get("fampay_token") or "9544113089@fam"
     upi_uri = f"upi://pay?pa={upi_id}&pn=ELITE_HACKERS&am={amount:.2f}&cu=INR&tn={order_id}"
     qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=500x500&data={urllib.parse.quote(upi_uri)}"
 
     if is_deficit:
-        u_data = db_get_user(query.from_user.id)
+        u_data = db_get_user(user_id)
         bal = u_data[4] if u_data else 0.0
         caption = (
-            f"🛒 <b>{prod_name} — {plan_name.replace('_', ' ')}</b>\n\n"
+            f"🛒 <b>{html.escape(prod_name or '')} — {html.escape((plan_name or '').replace('_', ' '))}</b>\n\n"
             f"💰 Balance: ₹{bal:,.2f} | Price: ₹{(bal + amount):,.2f}\n"
             f"💸 Scan & pay just <b>₹{amount:,.2f}</b> to complete this purchase.\n\n"
-            f"Your key is delivered <b>automatically</b> the moment payment is confirmed — no button tap needed.\n\n"
+            f"After paying, tap <b>✅ I have paid</b>. Your key is delivered as soon as the admin confirms the payment.\n\n"
             f"🆔 Order:\n<code>{order_id}</code>\n\n"
             f"⏰ <b>This QR expires in 5 minutes if payment isn't completed.</b>"
         )
@@ -498,14 +646,14 @@ async def generate_deposit_qr(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"🎟️ <b>{method} — ₹{amount:,.2f}</b>\n\n"
             f"💰 Amount: <b>₹{amount:,.2f}</b>\n"
             f"🆔 Order:\n<code>{order_id}</code>\n\n"
-            f"Complete the payment — balance will be added automatically.\n"
-            f"Amount will be credited within max 10 minutes.\n\n"
+            f"Complete the payment, then tap <b>✅ I have paid</b>.\n"
+            f"Balance is added as soon as the admin confirms the payment.\n\n"
             f"⏰ <b>This QR expires in 5 minutes if payment isn't completed.</b>"
         )
 
     keyboard = [
-        [InlineKeyboardButton("✅ I have paid", callback_data="manual_check_deposit")],
-        [InlineKeyboardButton("❌ Cancel Payment", callback_data="cancel_deposit")]
+        [InlineKeyboardButton("✅ I have paid", callback_data=f"paid_{order_id}")],
+        [InlineKeyboardButton("❌ Cancel Payment", callback_data=f"canceldep_{order_id}")]
     ]
 
     try:
@@ -514,29 +662,31 @@ async def generate_deposit_qr(update: Update, context: ContextTypes.DEFAULT_TYPE
         pass
 
     qr_msg = await context.bot.send_photo(
-        chat_id=query.message.chat_id,
+        chat_id=chat_id,
         photo=qr_url,
         caption=caption,
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
-    context.user_data['qr_msg_id'] = qr_msg.message_id
-    context.user_data['deposit_cancelled'] = False
 
-    # ⏳ 5-Minute Auto-Expiry Watchdog
+    # ⏳ 5-Minute Auto-Expiry Watchdog (stops as soon as the payment leaves "pending")
     async def expiry_watchdog():
-        chat_id = qr_msg.chat_id
-        msg_id = qr_msg.message_id
-        start_t = time.time()
+        try:
+            start_t = time.time()
+            while time.time() - start_t < 300:
+                await asyncio.sleep(5)
+                row = await asyncio.to_thread(db.get_payment, order_id)
+                if not row or row["status"] != "pending":
+                    return
 
-        while time.time() - start_t < 300:
-            await asyncio.sleep(4)
-            if context.user_data.get('deposit_cancelled') or context.user_data.get('active_deposit', {}).get('confirmed'):
+            expired = await asyncio.to_thread(
+                db.claim_payment, order_id, "pending", "expired", None, get_ist_time()
+            )
+            if not expired:
                 return
 
-        if not context.user_data.get('deposit_cancelled') and not context.user_data.get('active_deposit', {}).get('confirmed'):
             try:
-                await context.bot.delete_message(chat_id=chat_id, message_id=msg_id)
+                await context.bot.delete_message(chat_id=qr_msg.chat_id, message_id=qr_msg.message_id)
             except Exception:
                 pass
             exp_text = (
@@ -547,92 +697,172 @@ async def generate_deposit_qr(update: Update, context: ContextTypes.DEFAULT_TYPE
                 f"— 🔒 QR / payment details are no longer valid\n\n"
                 f"<i>Tap /start to begin a new order.</i>"
             )
-            await context.bot.send_message(chat_id=chat_id, text=exp_text, parse_mode="HTML")
+            await context.bot.send_message(chat_id=qr_msg.chat_id, text=exp_text, parse_mode="HTML")
+        except Exception:
+            logger.exception("Expiry watchdog failed for %s", order_id)
 
-    asyncio.create_task(expiry_watchdog())
+    spawn(expiry_watchdog())
 
-async def complete_deposit_success(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def payment_paid_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """User says 'I have paid'. Nothing is credited here: the admin must approve first."""
     query = update.callback_query
-    await query.answer("Verifying payment...", show_alert=False)
     user = update.effective_user
-    dep = context.user_data.get('active_deposit')
+    order_id = query.data[len("paid_"):]
 
-    if not dep or dep.get('confirmed'):
+    pay = db.get_payment(order_id)
+    if not pay or pay["user_id"] != user.id:
+        await query.answer("⚠️ Payment not found.", show_alert=True)
         return
 
-    dep['confirmed'] = True
-    amount = dep['amount']
-    is_deficit = dep.get('is_deficit', False)
+    claimed = db.claim_payment(order_id, "pending", "awaiting_approval")
+    if not claimed:
+        status = pay["status"]
+        if status == "awaiting_approval":
+            msg = "⏳ Already submitted. Waiting for admin approval."
+        elif status == "verified":
+            msg = "✅ This payment was already confirmed."
+        else:
+            msg = "⚠️ This payment session has ended. Tap /start to begin again."
+        await query.answer(msg, show_alert=True)
+        return
 
+    await query.answer("Submitted for verification ✅")
     try:
-        db.update_payment_status(
-            dep.get('order_id'),
-            'verified',
-            utr='UPI_DEFICIT' if is_deficit else 'WALLET_DEPOSIT',
-            verified_at=get_ist_time()
-        )
-    except Exception as e:
-        logger.exception("Failed to update payment record: %s", e)
+        await query.message.delete()
+    except Exception:
+        pass
 
-    # 1. പച്ച ടിക്ക് നൽകി പഴയ QR ഡിലീറ്റ് ചെയ്യുന്നു
-    qr_id = context.user_data.get('qr_msg_id')
-    if qr_id:
+    amount = float(pay["amount"])
+    await context.bot.send_message(
+        chat_id=user.id,
+        text=(
+            "⏳ <b>Payment submitted!</b>\n"
+            "_________________________\n\n"
+            f"🆔 Order: <code>{order_id}</code>\n"
+            f"💰 Amount: <b>₹{amount:,.2f}</b>\n\n"
+            "The admin is verifying your payment. You will get a message here as soon as it is confirmed."
+        ),
+        parse_mode="HTML",
+        reply_markup=back_to_menu_markup()
+    )
+
+    # Ask the admin to verify and approve / reject.
+    lines = [
+        "💳 <b>PAYMENT VERIFICATION NEEDED</b>",
+        "_________________________",
+        "",
+        f"👤 User: <a href=\"tg://user?id={user.id}\">{html.escape(user.full_name or 'User')}</a> (<code>{user.id}</code>)",
+        f"💰 Amount: <b>₹{amount:,.2f}</b>",
+        f"💳 Method: {html.escape(str(pay['method'] or '').upper())} → <code>{html.escape(str(pay['upi_id'] or ''))}</code>",
+        f"🆔 Order: <code>{order_id}</code>",
+    ]
+    if pay.get("is_deficit") and pay.get("prod_key"):
+        prod = get_product_by_key(pay["prod_key"])
+        lines.append(f"🛒 For: <b>{html.escape((prod or {}).get('name', pay['prod_key']))} — {html.escape((pay.get('plan') or '').replace('_', ' '))}</b>")
+    lines += ["", "Check your bank / FamPay app for this amount and order ID, then choose:"]
+
+    admin_markup = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Approve", callback_data=f"adm_ok_{order_id}"),
+        InlineKeyboardButton("❌ Reject", callback_data=f"adm_no_{order_id}"),
+    ]])
+    try:
+        await context.bot.send_message(chat_id=ADMIN_ID, text="\n".join(lines), parse_mode="HTML", reply_markup=admin_markup)
+    except Exception:
+        logger.exception("Could not notify the admin about payment %s", order_id)
+
+async def admin_payment_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin taps Approve / Reject on a payment notification."""
+    query = update.callback_query
+    if update.effective_user.id != ADMIN_ID:
+        await query.answer("⛔ Not allowed.", show_alert=True)
+        return
+
+    approve = query.data.startswith("adm_ok_")
+    order_id = query.data.split("_", 2)[2]
+    now_txt = get_ist_time()
+
+    async def finish_admin_message(note):
         try:
-            await context.bot.delete_message(chat_id=query.message.chat_id, message_id=qr_id)
+            await query.edit_message_text(f"{query.message.text_html}\n\n{note}", parse_mode="HTML")
         except Exception:
             pass
 
-    u_data = db_get_user(user.id)
-    curr_bal = u_data[4] if u_data else 0.0
-
-    if is_deficit:
-        # പ്രൊഡക്റ്റ് കീ ഡെലിവറി ചെയ്യുന്നു
-        prod_key = context.user_data.get('pending_deficit', {}).get('prod_key')
-        plan = dep.get('plan')
-        delivered_key = db_pop_auto_key(prod_key, plan) or "AUTO-KEY-DELIVERED-OK"
-        db_add_order(user.id, dep.get('prod'), plan, delivered_key, dep['amount'], "UPI_DEFICIT", get_ist_time())
-
-        key_card_text = (
-            f"✅ <b>Payment verified — here's your key!</b>\n"
-            f"⏩ ~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n"
-            f"🛒 <b>{dep.get('prod')} — {plan.replace('_', ' ')}</b>\n\n"
-            f"🗝️ Your Key:\n"
-            f"<code>{delivered_key}</code>\n\n"
-            f"💰 Remaining balance: <b>₹{curr_bal:,.2f}</b>"
-        )
-        prod_info = get_product_by_key(prod_key)
-        keyboard = []
-        if prod_info and prod_info.get("download_link"):
-            keyboard.append([InlineKeyboardButton("📥 Update File ↗️", url=prod_info["download_link"])])
-        keyboard.append([InlineKeyboardButton("➡️ Back to Menu", callback_data="main_menu")])
-
-        await context.bot.send_message(chat_id=user.id, text=key_card_text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
-    else:
-        # വാലറ്റിലേക്ക് പൈസ കയറുന്നു
-        new_bal = curr_bal + amount
-        db_update_balance(user.id, new_bal)
-        success_msg = await context.bot.send_message(chat_id=user.id, text="✅ <b>Payment Verified Successfully!</b>\nBalance added to wallet.", parse_mode="HTML")
-        await asyncio.sleep(1.5)
+    if not approve:
+        row = db.claim_payment(order_id, "awaiting_approval", "rejected", None, now_txt)
+        if not row:
+            await query.answer("Already processed.", show_alert=True)
+            return
+        await query.answer("Rejected")
+        await finish_admin_message(f"❌ <b>Rejected</b> at {now_txt}")
         try:
-            await success_msg.delete()
+            await context.bot.send_message(
+                chat_id=row["user_id"],
+                text=(
+                    "❌ <b>Payment not verified</b>\n\n"
+                    f"🆔 Order: <code>{order_id}</code>\n"
+                    "We could not confirm this payment. If you already paid, please contact support with your order ID."
+                ),
+                parse_mode="HTML",
+                reply_markup=back_to_menu_markup()
+            )
         except Exception:
-            pass
-        # നേരെ ഹോം മെനുവിലേക്ക് ലൈവ് ബാലൻസോടെ റീഡയറക്റ്റ് ചെയ്യുന്നു
-        await start_command(update, context)
+            logger.exception("Could not notify user about rejected payment")
+        return
+
+    row = db.claim_payment(order_id, "awaiting_approval", "verified", "ADMIN_APPROVED", now_txt)
+    if not row:
+        await query.answer("Already processed.", show_alert=True)
+        return
+
+    user_id = row["user_id"]
+    amount = float(row["amount"])
+    db.update_balance(user_id, amount)
+    await query.answer("Approved ✅")
+
+    note = f"✅ <b>Approved</b> at {now_txt}"
+    notice = f"✅ <b>Payment Verified Successfully!</b>\n₹{amount:,.2f} has been added to your wallet."
+    try:
+        if row.get("is_deficit") and row.get("prod_key") and row.get("plan"):
+            res = purchase_with_wallet(user_id, row["prod_key"], row["plan"], allow_pending=True, utr="UPI_DEFICIT")
+            status = res["status"]
+            if status == "ok":
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=build_key_card(res["prod"]["name"], row["plan"], res["key"], res["balance"]),
+                    parse_mode="HTML",
+                    reply_markup=key_card_keyboard(res["prod"])
+                )
+            elif status == "pending":
+                note += "\n⚠️ Out of stock: key is in the <b>Pending Keys Queue</b>. Dispatch it from the admin panel."
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=build_pending_notice(res["prod"]["name"], row["plan"]),
+                    parse_mode="HTML",
+                    reply_markup=back_to_menu_markup()
+                )
+            else:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=notice + "\n\nYour balance is ready — open the shop to complete your purchase.",
+                    parse_mode="HTML",
+                    reply_markup=back_to_menu_markup()
+                )
+        else:
+            await context.bot.send_message(chat_id=user_id, text=notice, parse_mode="HTML", reply_markup=back_to_menu_markup())
+    except Exception:
+        logger.exception("Failed to notify user after approval")
+        note += "\n⚠️ Could not message the user."
+    await finish_admin_message(note)
 
 async def cancel_deposit_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    context.user_data['deposit_cancelled'] = True
+    order_id = query.data[len("canceldep_"):]
 
-    dep = context.user_data.get('active_deposit')
-    if dep and dep.get('order_id'):
+    pay = db.get_payment(order_id)
+    if pay and pay["user_id"] == update.effective_user.id:
         try:
-            db.update_payment_status(
-                dep['order_id'],
-                'cancelled',
-                verified_at=get_ist_time()
-            )
+            db.claim_payment(order_id, "pending", "cancelled", None, get_ist_time())
         except Exception as e:
             logger.exception("Failed to update cancelled payment record: %s", e)
 
@@ -645,9 +875,21 @@ async def cancel_deposit_click(update: Update, context: ContextTypes.DEFAULT_TYP
 # ==========================================
 # 🎰 5. LUCKY CASH SPIN (2-SEC ANIMATION + 1-HR EXPIRY)
 # ==========================================
+SPIN_COOLDOWN_HOURS = 24
+
+def fmt_wait(seconds):
+    hours, rem = divmod(int(seconds), 3600)
+    return f"{hours}h {rem // 60}m"
+
 async def lucky_spin_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    remaining = db.spin_remaining_seconds(update.effective_user.id, SPIN_COOLDOWN_HOURS)
+
+    if remaining <= 0:
+        status_line = "🕒 Spin Status: ✅ <b>Available Now!</b>\n\n👇 Tap below to spin and try your luck!"
+    else:
+        status_line = f"🕒 Spin Status: ⏳ Next free spin in <b>{fmt_wait(remaining)}</b>"
 
     text = (
         "── <b>CASH SPIN</b> ──\n\n"
@@ -655,18 +897,23 @@ async def lucky_spin_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "💰 Win real cash directly into your wallet!\n"
         "Get 1 Free Spin every single day!\n"
         "_________________________\n\n"
-        "🕒 Spin Status: ✅ <b>Available Now!</b>\n\n"
-        "👇 Tap below to spin and try your luck!"
+        f"{status_line}"
     )
-    keyboard = [
-        [InlineKeyboardButton("🍯 Spin Now! (FREE)", callback_data="spin_action_play")],
-        [InlineKeyboardButton("🔜 Back", callback_data="main_menu")]
-    ]
+    keyboard = []
+    if remaining <= 0:
+        keyboard.append([InlineKeyboardButton("🍯 Spin Now! (FREE)", callback_data="spin_action_play")])
+    keyboard.append([InlineKeyboardButton("🔜 Back", callback_data="main_menu")])
     await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
 
 async def perform_lucky_spin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user = update.effective_user
+
+    # The cooldown is enforced in the database, so a spin can never be repeated early.
+    if not db.claim_spin(user.id, SPIN_COOLDOWN_HOURS):
+        await query.answer("⏳ Your next free spin is not available yet. Try again later!", show_alert=True)
+        return
+    await query.answer()
 
     frames = [
         "🎰 Spinning... [ 🍒 | 🍋 | 💎 ]",
@@ -674,52 +921,33 @@ async def perform_lucky_spin(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "🎰 Stopping... [ 💎 | 💎 | 💎 ]"
     ]
     for f in frames:
-        await query.message.edit_text(f"── <b>CASH SPIN</b> ──\n\n{f}", parse_mode="HTML")
+        try:
+            await query.message.edit_text(f"── <b>CASH SPIN</b> ──\n\n{f}", parse_mode="HTML")
+        except BadRequest:
+            pass
         await asyncio.sleep(0.6)
 
     won_amount = random.choice([2, 4, 5, 10])
-    now_ist = datetime.now(IST)
-    spin_time_str = now_ist.strftime("%I:%M %p")
-    exp_time_str = (now_ist + timedelta(hours=1)).strftime("%I:%M %p")
-
+    db.update_balance(user.id, won_amount)
     u_data = db_get_user(user.id)
-    curr_bal = u_data[4] if u_data else 0.0
-    db_update_balance(user.id, curr_bal + won_amount)
+    new_bal = u_data[4] if u_data else won_amount
 
     result_text = (
         "🎁 ── <b>CASH SPIN RESULT!</b> ── 🎁\n\n"
         "👑 [ 💎 | 💎 | 💎 ]\n"
         "_________________________\n\n"
         "🎉 <b>Congratulations!</b>\n\n"
-        f"💰 You won <b>₹{won_amount} Cash Reward!</b>\n\n"
-        "⚠️ <b>Valid for 1 Hour Only!</b>\n"
-        f"🕒 Spun At: {spin_time_str} (IST)\n"
-        f"⏳ Expires At: <b>{exp_time_str} (IST)</b>\n\n"
-        f"Purchase any product before {exp_time_str} to automatically apply your ₹{won_amount} discount!\n"
+        f"💰 You won <b>₹{won_amount} Cash Reward!</b>\n"
+        "It has been added to your wallet.\n\n"
+        f"💳 New balance: <b>₹{new_bal:,.2f}</b>\n"
         "_________________________\n\n"
-        "🕒 Next free spin available in 24 Hours!"
+        f"🕒 Next free spin available in {SPIN_COOLDOWN_HOURS} Hours!"
     )
     keyboard = [
         [InlineKeyboardButton(f"🛒 Shop Now — Use ₹{won_amount}", callback_data="shop_key")],
         [InlineKeyboardButton("🔜 Back", callback_data="main_menu")]
     ]
     await query.message.edit_text(result_text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
-
-    # ⏰ 1-Hour Automated Expiry Job
-    async def expiry_alert_job():
-        await asyncio.sleep(3600)
-        exp_alert = (
-            "⏰ <b>REWARD EXPIRED!</b>\n"
-            "_________________________\n\n"
-            f"⚠️ Your <b>₹{won_amount} Spin Reward</b> has expired as it was not used within 1 hour.\n\n"
-            "🎰 Don't worry! Your next daily free spin will be available tomorrow. Stay tuned!"
-        )
-        try:
-            await context.bot.send_message(chat_id=user.id, text=exp_alert, parse_mode="HTML")
-        except Exception:
-            pass
-
-    asyncio.create_task(expiry_alert_job())
 
 # ==========================================
 # 👥 6. REFERRAL SYSTEM
@@ -770,10 +998,12 @@ async def history_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         text = "🔑 <b>MY ORDERS (last 20)</b>\n__________________________________\n\n"
         for idx, o in enumerate(orders, 1):
+            plan_txt = html.escape(str(o[1] or "").replace("_", " "))
+            status_txt = "⏳ Pending delivery" if str(o[2] or "").startswith("PENDING") else "Completed"
             text += (
-                f"{idx}. 🛒 <b>{o[0]} - {o[1]}</b>\n"
-                f"   ⏱️ {o[1]} • 💰 ₹{o[4]:,.2f} • Completed\n"
-                f"   🔐 <code>{o[2]}</code>\n"
+                f"{idx}. 🛒 <b>{html.escape(str(o[0]))} - {plan_txt}</b>\n"
+                f"   💰 ₹{o[4]:,.2f} • {status_txt}\n"
+                f"   🔐 <code>{html.escape(str(o[2]))}</code>\n"
                 f"   📅 {o[3]} (IST)\n\n"
             )
         text += "__________________________________"
@@ -818,25 +1048,21 @@ async def list_category_products(update: Update, context: ContextTypes.DEFAULT_T
     keyboard.append([InlineKeyboardButton("👆 Back", callback_data="shop_key")])
     await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
 
-async def show_product_plans(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    prod_key = query.data.replace("selprod_", "")
-    user = update.effective_user
-
+def build_plans_view(user_id, prod_key):
+    """Return (text, keyboard) for a product's plan list, or None if the product is missing."""
     prod = get_product_by_key(prod_key)
     if not prod:
-        return
+        return None
 
-    u_data = db_get_user(user.id)
-    is_reseller = (u_data and u_data[8] == "Reseller")
+    u_data = db_get_user(user_id)
+    is_reseller = bool(u_data and u_data[8] == "Reseller")
     role_badge = "👑 Reseller Price" if is_reseller else "👤 Regular Price"
 
     text = (
-        f"🖼️ <b>{prod['name']}</b>\n"
-        f"Available | 🔴 {prod.get('category','').upper()} Only\n"
+        f"🖼️ <b>{html.escape(prod['name'] or '')}</b>\n"
+        f"Available | 🔴 {html.escape((prod.get('category') or '').upper())} Only\n"
         f"_________________________\n\n"
-        f"🔘 Silent Aim & Headshot\n"
+        f"🔘 Silent Aim &amp; Headshot\n"
         f"🔘 AimFov 360° Location\n"
         f"🔘 CS / BR Rank Working Safe\n"
         f"🔘 100% Anti-Ban Protection\n\n"
@@ -846,63 +1072,79 @@ async def show_product_plans(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     keyboard = []
     for pl_name, reg_price in prod.get("prices", []):
-        final_price = reg_price * 0.6 if is_reseller else reg_price
-        keyboard.append([InlineKeyboardButton(f"🕒 {pl_name.replace('_', ' ')} | ₹{final_price:,.0f}", callback_data=f"buyplan_{prod_key}_{pl_name}_{final_price}")])
+        final_price = unit_price(reg_price, is_reseller)
+        keyboard.append([InlineKeyboardButton(
+            f"🕒 {pl_name.replace('_', ' ')} | {fmt_price(final_price)}",
+            callback_data=f"buyplan_{prod_key}_{pl_name}"
+        )])
 
-    if prod.get("download_link"):
+    if valid_url(prod.get("download_link")):
         keyboard.append([InlineKeyboardButton("🎥 Preview Video", url=prod["download_link"])])
 
-    keyboard.append([InlineKeyboardButton("🔜 Back", callback_data="pcat_" + context.user_data.get('selected_cat', 'non_root'))])
-    await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
+    keyboard.append([InlineKeyboardButton("🔜 Back", callback_data="pcat_" + (prod.get("category") or "non_root"))])
+    return text, InlineKeyboardMarkup(keyboard)
+
+async def show_product_plans(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    prod_key = query.data.replace("selprod_", "", 1)
+
+    view = build_plans_view(update.effective_user.id, prod_key)
+    if not view:
+        await query.answer("⚠️ Product not available.", show_alert=True)
+        return
+    await query.answer()
+    await replace_callback_message(query, context, view[0], view[1])
+
+def parse_buyplan(data):
+    """Split 'buyplan_<product_key>_<plan>' where both parts may contain underscores."""
+    parts = data[len("buyplan_"):].split("_")
+    for i in range(1, len(parts)):
+        cand_key = "_".join(parts[:i])
+        cand_plan = "_".join(parts[i:])
+        prod = get_product_by_key(cand_key)
+        if prod and any(name == cand_plan for name, _ in prod["prices"]):
+            return cand_key, cand_plan
+    return None, None
 
 async def process_plan_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    _, prod_key, plan_name, price_str = query.data.split("_", 3)
-    final_price = float(price_str)
     user = update.effective_user
 
-    u_data = db_get_user(user.id)
-    balance = u_data[4] if u_data else 0.0
-    prod = get_product_by_key(prod_key)
-    prod_name = prod['name'] if prod else prod_key
+    prod_key, plan_name = parse_buyplan(query.data)
+    if not prod_key:
+        await replace_callback_message(
+            query, context, "⚠️ This product or plan is no longer available.", back_to_menu_markup()
+        )
+        return
 
-    # MODE A: Sufficient Wallet Balance ➔ Instant Key Delivery
-    if balance >= final_price:
-        delivered_key = db_pop_auto_key(prod_key, plan_name)
-        new_balance = balance - final_price
-        db_update_balance(user.id, new_balance)
+    result = purchase_with_wallet(user.id, prod_key, plan_name)
+    status = result["status"]
 
-        if delivered_key:
-            db_add_order(user.id, prod_name, plan_name, delivered_key, final_price, "WALLET_PAY", get_ist_time())
+    # MODE A: Sufficient wallet balance ➔ instant key delivery
+    if status == "ok":
+        await replace_callback_message(
+            query, context,
+            build_key_card(result["prod"]["name"], plan_name, result["key"], result["balance"]),
+            key_card_keyboard(result["prod"])
+        )
 
-            key_card_text = (
-                f"✅ <b>Payment verified — here's your key!</b>\n"
-                f"⏩ ~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n"
-                f"🛒 <b>{prod_name} — {plan_name.replace('_', ' ')}</b>\n\n"
-                f"🗝️ Your Key:\n"
-                f"<code>{delivered_key}</code>\n\n"
-                f"💰 Remaining balance: <b>₹{new_balance:,.2f}</b>"
-            )
-            keyboard = []
-            if prod.get("download_link"):
-                keyboard.append([InlineKeyboardButton("📥 Update File ↗️", url=prod["download_link"])])
-            keyboard.append([InlineKeyboardButton("➡️ Back to Menu", callback_data="main_menu")])
-
-            await replace_callback_message(query, context, key_card_text, InlineKeyboardMarkup(keyboard))
-        else:
-            await replace_callback_message(query, context, "⚠️ <b>Out of Stock!</b> Keys will be restocked shortly.")
-
-    # MODE B: Insufficient Balance ➔ Direct Deficit Card
-    else:
-        deficit = final_price - balance
-        context.user_data['pending_deficit'] = {'prod_key': prod_key, 'prod_name': prod_name, 'plan': plan_name, 'price': final_price, 'deficit': deficit}
+    # MODE B: Insufficient balance ➔ deficit card
+    elif status == "insufficient":
+        prod_name = result["prod"]["name"]
+        final_price = result["price"]
+        balance = result["balance"]
+        deficit = round(final_price - balance, 2)
+        context.user_data['pending_deficit'] = {
+            'prod_key': prod_key, 'prod_name': prod_name, 'plan': plan_name,
+            'price': final_price, 'deficit': deficit
+        }
 
         text = (
             f"💰 <b>INSUFFICIENT BALANCE</b>\n"
             f"__________________________________\n\n"
-            f"┣ 📦 Product: <b>{prod_name}</b>\n"
-            f"┣ ⏱️ Plan: {plan_name.replace('_', ' ')}\n"
+            f"┣ 📦 Product: <b>{html.escape(prod_name)}</b>\n"
+            f"┣ ⏱️ Plan: {html.escape(plan_name.replace('_', ' '))}\n"
             f"┣ 💵 Price: 💰 ₹{final_price:,.2f}\n"
             f"┣ 💳 Your Balance: 💰 ₹{balance:,.2f}\n"
             f"┗ ⚠️ Deficit Need: 💰 <b>₹{deficit:,.2f}</b>\n\n"
@@ -915,15 +1157,44 @@ async def process_plan_purchase(update: Update, context: ContextTypes.DEFAULT_TY
         ]
         await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
 
+    elif status == "out_of_stock":
+        keyboard = [[InlineKeyboardButton("🔜 Back to Plans", callback_data=f"selprod_{prod_key}")]]
+        await replace_callback_message(
+            query, context,
+            "⚠️ <b>Out of Stock!</b> Keys will be restocked shortly. You were not charged.",
+            InlineKeyboardMarkup(keyboard)
+        )
+
+    else:  # unavailable / no_plan / no_product
+        await replace_callback_message(
+            query, context, "⚠️ This product is currently unavailable.", back_to_menu_markup()
+        )
+
 async def def_pay_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    method = "fampay" if "fampay" in update.callback_query.data else "paytm"
+    query = update.callback_query
+    await query.answer()
+    method = "fampay" if "fampay" in query.data else "paytm"
     context.user_data['deposit_method'] = method
-    def_data = context.user_data.get('pending_deficit', {})
-    await generate_deposit_qr(update, context, def_data.get('deficit', 10.0), is_deficit=True, prod_name=def_data.get('prod_name'), plan_name=def_data.get('plan'))
+
+    def_data = context.user_data.get('pending_deficit')
+    if not def_data:
+        keyboard = [[InlineKeyboardButton("🛒 Open Shop", callback_data="shop_key")]]
+        await replace_callback_message(
+            query, context, "⚠️ Session expired. Please select the product again.", InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    await generate_deposit_qr(
+        update, context, def_data['deficit'], is_deficit=True,
+        prod_name=def_data['prod_name'], plan_name=def_data['plan'], prod_key=def_data['prod_key']
+    )
 
 # ==========================================
 # 🤖 BOT SETUP & CRASH-PROOF RUNNER
 # ==========================================
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    logger.error("Unhandled error while processing an update", exc_info=context.error)
+
 def start_bot():
     app = Application.builder().token(BOT_TOKEN).concurrent_updates(False).build()
 
@@ -932,13 +1203,15 @@ def start_bot():
     app.add_handler(CallbackQueryHandler(profile_handler, pattern="^my_profile$"))
     app.add_handler(CallbackQueryHandler(reseller_handler, pattern="^reseller_plan$"))
     app.add_handler(CallbackQueryHandler(buy_reseller_action, pattern="^buy_reseller_action$"))
+    app.add_handler(CallbackQueryHandler(support_handler, pattern="^support_contact$"))
     app.add_handler(CallbackQueryHandler(add_balance_menu, pattern="^add_balance$"))
     app.add_handler(CallbackQueryHandler(select_deposit_amount, pattern="^dep_method_"))
-    app.add_handler(CallbackQueryHandler(render_numpad, pattern="^numpad_open$"))
+    app.add_handler(CallbackQueryHandler(numpad_open, pattern="^numpad_open$"))
     app.add_handler(CallbackQueryHandler(handle_numpad_input, pattern="^np_"))
     app.add_handler(CallbackQueryHandler(preset_dep_click, pattern="^preset_dep_"))
-    app.add_handler(CallbackQueryHandler(complete_deposit_success, pattern="^manual_check_deposit$"))
-    app.add_handler(CallbackQueryHandler(cancel_deposit_click, pattern="^cancel_deposit$"))
+    app.add_handler(CallbackQueryHandler(payment_paid_click, pattern="^paid_"))
+    app.add_handler(CallbackQueryHandler(cancel_deposit_click, pattern="^canceldep_"))
+    app.add_handler(CallbackQueryHandler(admin_payment_decision, pattern="^adm_(ok|no)_"))
     app.add_handler(CallbackQueryHandler(lucky_spin_home, pattern="^lucky_spin$"))
     app.add_handler(CallbackQueryHandler(perform_lucky_spin, pattern="^spin_action_play$"))
     app.add_handler(CallbackQueryHandler(referral_handler, pattern="^referral_menu$"))
@@ -948,6 +1221,7 @@ def start_bot():
     app.add_handler(CallbackQueryHandler(show_product_plans, pattern="^selprod_"))
     app.add_handler(CallbackQueryHandler(process_plan_purchase, pattern="^buyplan_"))
     app.add_handler(CallbackQueryHandler(def_pay_click, pattern="^def_pay_"))
+    app.add_error_handler(error_handler)
 
     print("🤖 Telegram Bot Engine Running...")
     app.run_polling(drop_pending_updates=True)
@@ -961,7 +1235,9 @@ if __name__ == "__main__":
     # 🛡️ Crash Prevention Loop (Never Dies)
     while True:
         try:
+            # run_polling closes its event loop when it exits, so every restart needs a fresh one.
+            asyncio.set_event_loop(asyncio.new_event_loop())
             start_bot()
         except Exception as e:
             print(f"Bot crash prevented: {e}. Auto-restarting in 1s...")
-            time.sleep(1)
+        time.sleep(1)
