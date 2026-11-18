@@ -235,6 +235,8 @@ class Database:
                 paytm_merchant_id TEXT NOT NULL DEFAULT ''
             )
             """,
+            "ALTER TABLE gateway_config ADD COLUMN IF NOT EXISTS upi_id TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE gateway_config ADD COLUMN IF NOT EXISTS payee_name TEXT NOT NULL DEFAULT 'Elite Hackers Store'",
             "CREATE INDEX IF NOT EXISTS idx_order_history_user ON order_history(user_id)",
             "CREATE INDEX IF NOT EXISTS idx_keys_product_plan ON keys_inventory(prod_key, plan, is_used)",
             "CREATE INDEX IF NOT EXISTS idx_payments_user_status ON payment_records(user_id, status)",
@@ -468,6 +470,17 @@ class Database:
     # ------------------------------------------------------------------
     # Payments
     # ------------------------------------------------------------------
+    def get_payment_settings(self):
+        """UPI ID + payee name shown on the payment QR (editable live from the admin panel)."""
+        row = self.fetchone("SELECT upi_id, payee_name FROM gateway_config WHERE id = 1")
+        return row or {"upi_id": "", "payee_name": "Elite Hackers Store"}
+
+    def set_payment_settings(self, upi_id, payee_name):
+        self.execute(
+            "UPDATE gateway_config SET upi_id = %s, payee_name = %s WHERE id = 1",
+            (upi_id, payee_name),
+        )
+
     def create_payment(self, user_id, order_id, amount, method, upi_id, created_at,
                        prod_key=None, plan=None, is_deficit=False):
         self.execute(
@@ -528,6 +541,7 @@ def init_db():
         )
     db.init_db()
     return db
+
 
 
 
