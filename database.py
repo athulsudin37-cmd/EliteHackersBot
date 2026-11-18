@@ -266,14 +266,24 @@ class Database:
     def _seed_admin_password(self):
         from werkzeug.security import generate_password_hash
 
+        env_pwd = os.getenv("ADMIN_PASSWORD", "").strip()
+        if env_pwd:
+            # ADMIN_PASSWORD in Render is the source of truth: change it there and
+            # the login password changes after the next deploy/restart.
+            self.execute(
+                """
+                INSERT INTO admin_auth (id, password_hash) VALUES (1, %s)
+                ON CONFLICT (id) DO UPDATE SET password_hash = EXCLUDED.password_hash
+                """,
+                (generate_password_hash(env_pwd),),
+            )
+            return
+
         if self.fetchone("SELECT id FROM admin_auth WHERE id = 1"):
             return
 
-        pwd = os.getenv("ADMIN_PASSWORD", "").strip()
-        generated = False
-        if not pwd:
-            pwd = secrets.token_urlsafe(9)
-            generated = True
+        pwd = secrets.token_urlsafe(9)
+        generated = True
 
         self.execute(
             "INSERT INTO admin_auth (id, password_hash) VALUES (1, %s) ON CONFLICT (id) DO NOTHING",
@@ -518,5 +528,6 @@ def init_db():
         )
     db.init_db()
     return db
+
 
 
