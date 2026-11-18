@@ -459,54 +459,29 @@ ADMIN_HTML = """
 
         <!-- 🔟 💳 TAB: UPI PAYMENT SETUP -->
         <div class="tab-pane-content" id="tab-upi" style="display:none;">
-            <div class="card p-4 mb-4">
-                <h5 class="text-success fw-bold mb-3"><i class="fas fa-toggle-on me-2"></i>Active Payment Gateway</h5>
-                <div class="row g-3">
-                    <div class="col-md-6">
-                        <select id="gw_select" class="form-select">
-                            <option value="fampay" {% if gw_cfg.active_gateway == 'fampay' %}selected{% endif %}>FamPay Anti-Fraud Gateway</option>
-                            <option value="paytm" {% if gw_cfg.active_gateway == 'paytm' %}selected{% endif %}>Paytm Gateway</option>
-                        </select>
-                    </div>
-                    <div class="col-md-6 d-flex align-items-end">
-                        <button class="btn btn-custom w-100" onclick="saveGatewaySelection()"><i class="fas fa-save me-1"></i> Set Active Gateway</button>
-                    </div>
-                </div>
-            </div>
             <div class="cyan-box">
-                <h5 class="text-info fw-bold mb-3"><i class="fas fa-shield-halved me-2"></i>UPI Auto-Payment (FamPay Anti-Fraud Gateway)</h5>
-                <a href="https://xyzcheats.com/gateway" target="_blank" class="btn btn-outline-warning w-100 mb-3 fw-bold"><i class="fas fa-link me-2"></i> Go to FamPay Setup / Get API Key ↗️</a>
+                <h5 class="text-info fw-bold mb-3"><i class="fas fa-qrcode me-2"></i>UPI Payment Setup</h5>
+                <p class="small text-muted">Customers scan a QR made from the UPI ID below (GPay, PhonePe, Paytm... any UPI ID works). Changes apply to the bot <b>instantly</b>. No redeploy needed.</p>
                 <div class="row g-3">
-                    <div class="col-md-12">
-                        <label class="small text-muted">API Key</label>
-                        <div class="pwd-field m-0">
-                            <input type="password" id="fp_api_key" class="form-control" value="{{ gw_cfg.fampay_api_key }}" placeholder="FP_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx">
-                            <span class="eye-btn" onclick="let x=document.getElementById('fp_api_key'); x.type = x.type==='password'?'text':'password';"><i class="fa-regular fa-eye"></i></span>
-                        </div>
+                    <div class="col-md-6">
+                        <label class="small text-muted">UPI ID (where you receive the money)</label>
+                        <input type="text" id="upi_id" class="form-control" value="{{ pay_cfg.upi_id }}" placeholder="yourname@okhdfcbank" oninput="updateUpiPreview()">
                     </div>
                     <div class="col-md-6">
-                        <label class="small text-muted">FamPay UPI ID Endpoint</label>
-                        <input type="text" id="fp_upi_id" class="form-control" value="{{ gw_cfg.fampay_upi_id }}" placeholder="9544113089@fam">
-                    </div>
-                    <div class="col-md-6">
-                        <label class="small text-muted">API Base URL (locked — cannot be changed)</label>
-                        <input type="text" class="form-control text-muted" value="{{ gw_cfg.fampay_base_url }}" readonly>
+                        <label class="small text-muted">Payee / Shop Name</label>
+                        <input type="text" id="upi_name" class="form-control" value="{{ pay_cfg.payee_name }}" placeholder="Elite Hackers Store" oninput="updateUpiPreview()">
                     </div>
                     <div class="col-12">
-                        <div class="small text-warning"><i class="fas fa-lock me-1"></i> <strong>Bank Alert Cross-Match & Strict UTR Double Verification Active.</strong></div>
+                        <button class="btn btn-custom w-100" onclick="saveUpiSettings()"><i class="fas fa-save me-1"></i> Save UPI Settings</button>
+                    </div>
+                    <div class="col-12 text-center">
+                        <div class="small text-muted mb-2">Live QR preview (₹1 test amount)</div>
+                        <img id="upi_qr_preview" alt="QR preview" style="width:220px;height:220px;background:#fff;padding:8px;border-radius:12px;display:none;">
+                        <div id="upi_qr_empty" class="small text-warning">Enter your UPI ID to see the QR.</div>
                     </div>
                     <div class="col-12">
-                        <button class="btn btn-custom w-100" onclick="saveFamPayGateway()"><i class="fas fa-save me-1"></i> Save FamPay Settings</button>
+                        <div class="small text-warning"><i class="fas fa-shield-halved me-1"></i> <strong>Manual verification:</strong> when a customer taps "I have paid", you get a Telegram message with Approve / Reject buttons. Balance or key is released only after you approve.</div>
                     </div>
-                </div>
-            </div>
-            <div class="gold-box">
-                <h5 class="text-warning fw-bold mb-3"><i class="fas fa-wallet me-2"></i>UPI Auto-Payment (Paytm Gateway)</h5>
-                <div class="row g-3">
-                    <div class="col-md-6"><label class="small text-muted">API Base URL</label><input type="text" id="pt_url" class="form-control" value="{{ gw_cfg.paytm_base_url }}"></div>
-                    <div class="col-md-6"><label class="small text-muted">Paytm UPI ID</label><input type="text" id="pt_upi" class="form-control" value="{{ gw_cfg.paytm_upi_id }}"></div>
-                    <div class="col-12"><label class="small text-muted">Merchant / API Key</label><input type="text" id="pt_merchant" class="form-control" value="{{ gw_cfg.paytm_merchant_id }}"></div>
-                    <div class="col-12"><button class="btn btn-custom w-100" onclick="savePaytmGateway()"><i class="fas fa-save me-1"></i> Save Paytm Settings</button></div>
                 </div>
             </div>
         </div>
@@ -635,24 +610,26 @@ ADMIN_HTML = """
             fetch('/api/pending/dispatch', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({order_id: oid, user_id: uid, key: key}) })
             .then(r => r.json()).then(d => { alert(d.message); location.reload(); });
         }
-        function saveGatewaySelection() {
-            let gw = document.getElementById('gw_select').value;
-            fetch('/api/gateway/set_active', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({gateway: gw}) })
+        function updateUpiPreview() {
+            let up = document.getElementById('upi_id');
+            if (!up) return;
+            let upi = up.value.trim();
+            let name = document.getElementById('upi_name').value.trim() || 'Shop';
+            let img = document.getElementById('upi_qr_preview');
+            let empty = document.getElementById('upi_qr_empty');
+            if (!upi) { img.style.display = 'none'; empty.style.display = 'block'; return; }
+            let uri = 'upi://pay?pa=' + upi + '&pn=' + encodeURIComponent(name) + '&am=1.00&cu=INR&tn=TEST';
+            img.src = 'https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=' + encodeURIComponent(uri);
+            img.style.display = 'inline-block';
+            empty.style.display = 'none';
+        }
+        function saveUpiSettings() {
+            let upi = document.getElementById('upi_id').value.trim();
+            let name = document.getElementById('upi_name').value.trim();
+            fetch('/api/payment/save', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({upi_id: upi, payee_name: name}) })
             .then(r => r.json()).then(d => alert(d.message));
         }
-        function saveFamPayGateway() {
-            let k = document.getElementById('fp_api_key').value;
-            let u = document.getElementById('fp_upi_id').value;
-            fetch('/api/gateway/fampay', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({api_key: k, upi_id: u}) })
-            .then(r => r.json()).then(d => alert(d.message));
-        }
-        function savePaytmGateway() {
-            let u = document.getElementById('pt_url').value;
-            let upi = document.getElementById('pt_upi').value;
-            let m = document.getElementById('pt_merchant').value;
-            fetch('/api/gateway/paytm', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({url: u, upi: upi, merchant: m}) })
-            .then(r => r.json()).then(d => alert(d.message));
-        }
+        updateUpiPreview();
         function saveIdStock() {
             let cat = document.getElementById('id_cat').value;
             let pr = document.getElementById('id_price').value;
@@ -744,50 +721,27 @@ def dashboard():
     pending = q_all("SELECT id, user_id, prod_name, plan, key_delivered, amount, timestamp FROM order_history WHERE LEFT(key_delivered, 7) = 'PENDING' ORDER BY id DESC")
     users_list = q_all('SELECT user_id, full_name, username, joined_date, orders_count, wallet_balance, total_spent, total_referrals, referral_earnings, account_type FROM users ORDER BY user_id DESC LIMIT 50')
     st_r = q_one('SELECT support_username, how_to_use_link FROM store_settings WHERE id = 1') or ("@Athulsudin", "")
-    gw_r = q_one('SELECT active_gateway, fampay_api_key, fampay_upi_id, fampay_base_url, paytm_base_url, paytm_upi_id, paytm_merchant_id FROM gateway_config WHERE id = 1')
-
-    gw_cfg = {
-        "active_gateway": gw_r[0], "fampay_api_key": gw_r[1], "fampay_upi_id": gw_r[2],
-        "fampay_base_url": gw_r[3], "paytm_base_url": gw_r[4], "paytm_upi_id": gw_r[5], "paytm_merchant_id": gw_r[6]
-    }
+    pay_cfg = db.get_payment_settings()
 
     return render_template_string(
         ADMIN_HTML, bot_info=BOT_INFO,
         stats={"users": tot_users, "total_wallet": f"{tot_wallet:,.2f}", "products_count": tot_prods, "orders": tot_orders, "revenue": f"{tot_rev:,.2f}", "keys": tot_keys},
         products=prods, all_orders=all_orders, pending_orders=pending, users_list=users_list,
-        gw_cfg=gw_cfg, store={"support_username": st_r[0], "how_to_use_link": st_r[1]}
+        pay_cfg=pay_cfg, store={"support_username": st_r[0], "how_to_use_link": st_r[1]}
     )
 
-@app.route('/api/gateway/set_active', methods=['POST'])
-def api_set_gw():
-    if not admin_required(): return unauthorized()
-    gw = (request.json or {}).get('gateway', 'fampay')
-    if gw not in ('fampay', 'paytm'):
-        return jsonify({"message": "Invalid gateway!"}), 400
-    db.execute('UPDATE gateway_config SET active_gateway = %s WHERE id = 1', (gw,))
-    return jsonify({"message": f"Active Gateway set to {gw.upper()}!"})
+UPI_RE = re.compile(r'^[a-zA-Z0-9.\-_]{2,64}@[a-zA-Z0-9]{2,32}$')
 
-@app.route('/api/gateway/fampay', methods=['POST'])
-def api_fampay_save():
+@app.route('/api/payment/save', methods=['POST'])
+def api_payment_save():
     if not admin_required(): return unauthorized()
     d = request.json or {}
-    api_key, upi_id = d.get('api_key', ''), d.get('upi_id', '')
-    with db.connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute('UPDATE gateway_config SET fampay_api_key = %s, fampay_upi_id = %s WHERE id = 1', (api_key, upi_id))
-            cur.execute('UPDATE upi_settings SET fampay_token = %s WHERE id = 1', (upi_id,))
-    return jsonify({"message": "FamPay Anti-Fraud Gateway Settings Saved!"})
-
-@app.route('/api/gateway/paytm', methods=['POST'])
-def api_paytm_save():
-    if not admin_required(): return unauthorized()
-    d = request.json or {}
-    url, upi, merchant = d.get('url', ''), d.get('upi', ''), d.get('merchant', '')
-    with db.connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute('UPDATE gateway_config SET paytm_base_url = %s, paytm_upi_id = %s, paytm_merchant_id = %s WHERE id = 1', (url, upi, merchant))
-            cur.execute('UPDATE upi_settings SET paytm_token = %s WHERE id = 1', (upi,))
-    return jsonify({"message": "Paytm Gateway Settings Saved!"})
+    upi_id = (d.get('upi_id') or '').strip()
+    payee = re.sub(r'[^A-Za-z0-9 .&\-]', '', (d.get('payee_name') or '').strip())[:40].strip() or 'Elite Hackers Store'
+    if not UPI_RE.match(upi_id):
+        return jsonify({"message": "Invalid UPI ID! Example: yourname@okhdfcbank"}), 400
+    db.set_payment_settings(upi_id, payee)
+    return jsonify({"message": "UPI settings saved! New payments use this QR immediately."})
 
 @app.route('/api/product/save', methods=['POST'])
 def api_save_p():
@@ -978,6 +932,7 @@ def run_web():
 if __name__ == "__main__":
     init_db()
     run_web()
+
 
 
 
