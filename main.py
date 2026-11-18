@@ -31,11 +31,15 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+# httpx logs full request URLs, which contain the bot token. Keep it out of the logs.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 # ==========================================
 # ⚙️ CONFIGURATION & CONSTANTS
 # ==========================================
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+# Remove ALL whitespace (a stray space inside the token makes Telegram reject it).
+BOT_TOKEN = "".join(os.getenv("BOT_TOKEN", "").split())
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set. Add it in Render Environment Variables.")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "7616127905"))
@@ -83,14 +87,15 @@ def get_store_config():
         logger.exception("Could not load store settings")
     return cfg
 
-def get_fampay_upi():
+def get_payment_settings():
+    """Live UPI ID + payee name. Read from the DB on every payment, so a change made in the
+    admin panel applies to the very next QR code (no redeploy needed)."""
     try:
-        row = db.fetchone("SELECT fampay_upi_id FROM gateway_config WHERE id = 1")
-        if row and row.get("fampay_upi_id"):
-            return row["fampay_upi_id"]
+        row = db.get_payment_settings()
+        return (row.get("upi_id") or "").strip(), (row.get("payee_name") or "Elite Hackers Store").strip()
     except Exception:
-        logger.exception("Could not load FamPay UPI ID")
-    return UPI_CONFIG.get("fampay_token") or "9544113089@fam"
+        logger.exception("Could not load payment settings")
+        return "", "Elite Hackers Store"
 
 def valid_url(url):
     return isinstance(url, str) and url.strip().lower().startswith(("http://", "https://", "tg://"))
@@ -489,13 +494,12 @@ async def add_balance_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "💰 <b>ADD BALANCE</b>\n"
         "_________________________\n\n"
-        "🅿️ Quick Deposit → Instant & Super Fast\n"
-        "🟠 Fam Pay → Auto Detect 10 Min\n"
+        "💳 Pay with any UPI app (GPay, PhonePe, Paytm...)\n"
+        "⏱️ Balance is added as soon as your payment is confirmed.\n"
         "_________________________"
     )
     keyboard = [
-        [InlineKeyboardButton("🅿️ Quick Deposit", callback_data="dep_method_paytm")],
-        [InlineKeyboardButton("🟠 Fam Pay", callback_data="dep_method_fampay")],
+        [InlineKeyboardButton("💳 Pay via UPI", callback_data="dep_method_upi")],
         [InlineKeyboardButton("🔜 Back", callback_data="main_menu")]
     ]
     await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
@@ -503,8 +507,7 @@ async def add_balance_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def select_deposit_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    method = "fampay" if "fampay" in query.data else "paytm"
-    context.user_data['deposit_method'] = method
+    context.user_data['deposit_method'] = "upi"
 
     user = update.effective_user
     u_data = db_get_user(user.id)
@@ -547,7 +550,7 @@ async def render_numpad(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("7", callback_data="np_7"), InlineKeyboardButton("8", callback_data="np_8"), InlineKeyboardButton("9", callback_data="np_9")],
         [InlineKeyboardButton("C", callback_data="np_clear"), InlineKeyboardButton("0", callback_data="np_0"), InlineKeyboardButton("⌫", callback_data="np_backspace")],
         [InlineKeyboardButton(confirm_text, callback_data="np_confirm")],
-        [InlineKeyboardButton("✋ Back", callback_data="dep_method_" + context.user_data.get('deposit_method', 'fampay'))]
+        [InlineKeyboardButton("✋ Back", callback_data="dep_method_upi")]
     ]
     markup = InlineKeyboardMarkup(keyboard)
 
@@ -604,10 +607,18 @@ async def generate_deposit_qr(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     user_id = query.from_user.id
     chat_id = query.message.chat_id
-    method = context.user_data.get('deposit_method', 'fampay').upper()
+    method = "UPI"
+
+    upi_id, payee_name = get_payment_settings()
+    if not upi_id:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="⚠️ Payments are temporarily unavailable. Please try again later or contact support.",
+            reply_markup=back_to_menu_markup()
+        )
+        return
 
     order_id = f"{method}{datetime.now(IST).strftime('%Y%m%d%H%M%S')}{os.urandom(4).hex().upper()}"
-    upi_id = get_fampay_upi()
 
     # Persist the pending payment in PostgreSQL (the payment record is the source of truth).
     try:
@@ -627,7 +638,7 @@ async def generate_deposit_qr(update: Update, context: ContextTypes.DEFAULT_TYPE
         await context.bot.send_message(chat_id=chat_id, text="⚠️ Could not create the payment. Please try again in a moment.")
         return
 
-    upi_uri = f"upi://pay?pa={upi_id}&pn=ELITE_HACKERS&am={amount:.2f}&cu=INR&tn={order_id}"
+    upi_uri = f"upi://pay?pa={upi_id}&pn={urllib.parse.quote(payee_name, safe='')}&am={amount:.2f}&cu=INR&tn={order_id}"
     qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=500x500&data={urllib.parse.quote(upi_uri)}"
 
     if is_deficit:
@@ -759,7 +770,7 @@ async def payment_paid_click(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if pay.get("is_deficit") and pay.get("prod_key"):
         prod = get_product_by_key(pay["prod_key"])
         lines.append(f"🛒 For: <b>{html.escape((prod or {}).get('name', pay['prod_key']))} — {html.escape((pay.get('plan') or '').replace('_', ' '))}</b>")
-    lines += ["", "Check your bank / FamPay app for this amount and order ID, then choose:"]
+    lines += ["", "Check your GPay / bank app for this amount and order ID, then choose:"]
 
     admin_markup = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Approve", callback_data=f"adm_ok_{order_id}"),
@@ -1151,8 +1162,7 @@ async def process_plan_purchase(update: Update, context: ContextTypes.DEFAULT_TY
             f"Select payment method below:"
         )
         keyboard = [
-            [InlineKeyboardButton("🅿️ Quick Deposit", callback_data="def_pay_paytm")],
-            [InlineKeyboardButton("🟠 Fam Pay", callback_data="def_pay_fampay")],
+            [InlineKeyboardButton("💳 Pay via UPI", callback_data="def_pay_upi")],
             [InlineKeyboardButton("🔜 Back to Plans", callback_data=f"selprod_{prod_key}")]
         ]
         await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
@@ -1173,8 +1183,7 @@ async def process_plan_purchase(update: Update, context: ContextTypes.DEFAULT_TY
 async def def_pay_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    method = "fampay" if "fampay" in query.data else "paytm"
-    context.user_data['deposit_method'] = method
+    context.user_data['deposit_method'] = "upi"
 
     def_data = context.user_data.get('pending_deficit')
     if not def_data:
