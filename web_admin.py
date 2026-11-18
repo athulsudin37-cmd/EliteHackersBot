@@ -11,7 +11,7 @@ from flask import Flask, render_template_string, request, jsonify, redirect, ses
 from database import db, init_db, parse_prices
 
 # Secrets come from Render Environment Variables (never hard-code them in GitHub).
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
+BOT_TOKEN = "".join(os.environ.get("BOT_TOKEN", "").split())
 
 app = Flask(__name__)
 # Stable secret so admin sessions survive restarts / redeploys.
@@ -711,7 +711,7 @@ def health():
 
 @app.route('/login', methods=['POST'])
 def login():
-    if db.check_admin_password(request.form.get('password', '')):
+    if db.check_admin_password(request.form.get('password', '').strip()):
         session.permanent = True
         session['admin_logged'] = True
         return redirect('/')
@@ -963,6 +963,8 @@ def api_save_st():
 @app.route('/api/security/change_pwd', methods=['POST'])
 def api_pwd():
     if not admin_required(): return unauthorized()
+    if os.environ.get('ADMIN_PASSWORD', '').strip():
+        return jsonify({"message": "Password is managed by ADMIN_PASSWORD in Render Environment. Change it there and redeploy."}), 400
     new_pwd = ((request.json or {}).get('password') or '').strip()
     if len(new_pwd) < 6:
         return jsonify({"message": "Password must be at least 6 characters!"}), 400
@@ -976,6 +978,7 @@ def run_web():
 if __name__ == "__main__":
     init_db()
     run_web()
+
 
 
     
