@@ -506,6 +506,7 @@ ADMIN_HTML = """
                     <li>Paste a real "money received" SMS below and press Test. It must say <b>Credit detected</b>.</li>
                     <li>Switch on <b>Fully automatic payment verification</b> above and save.</li>
                 </ol>
+                <div class="small text-info mb-3"><i class="fas fa-envelope me-1"></i> <b>No phone app?</b> Let the bot read your bank's email alerts from Gmail instead: add <code>GMAIL_USER</code>, <code>GMAIL_APP_PASSWORD</code> and <code>BANK_EMAIL_FROM</code> in Render → Environment. Emails are accepted only from your bank (checked by Gmail).</div>
                 <label class="small text-muted">Test parser (nothing is credited)</label>
                 <textarea id="test_sms" class="form-control mb-2" rows="3" placeholder="Paste a bank SMS, for example: Rs 100.07 credited to A/c XX1234 by UPI Ref No 432112345678"></textarea>
                 <button class="btn btn-custom w-100" onclick="testParse()"><i class="fas fa-vial me-1"></i> Test this message</button>
@@ -1078,7 +1079,6 @@ def run_web():
 if __name__ == "__main__":
     init_db()
     run_web()
-
 
 
 
