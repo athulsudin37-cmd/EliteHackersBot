@@ -3,12 +3,14 @@ import json
 import re
 import time
 import hashlib
+import hmac
 import urllib.request
-from datetime import timedelta
+from datetime import timedelta, timezone
 from threading import Thread
 from flask import Flask, render_template_string, request, jsonify, redirect, session
 
 from database import db, init_db, parse_prices
+from fulfillment import parse_sms, process_bank_message
 
 # Secrets come from Render Environment Variables (never hard-code them in GitHub).
 BOT_TOKEN = "".join(os.environ.get("BOT_TOKEN", "").split())
@@ -472,6 +474,13 @@ ADMIN_HTML = """
                         <input type="text" id="upi_name" class="form-control" value="{{ pay_cfg.payee_name }}" placeholder="Elite Hackers Store" oninput="updateUpiPreview()">
                     </div>
                     <div class="col-12">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" id="auto_verify" {% if pay_cfg.auto_verify %}checked{% endif %}>
+                            <label class="form-check-label fw-bold" for="auto_verify">Fully automatic payment verification</label>
+                        </div>
+                        <div class="small text-muted mt-1">ON: each customer pays an exact amount (for example ₹100.07) and the bot confirms it by itself when the bank alert arrives. No buttons, no approval. OFF: you approve every payment in Telegram. Turn it ON only after the test below works.</div>
+                    </div>
+                    <div class="col-12">
                         <button class="btn btn-custom w-100" onclick="saveUpiSettings()"><i class="fas fa-save me-1"></i> Save UPI Settings</button>
                     </div>
                     <div class="col-12 text-center">
@@ -479,10 +488,51 @@ ADMIN_HTML = """
                         <img id="upi_qr_preview" alt="QR preview" style="width:220px;height:220px;background:#fff;padding:8px;border-radius:12px;display:none;">
                         <div id="upi_qr_empty" class="small text-warning">Enter your UPI ID to see the QR.</div>
                     </div>
-                    <div class="col-12">
-                        <div class="small text-warning"><i class="fas fa-shield-halved me-1"></i> <strong>Manual verification:</strong> when a customer taps "I have paid", you get a Telegram message with Approve / Reject buttons. Balance or key is released only after you approve.</div>
-                    </div>
                 </div>
+            </div>
+
+            <div class="gold-box">
+                <h5 class="text-warning fw-bold mb-3"><i class="fas fa-bolt me-2"></i>Automatic Verification Setup</h5>
+                <label class="small text-muted">Webhook URL (keep it secret. Anyone with it can send fake alerts)</label>
+                <input type="text" id="webhook_url" class="form-control mb-2" value="{{ pay_cfg.webhook_url }}" readonly>
+                <div class="d-flex gap-2 mb-3">
+                    <button class="btn btn-custom flex-fill" onclick="copyWebhook()"><i class="fas fa-copy me-1"></i> Copy URL</button>
+                    <button class="btn btn-outline-warning flex-fill" onclick="rotateSecret()"><i class="fas fa-rotate me-1"></i> New secret</button>
+                </div>
+                <ol class="small text-muted ps-3 mb-3">
+                    <li>Use an Android phone that stays on with internet, with the SIM linked to the bank account that receives your UPI money.</li>
+                    <li>Install an app that forwards SMS or notifications to a URL (for example MacroDroid or Tasker: trigger "SMS received", action "HTTP request").</li>
+                    <li>Make the app send a <b>POST</b> to the webhook URL above with JSON body: <code>{"message": "(the SMS text)"}</code></li>
+                    <li>Paste a real "money received" SMS below and press Test. It must say <b>Credit detected</b>.</li>
+                    <li>Switch on <b>Fully automatic payment verification</b> above and save.</li>
+                </ol>
+                <label class="small text-muted">Test parser (nothing is credited)</label>
+                <textarea id="test_sms" class="form-control mb-2" rows="3" placeholder="Paste a bank SMS, for example: Rs 100.07 credited to A/c XX1234 by UPI Ref No 432112345678"></textarea>
+                <button class="btn btn-custom w-100" onclick="testParse()"><i class="fas fa-vial me-1"></i> Test this message</button>
+                <div id="test_result" class="small mt-2 text-info"></div>
+            </div>
+
+            <div class="card p-4 mb-4">
+                <h5 class="fw-bold mb-3"><i class="fas fa-list me-2"></i>Recent bank alerts (last 20)</h5>
+                <div class="table-responsive">
+                    <table class="table table-dark align-middle">
+                        <thead><tr><th>Time (IST)</th><th>Amount</th><th>UTR</th><th>Result</th><th>Message</th></tr></thead>
+                        <tbody>
+                            {% for a in alerts %}
+                            <tr>
+                                <td>{{ a.time_txt }}</td>
+                                <td>{% if a.amount is not none %}₹{{ '%.2f'|format(a.amount) }}{% else %}-{% endif %}</td>
+                                <td><code>{{ a.utr or '-' }}</code></td>
+                                <td>{{ a.status }}{% if a.order_id %}<br><small><code>{{ a.order_id }}</code></small>{% endif %}</td>
+                                <td class="small text-muted">{{ a.snippet }}</td>
+                            </tr>
+                            {% else %}
+                            <tr><td colspan="5" class="text-center text-muted">No alerts received yet.</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                <div class="small text-muted">matched = credited automatically · unmatched = money arrived but no order has that exact amount (check manually) · ignored = not a "money received" message · logged = received while auto mode was OFF</div>
             </div>
         </div>
 
@@ -626,8 +676,25 @@ ADMIN_HTML = """
         function saveUpiSettings() {
             let upi = document.getElementById('upi_id').value.trim();
             let name = document.getElementById('upi_name').value.trim();
-            fetch('/api/payment/save', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({upi_id: upi, payee_name: name}) })
+            let auto = document.getElementById('auto_verify').checked;
+            fetch('/api/payment/save', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({upi_id: upi, payee_name: name, auto_verify: auto}) })
             .then(r => r.json()).then(d => alert(d.message));
+        }
+        function copyWebhook() {
+            let el = document.getElementById('webhook_url');
+            el.select();
+            document.execCommand('copy');
+            alert('Webhook URL copied!');
+        }
+        function rotateSecret() {
+            if (!confirm('Create a new webhook URL? The old one stops working and you must update your SMS forwarder app.')) return;
+            fetch('/api/payment/rotate_secret', { method: 'POST' })
+            .then(r => r.json()).then(d => { alert(d.message); location.reload(); });
+        }
+        function testParse() {
+            let t = document.getElementById('test_sms').value;
+            fetch('/api/payment/test_parse', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({text: t}) })
+            .then(r => r.json()).then(d => { document.getElementById('test_result').innerText = d.message; });
         }
         updateUpiPreview();
         function saveIdStock() {
@@ -721,13 +788,29 @@ def dashboard():
     pending = q_all("SELECT id, user_id, prod_name, plan, key_delivered, amount, timestamp FROM order_history WHERE LEFT(key_delivered, 7) = 'PENDING' ORDER BY id DESC")
     users_list = q_all('SELECT user_id, full_name, username, joined_date, orders_count, wallet_balance, total_spent, total_referrals, referral_earnings, account_type FROM users ORDER BY user_id DESC LIMIT 50')
     st_r = q_one('SELECT support_username, how_to_use_link FROM store_settings WHERE id = 1') or ("@Athulsudin", "")
-    pay_cfg = db.get_payment_settings()
+    pay = db.get_payment_settings()
+    base = (os.environ.get("RENDER_EXTERNAL_URL") or request.host_url).rstrip("/")
+    if base.startswith("http://") and "localhost" not in base and "127.0.0.1" not in base:
+        base = "https://" + base[len("http://"):]
+    pay_cfg = {
+        "upi_id": pay["upi_id"], "payee_name": pay["payee_name"], "auto_verify": bool(pay["auto_verify"]),
+        "webhook_url": f"{base}/api/payment/webhook?token={pay['webhook_secret']}",
+    }
+    ist = timezone(timedelta(hours=5, minutes=30))
+    alerts = [
+        {
+            "time_txt": r["received_at"].astimezone(ist).strftime("%d %b, %I:%M %p") if r["received_at"] else "",
+            "amount": r["amount"], "utr": r["utr"], "status": r["status"], "order_id": r["order_id"],
+            "snippet": (r["raw_text"] or "")[:90],
+        }
+        for r in db.recent_bank_credits(20)
+    ]
 
     return render_template_string(
         ADMIN_HTML, bot_info=BOT_INFO,
         stats={"users": tot_users, "total_wallet": f"{tot_wallet:,.2f}", "products_count": tot_prods, "orders": tot_orders, "revenue": f"{tot_rev:,.2f}", "keys": tot_keys},
         products=prods, all_orders=all_orders, pending_orders=pending, users_list=users_list,
-        pay_cfg=pay_cfg, store={"support_username": st_r[0], "how_to_use_link": st_r[1]}
+        pay_cfg=pay_cfg, alerts=alerts, store={"support_username": st_r[0], "how_to_use_link": st_r[1]}
     )
 
 UPI_RE = re.compile(r'^[a-zA-Z0-9.\-_]{2,64}@[a-zA-Z0-9]{2,32}$')
@@ -740,8 +823,71 @@ def api_payment_save():
     payee = re.sub(r'[^A-Za-z0-9 .&\-]', '', (d.get('payee_name') or '').strip())[:40].strip() or 'Elite Hackers Store'
     if not UPI_RE.match(upi_id):
         return jsonify({"message": "Invalid UPI ID! Example: yourname@okhdfcbank"}), 400
-    db.set_payment_settings(upi_id, payee)
-    return jsonify({"message": "UPI settings saved! New payments use this QR immediately."})
+    auto = bool(d.get('auto_verify'))
+    db.set_payment_settings(upi_id, payee, auto)
+    mode = "AUTOMATIC verification is ON." if auto else "Manual approval mode (you approve in Telegram)."
+    return jsonify({"message": f"UPI settings saved! New payments use this QR immediately. {mode}"})
+
+@app.route('/api/payment/rotate_secret', methods=['POST'])
+def api_rotate_secret():
+    if not admin_required(): return unauthorized()
+    db.rotate_webhook_secret()
+    return jsonify({"message": "New webhook URL created. Update it in your SMS forwarder app."})
+
+@app.route('/api/payment/test_parse', methods=['POST'])
+def api_test_parse():
+    if not admin_required(): return unauthorized()
+    parsed = parse_sms((request.json or {}).get('text', ''))
+    if not parsed['is_credit']:
+        msg = "❌ Not detected as a 'money received' message."
+    elif parsed['amount'] is None:
+        msg = "⚠️ Looks like a credit, but no amount was found."
+    else:
+        match = db.find_open_payment_by_amount(parsed['amount'])
+        msg = f"✅ Credit detected: ₹{parsed['amount']:,.2f}"
+        msg += f" · UTR {parsed['utr']}" if parsed['utr'] else " · no UTR found (fine for UPI app notifications)"
+        msg += " · matches an open order" if match else " · no open order has this exact amount (normal for a test)"
+    return jsonify({"message": msg})
+
+_MSG_KEYS = ("title", "message", "text", "body", "sms", "content", "msg", "notification")
+
+def _extract_message():
+    """Pull the alert text out of whatever the forwarder app sends (JSON, form, query or raw text)."""
+    sources = []
+    data = request.get_json(silent=True)
+    if isinstance(data, dict):
+        sources.append(data)
+    sources.append(request.form)
+    sources.append(request.args)
+    parts = []
+    for src in sources:
+        for k in _MSG_KEYS:
+            v = src.get(k)
+            if isinstance(v, str) and v.strip() and v.strip() not in parts:
+                parts.append(v.strip())
+    if not parts and not isinstance(data, dict):
+        raw = request.get_data(as_text=True).strip()
+        if raw:
+            parts.append(raw)
+    return " ".join(parts)
+
+@app.route('/api/payment/webhook', methods=['POST', 'GET'])
+def payment_webhook():
+    settings = db.get_payment_settings()
+    secret = settings.get('webhook_secret') or ''
+    supplied = request.args.get('token') or request.headers.get('X-Webhook-Secret', '')
+    if not secret or not hmac.compare_digest(supplied.encode(), secret.encode()):
+        return jsonify({"status": "forbidden"}), 403
+
+    text = _extract_message()
+    if not text:
+        return jsonify({"status": "empty"}), 200
+    try:
+        result = process_bank_message(text, settle=bool(settings.get('auto_verify')))
+    except Exception:
+        app.logger.exception("Webhook processing failed")
+        return jsonify({"status": "error"}), 500
+    return jsonify({"status": result["status"]}), 200
 
 @app.route('/api/product/save', methods=['POST'])
 def api_save_p():
@@ -932,6 +1078,7 @@ def run_web():
 if __name__ == "__main__":
     init_db()
     run_web()
+
 
 
 
