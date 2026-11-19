@@ -1205,6 +1205,10 @@ if __name__ == "__main__":
     t.daemon = True
     t.start()
 
+    # 📧 Optional: read bank credit e-mails from Gmail (needs GMAIL_USER, GMAIL_APP_PASSWORD, BANK_EMAIL_FROM)
+    import gmail_watcher
+    gmail_watcher.start()
+
     # 🛡️ Crash Prevention Loop (Never Dies)
     while True:
         try:
