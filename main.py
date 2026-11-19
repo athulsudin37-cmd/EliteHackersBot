@@ -87,15 +87,19 @@ def get_store_config():
         logger.exception("Could not load store settings")
     return cfg
 
-def get_payment_settings():
-    """Live UPI ID + payee name. Read from the DB on every payment, so a change made in the
-    admin panel applies to the very next QR code (no redeploy needed)."""
+def get_payment_config():
+    """Live UPI ID, payee name and auto-verify switch. Read from the DB on every payment, so a
+    change made in the admin panel applies to the very next QR code (no redeploy needed)."""
     try:
         row = db.get_payment_settings()
-        return (row.get("upi_id") or "").strip(), (row.get("payee_name") or "Elite Hackers Store").strip()
+        return {
+            "upi_id": (row.get("upi_id") or "").strip(),
+            "payee_name": (row.get("payee_name") or "Elite Hackers Store").strip(),
+            "auto_verify": bool(row.get("auto_verify")),
+        }
     except Exception:
         logger.exception("Could not load payment settings")
-        return "", "Elite Hackers Store"
+        return {"upi_id": "", "payee_name": "Elite Hackers Store", "auto_verify": False}
 
 def valid_url(url):
     return isinstance(url, str) and url.strip().lower().startswith(("http://", "https://", "tg://"))
@@ -124,16 +128,6 @@ def db_set_reseller(user_id):
 
 def db_add_order(user_id, prod_name, plan, key_delivered, amount, utr, timestamp):
     db.add_order(user_id, prod_name, plan, key_delivered, amount, utr, timestamp)
-    # Update order count + total spent.
-    db.execute(
-        """
-        UPDATE users
-        SET orders_count = orders_count + 1,
-            total_spent = total_spent + %s
-        WHERE user_id = %s
-        """,
-        (amount, user_id)
-    )
 
 def db_get_user_history(user_id, limit=20):
     rows = db.get_user_history(user_id, limit)
@@ -182,73 +176,8 @@ def get_product_by_key(prod_key):
         "stock_out": row.get("stock_out", 0),
     }
 
-# ---------- pricing & purchase ----------
-RESELLER_FACTOR = 0.6
-
-def unit_price(reg_price, is_reseller):
-    return round(float(reg_price) * RESELLER_FACTOR, 2) if is_reseller else float(reg_price)
-
-def fmt_price(value):
-    value = float(value)
-    return f"₹{value:,.0f}" if value.is_integer() else f"₹{value:,.2f}"
-
-def purchase_with_wallet(user_id, prod_key, plan_name, allow_pending=False, utr="WALLET_PAY"):
-    """Charge the wallet and deliver a key. The price is always calculated here on the
-    server, and the money is only taken when the balance is enough (atomic).
-
-    Returns a dict with a "status": ok | pending | insufficient | out_of_stock |
-    no_product | no_plan | unavailable.
-    """
-    prod = get_product_by_key(prod_key)
-    if not prod:
-        return {"status": "no_product"}
-    if prod.get("maintenance") or prod.get("stock_out"):
-        return {"status": "unavailable", "prod": prod}
-
-    u_data = db_get_user(user_id)
-    is_reseller = bool(u_data and u_data[8] == "Reseller")
-    reg_price = next((p for n, p in prod["prices"] if n == plan_name), None)
-    if reg_price is None:
-        return {"status": "no_plan", "prod": prod}
-
-    price = unit_price(reg_price, is_reseller)
-    new_balance = db.try_deduct(user_id, price)
-    if new_balance is None:
-        balance = u_data[4] if u_data else 0.0
-        return {"status": "insufficient", "prod": prod, "price": price, "balance": balance}
-
-    try:
-        key = db_pop_auto_key(prod_key, plan_name)
-        status = "ok"
-        if not key:
-            if not allow_pending:
-                db.update_balance(user_id, price)  # nothing delivered -> give the money back
-                return {"status": "out_of_stock", "prod": prod, "price": price}
-            # Customer already paid by UPI: queue the order, admin dispatches from the web panel.
-            key, status = "PENDING", "pending"
-        db_add_order(user_id, prod["name"], plan_name, key, price, utr, get_ist_time())
-    except Exception:
-        db.update_balance(user_id, price)
-        raise
-
-    return {"status": status, "prod": prod, "price": price, "key": key, "balance": new_balance}
-
-def build_key_card(prod_name, plan_name, key, balance):
-    return (
-        f"✅ <b>Payment verified — here's your key!</b>\n"
-        f"⏩ ~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n"
-        f"🛒 <b>{html.escape(prod_name)} — {html.escape(plan_name.replace('_', ' '))}</b>\n\n"
-        f"🗝️ Your Key:\n"
-        f"<code>{html.escape(key)}</code>\n\n"
-        f"💰 Remaining balance: <b>₹{balance:,.2f}</b>"
-    )
-
-def build_pending_notice(prod_name, plan_name):
-    return (
-        "✅ <b>Payment Verified &amp; Received!</b>\n\n"
-        f"⚠️ NOTICE: Auto-stock for <b>{html.escape(prod_name)}</b> ({html.escape(plan_name.replace('_', ' '))}) is currently restocking!\n\n"
-        "🛡️ 100% SECURE: Admin is preparing your fresh key right now. It will be delivered directly to this chat shortly!"
-    )
+# ---------- pricing & purchase (shared with the web admin / auto payment verification) ----------
+from fulfillment import unit_price, fmt_price, purchase_with_wallet, build_key_card, build_pending_notice
 
 def key_card_keyboard(prod):
     keyboard = []
@@ -609,7 +538,8 @@ async def generate_deposit_qr(update: Update, context: ContextTypes.DEFAULT_TYPE
     chat_id = query.message.chat_id
     method = "UPI"
 
-    upi_id, payee_name = get_payment_settings()
+    cfg = get_payment_config()
+    upi_id, payee_name, auto_on = cfg["upi_id"], cfg["payee_name"], cfg["auto_verify"]
     if not upi_id:
         await context.bot.send_message(
             chat_id=chat_id,
@@ -621,8 +551,9 @@ async def generate_deposit_qr(update: Update, context: ContextTypes.DEFAULT_TYPE
     order_id = f"{method}{datetime.now(IST).strftime('%Y%m%d%H%M%S')}{os.urandom(4).hex().upper()}"
 
     # Persist the pending payment in PostgreSQL (the payment record is the source of truth).
+    # In automatic mode a few paise are added so this payment has its own exact amount.
     try:
-        db.create_payment(
+        pay_amount = db.create_payment(
             user_id=user_id,
             order_id=order_id,
             amount=amount,
@@ -632,14 +563,27 @@ async def generate_deposit_qr(update: Update, context: ContextTypes.DEFAULT_TYPE
             prod_key=prod_key,
             plan=plan_name,
             is_deficit=is_deficit,
+            unique_amount=auto_on,
         )
     except Exception as e:
         logger.exception("Failed to save payment record: %s", e)
         await context.bot.send_message(chat_id=chat_id, text="⚠️ Could not create the payment. Please try again in a moment.")
         return
 
-    upi_uri = f"upi://pay?pa={upi_id}&pn={urllib.parse.quote(payee_name, safe='')}&am={amount:.2f}&cu=INR&tn={order_id}"
+    upi_uri = f"upi://pay?pa={upi_id}&pn={urllib.parse.quote(payee_name, safe='')}&am={pay_amount:.2f}&cu=INR&tn={order_id}"
     qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=500x500&data={urllib.parse.quote(upi_uri)}"
+
+    if auto_on:
+        how_to = (
+            "✅ <b>Detected automatically</b> — it is confirmed within a minute of paying. "
+            "No need to press anything.\n"
+            f"⚠️ Pay the <b>exact amount ₹{pay_amount:,.2f}</b> (with the paise) so it can be matched."
+        )
+    else:
+        how_to = (
+            "After paying, tap <b>✅ I have paid</b>. "
+            "It is confirmed as soon as the admin approves the payment."
+        )
 
     if is_deficit:
         u_data = db_get_user(user_id)
@@ -647,25 +591,24 @@ async def generate_deposit_qr(update: Update, context: ContextTypes.DEFAULT_TYPE
         caption = (
             f"🛒 <b>{html.escape(prod_name or '')} — {html.escape((plan_name or '').replace('_', ' '))}</b>\n\n"
             f"💰 Balance: ₹{bal:,.2f} | Price: ₹{(bal + amount):,.2f}\n"
-            f"💸 Scan & pay just <b>₹{amount:,.2f}</b> to complete this purchase.\n\n"
-            f"After paying, tap <b>✅ I have paid</b>. Your key is delivered as soon as the admin confirms the payment.\n\n"
+            f"💸 Scan & pay <b>₹{pay_amount:,.2f}</b> to complete this purchase.\n\n"
+            f"{how_to}\n\n"
             f"🆔 Order:\n<code>{order_id}</code>\n\n"
             f"⏰ <b>This QR expires in 5 minutes if payment isn't completed.</b>"
         )
     else:
         caption = (
-            f"🎟️ <b>{method} — ₹{amount:,.2f}</b>\n\n"
-            f"💰 Amount: <b>₹{amount:,.2f}</b>\n"
+            f"🎟️ <b>{method} — ₹{pay_amount:,.2f}</b>\n\n"
+            f"💰 Amount: <b>₹{pay_amount:,.2f}</b>\n"
             f"🆔 Order:\n<code>{order_id}</code>\n\n"
-            f"Complete the payment, then tap <b>✅ I have paid</b>.\n"
-            f"Balance is added as soon as the admin confirms the payment.\n\n"
+            f"{how_to}\n\n"
             f"⏰ <b>This QR expires in 5 minutes if payment isn't completed.</b>"
         )
 
-    keyboard = [
-        [InlineKeyboardButton("✅ I have paid", callback_data=f"paid_{order_id}")],
-        [InlineKeyboardButton("❌ Cancel Payment", callback_data=f"canceldep_{order_id}")]
-    ]
+    keyboard = []
+    if not auto_on:
+        keyboard.append([InlineKeyboardButton("✅ I have paid", callback_data=f"paid_{order_id}")])
+    keyboard.append([InlineKeyboardButton("❌ Cancel Payment", callback_data=f"canceldep_{order_id}")])
 
     try:
         await query.message.delete()
@@ -679,8 +622,12 @@ async def generate_deposit_qr(update: Update, context: ContextTypes.DEFAULT_TYPE
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
+    try:
+        db.set_payment_message(order_id, qr_msg.chat_id, qr_msg.message_id)
+    except Exception:
+        logger.exception("Could not remember the QR message for %s", order_id)
 
-    # ⏳ 5-Minute Auto-Expiry Watchdog (stops as soon as the payment leaves "pending")
+    # ⏳ 5-Minute Expiry Watchdog (stops as soon as the payment leaves "pending", e.g. auto-confirmed)
     async def expiry_watchdog():
         try:
             start_t = time.time()
@@ -700,15 +647,32 @@ async def generate_deposit_qr(update: Update, context: ContextTypes.DEFAULT_TYPE
                 await context.bot.delete_message(chat_id=qr_msg.chat_id, message_id=qr_msg.message_id)
             except Exception:
                 pass
-            exp_text = (
-                f"🕒 <b>PAYMENT EXPIRED</b>\n"
-                f"_________________________\n\n"
-                f"— 🔒 Order: <code>{order_id}</code>\n"
-                f"— ❌ Not paid within 5 minutes\n"
-                f"— 🔒 QR / payment details are no longer valid\n\n"
-                f"<i>Tap /start to begin a new order.</i>"
+
+            if auto_on:
+                exp_text = (
+                    f"🕒 <b>PAYMENT EXPIRED</b>\n"
+                    f"_________________________\n\n"
+                    f"— 🔒 Order: <code>{order_id}</code>\n"
+                    f"— ❌ No payment detected within 5 minutes\n"
+                    f"— ℹ️ If you already paid the exact amount, it is still credited automatically (up to 1 hour).\n\n"
+                    f"<i>Paid but nothing arrived? Tap the button below. Or tap /start for a new order.</i>"
+                )
+                exp_markup = InlineKeyboardMarkup(
+                    [[InlineKeyboardButton("💬 I paid but wasn't credited", callback_data=f"paid_{order_id}")]]
+                )
+            else:
+                exp_text = (
+                    f"🕒 <b>PAYMENT EXPIRED</b>\n"
+                    f"_________________________\n\n"
+                    f"— 🔒 Order: <code>{order_id}</code>\n"
+                    f"— ❌ Not paid within 5 minutes\n"
+                    f"— 🔒 QR / payment details are no longer valid\n\n"
+                    f"<i>Tap /start to begin a new order.</i>"
+                )
+                exp_markup = None
+            await context.bot.send_message(
+                chat_id=qr_msg.chat_id, text=exp_text, parse_mode="HTML", reply_markup=exp_markup
             )
-            await context.bot.send_message(chat_id=qr_msg.chat_id, text=exp_text, parse_mode="HTML")
         except Exception:
             logger.exception("Expiry watchdog failed for %s", order_id)
 
@@ -725,7 +689,7 @@ async def payment_paid_click(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await query.answer("⚠️ Payment not found.", show_alert=True)
         return
 
-    claimed = db.claim_payment(order_id, "pending", "awaiting_approval")
+    claimed = db.claim_payment(order_id, ("pending", "expired"), "awaiting_approval")
     if not claimed:
         status = pay["status"]
         if status == "awaiting_approval":
@@ -743,7 +707,7 @@ async def payment_paid_click(update: Update, context: ContextTypes.DEFAULT_TYPE)
     except Exception:
         pass
 
-    amount = float(pay["amount"])
+    amount = float(pay.get("pay_amount") or pay["amount"])
     await context.bot.send_message(
         chat_id=user.id,
         text=(
@@ -826,7 +790,7 @@ async def admin_payment_decision(update: Update, context: ContextTypes.DEFAULT_T
         return
 
     user_id = row["user_id"]
-    amount = float(row["amount"])
+    amount = float(row.get("pay_amount") or row["amount"])
     db.update_balance(user_id, amount)
     await query.answer("Approved ✅")
 
