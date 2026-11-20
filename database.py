@@ -256,6 +256,12 @@ class Database:
                 received_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
             """,
+            "ALTER TABLE gateway_config ADD COLUMN IF NOT EXISTS rzp_key_id TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE gateway_config ADD COLUMN IF NOT EXISTS rzp_key_secret TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE gateway_config ADD COLUMN IF NOT EXISTS rzp_webhook_secret TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE payment_records ADD COLUMN IF NOT EXISTS gateway TEXT",
+            "ALTER TABLE payment_records ADD COLUMN IF NOT EXISTS gateway_ref TEXT",
+            "ALTER TABLE payment_records ADD COLUMN IF NOT EXISTS pay_url TEXT",
             "CREATE INDEX IF NOT EXISTS idx_payments_amount ON payment_records(pay_amount, created_ts)",
             "ALTER TABLE payment_records ADD COLUMN IF NOT EXISTS created_ts TIMESTAMPTZ NOT NULL DEFAULT now()",
             "ALTER TABLE payment_records ADD COLUMN IF NOT EXISTS base_amount DOUBLE PRECISION",
@@ -690,6 +696,58 @@ class Database:
             (limit,),
         )
 
+    # ------------------------------------------------------------------
+    # Razorpay (real payment gateway)
+    # ------------------------------------------------------------------
+    def get_razorpay_config(self):
+        row = self.fetchone(
+            "SELECT active_gateway, rzp_key_id, rzp_key_secret, rzp_webhook_secret FROM gateway_config WHERE id = 1"
+        )
+        return row or {"active_gateway": "upi", "rzp_key_id": "", "rzp_key_secret": "", "rzp_webhook_secret": ""}
+
+    def set_razorpay_config(self, use_razorpay, key_id, key_secret=None, webhook_secret=None):
+        """Save the Razorpay settings. A secret is only replaced when a new value is given."""
+        self.execute(
+            """
+            UPDATE gateway_config SET
+                active_gateway = %s,
+                rzp_key_id = %s,
+                rzp_key_secret = COALESCE(%s, rzp_key_secret),
+                rzp_webhook_secret = COALESCE(%s, rzp_webhook_secret)
+            WHERE id = 1
+            """,
+            ("razorpay" if use_razorpay else "upi", key_id, key_secret, webhook_secret),
+        )
+
+    def set_payment_gateway_ref(self, order_id, gateway, ref, url):
+        self.execute(
+            "UPDATE payment_records SET gateway = %s, gateway_ref = %s, pay_url = %s WHERE order_id = %s",
+            (gateway, ref, url, order_id),
+        )
+
+    def open_gateway_payments(self, gateway="razorpay"):
+        """Payments waiting for the gateway to report them as paid."""
+        return self.fetchall(
+            """
+            SELECT order_id, gateway_ref FROM payment_records
+            WHERE gateway = %s AND status = 'pending' AND gateway_ref IS NOT NULL
+              AND created_ts > now() - INTERVAL '60 minutes'
+            ORDER BY id
+            LIMIT 50
+            """,
+            (gateway,),
+        )
+
+    def expire_old_gateway_payments(self, gateway="razorpay", minutes=25):
+        return self.execute(
+            """
+            UPDATE payment_records SET status = 'expired'
+            WHERE gateway = %s AND status = 'pending'
+              AND created_ts < now() - (%s * INTERVAL '1 minute')
+            """,
+            (gateway, minutes),
+        )
+
     def create_payment(self, user_id, order_id, amount, method, upi_id, created_at,
                        prod_key=None, plan=None, is_deficit=False, unique_amount=False):
         """Create a pending payment and return the exact amount the customer must pay.
@@ -833,7 +891,6 @@ def init_db():
         )
     db.init_db()
     return db
-
 
 
 
