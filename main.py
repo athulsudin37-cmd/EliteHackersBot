@@ -178,6 +178,7 @@ def get_product_by_key(prod_key):
 
 # ---------- pricing & purchase (shared with the web admin / auto payment verification) ----------
 from fulfillment import unit_price, fmt_price, purchase_with_wallet, build_key_card, build_pending_notice
+import razorpay_gateway
 
 def key_card_keyboard(prod):
     keyboard = []
@@ -531,11 +532,91 @@ async def preset_dep_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await generate_deposit_qr(update, context, amt)
 
 # 📷 Dynamic QR Generator with 5-Min Auto Expiry
+async def razorpay_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE, amount: float,
+                            is_deficit, prod_name, plan_name, prod_key, rz):
+    """Razorpay flow: the customer pays on Razorpay's page; the bot confirms it by itself."""
+    query = update.callback_query
+    user_id = query.from_user.id
+    chat_id = query.message.chat_id
+    pay_amount = max(round(float(amount), 2), 1.00)   # Razorpay's minimum payment is Rs 1
+    order_id = f"RZP{datetime.now(IST).strftime('%Y%m%d%H%M%S')}{os.urandom(4).hex().upper()}"
+
+    try:
+        db.create_payment(
+            user_id=user_id, order_id=order_id, amount=pay_amount, method="razorpay", upi_id="",
+            created_at=get_ist_time(), prod_key=prod_key, plan=plan_name, is_deficit=is_deficit,
+            unique_amount=False,
+        )
+        description = f"{prod_name} - {plan_name}".replace("_", " ") if is_deficit else "Wallet top-up"
+        link = await asyncio.to_thread(razorpay_gateway.create_payment_link, order_id, pay_amount, description, rz)
+        db.set_payment_gateway_ref(order_id, "razorpay", link["id"], link["url"])
+    except Exception as e:
+        logger.exception("Could not create the Razorpay payment: %s", e)
+        try:
+            db.claim_payment(order_id, "pending", "cancelled", None, get_ist_time())
+        except Exception:
+            pass
+        await context.bot.send_message(
+            chat_id=chat_id, text="⚠️ Could not start the payment. Please try again in a moment.",
+            reply_markup=back_to_menu_markup()
+        )
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_ID, parse_mode="HTML",
+                text=f"⚠️ <b>Razorpay payment could not be created</b>\n<code>{html.escape(str(e))}</code>\n"
+                     "Check the keys in the admin panel → UPI Payment Setup → Razorpay → Test keys."
+            )
+        except Exception:
+            pass
+        return
+
+    if is_deficit:
+        u_data = db_get_user(user_id)
+        bal = u_data[4] if u_data else 0.0
+        head = (
+            f"🛒 <b>{html.escape(prod_name or '')} — {html.escape((plan_name or '').replace('_', ' '))}</b>\n\n"
+            f"💰 Balance: ₹{bal:,.2f} | Price: ₹{(bal + amount):,.2f}\n"
+            f"💸 Pay <b>₹{pay_amount:,.2f}</b> to complete this purchase.\n\n"
+        )
+    else:
+        head = f"🎟️ <b>Add Balance — ₹{pay_amount:,.2f}</b>\n\n"
+    text = (
+        head
+        + "Tap <b>Pay Now</b> and pay with any UPI app, card or net banking.\n"
+        + "✅ <b>Confirmed automatically</b> — your key / balance arrives here within seconds of paying. "
+        + "No need to press anything.\n\n"
+        + f"🆔 Order:\n<code>{order_id}</code>\n"
+        + "⏰ This payment link is valid for 20 minutes."
+        + ("\n\n🧪 <b>TEST MODE</b> — no real money is charged." if rz["mode"] == "test" else "")
+    )
+    keyboard = [
+        [InlineKeyboardButton(f"💳 Pay ₹{pay_amount:,.2f} Now", url=link["url"])],
+        [InlineKeyboardButton("❌ Cancel Payment", callback_data=f"canceldep_{order_id}")],
+    ]
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+    msg = await context.bot.send_message(
+        chat_id=chat_id, text=text, parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True
+    )
+    try:
+        db.set_payment_message(order_id, msg.chat_id, msg.message_id)
+    except Exception:
+        logger.exception("Could not remember the payment message for %s", order_id)
+
 async def generate_deposit_qr(update: Update, context: ContextTypes.DEFAULT_TYPE, amount: float,
                               is_deficit=False, prod_name=None, plan_name=None, prod_key=None):
     query = update.callback_query
     user_id = query.from_user.id
     chat_id = query.message.chat_id
+    # Real gateway switched on in the admin panel? Then use Razorpay instead of the UPI QR.
+    rz = razorpay_gateway.get_config()
+    if rz["active"]:
+        await razorpay_checkout(update, context, amount, is_deficit, prod_name, plan_name, prod_key, rz)
+        return
+
     method = "UPI"
 
     cfg = get_payment_config()
@@ -837,7 +918,18 @@ async def cancel_deposit_click(update: Update, context: ContextTypes.DEFAULT_TYP
     pay = db.get_payment(order_id)
     if pay and pay["user_id"] == update.effective_user.id:
         try:
-            db.claim_payment(order_id, "pending", "cancelled", None, get_ist_time())
+            if pay.get("gateway") == "razorpay":
+                # Never cancel a payment that was already paid: that case is credited instead.
+                result = await asyncio.to_thread(razorpay_gateway.cancel_payment, order_id)
+                if result == "error":
+                    await context.bot.send_message(
+                        chat_id=update.effective_user.id,
+                        text="⚠️ Could not cancel right now. Don't pay this link. If you already paid, "
+                             "it will still be credited automatically.",
+                    )
+                    return
+            else:
+                db.claim_payment(order_id, "pending", "cancelled", None, get_ist_time())
         except Exception as e:
             logger.exception("Failed to update cancelled payment record: %s", e)
 
@@ -1208,6 +1300,9 @@ if __name__ == "__main__":
     # 📧 Optional: read bank credit e-mails from Gmail (needs GMAIL_USER, GMAIL_APP_PASSWORD, BANK_EMAIL_FROM)
     import gmail_watcher
     gmail_watcher.start()
+
+    # 💳 Razorpay: checks open payment links every few seconds (only active when Razorpay is switched on)
+    razorpay_gateway.start_poller()
 
     # 🛡️ Crash Prevention Loop (Never Dies)
     while True:
