@@ -177,8 +177,587 @@ def get_product_by_key(prod_key):
     }
 
 # ---------- pricing & purchase (shared with the web admin / auto payment verification) ----------
-from fulfillment import unit_price, fmt_price, purchase_with_wallet, build_key_card, build_pending_notice
-import razorpay_gateway
+# ==========================================
+# 💳 PAYMENT LOGIC: wallet purchases, bank alerts, automatic confirmation
+# (everything the bot needs to confirm UPI payments by itself lives below)
+# ==========================================
+import hashlib
+import imaplib
+import email
+import urllib.request
+import html as htmllib
+from datetime import timezone
+from email.header import decode_header, make_header
+from email.utils import parseaddr, parsedate_to_datetime
+
+RESELLER_FACTOR = 0.6
+# A bank credit may settle a payment in any of these states (never one that is already verified/rejected).
+OPEN_STATUSES = ["pending", "awaiting_approval", "expired", "cancelled"]
+
+
+def now_ist():
+    return datetime.now(IST).strftime("%d %b %Y, %I:%M %p (IST)")
+
+
+# ----------------------------------------------------------------------
+# Pricing & wallet purchase
+# ----------------------------------------------------------------------
+def unit_price(reg_price, is_reseller):
+    return round(float(reg_price) * RESELLER_FACTOR, 2) if is_reseller else float(reg_price)
+
+
+def fmt_price(value):
+    value = float(value)
+    return f"₹{value:,.0f}" if value.is_integer() else f"₹{value:,.2f}"
+
+
+def _product(prod_key):
+    row = db.get_product_by_key(prod_key)
+    if not row:
+        return None
+    return {
+        "name": row["name"],
+        "category": row["category"],
+        "prices": row.get("prices") or [],
+        "icon": row.get("icon") or "⚡",
+        "download_link": row.get("download_link"),
+        "maintenance": row.get("maintenance", 0),
+        "stock_out": row.get("stock_out", 0),
+    }
+
+
+def purchase_with_wallet(user_id, prod_key, plan_name, allow_pending=False, utr="WALLET_PAY"):
+    """Charge the wallet and deliver a key. Money is only taken when the balance is enough.
+
+    Returns a dict with a "status": ok | pending | insufficient | out_of_stock |
+    no_product | no_plan | unavailable.
+    """
+    prod = _product(prod_key)
+    if not prod:
+        return {"status": "no_product"}
+    if prod.get("maintenance") or prod.get("stock_out"):
+        return {"status": "unavailable", "prod": prod}
+
+    user = db.get_user(user_id)
+    is_reseller = bool(user and user["account_type"] == "Reseller")
+    reg_price = next((p for n, p in prod["prices"] if n == plan_name), None)
+    if reg_price is None:
+        return {"status": "no_plan", "prod": prod}
+
+    price = unit_price(reg_price, is_reseller)
+    new_balance = db.try_deduct(user_id, price)
+    if new_balance is None:
+        balance = float(user["wallet_balance"] or 0) if user else 0.0
+        return {"status": "insufficient", "prod": prod, "price": price, "balance": balance}
+
+    try:
+        key = db.pop_auto_key(prod_key, plan_name)
+        status = "ok"
+        if not key:
+            if not allow_pending:
+                db.update_balance(user_id, price)  # nothing delivered -> give the money back
+                return {"status": "out_of_stock", "prod": prod, "price": price}
+            # Customer already paid by UPI: queue the order, admin dispatches it from the web panel.
+            key, status = "PENDING", "pending"
+        db.add_order(user_id, prod["name"], plan_name, key, price, utr, now_ist())
+    except Exception:
+        db.update_balance(user_id, price)
+        raise
+
+    return {"status": status, "prod": prod, "price": price, "key": key, "balance": new_balance}
+
+
+# ----------------------------------------------------------------------
+# Message texts (HTML) shared by the bot and the webhook
+# ----------------------------------------------------------------------
+def _esc(value):
+    return (str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+
+def build_key_card(prod_name, plan_name, key, balance):
+    return (
+        f"✅ <b>Payment verified — here's your key!</b>\n"
+        f"⏩ ~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n"
+        f"🛒 <b>{_esc(prod_name)} — {_esc(plan_name.replace('_', ' '))}</b>\n\n"
+        f"🗝️ Your Key:\n"
+        f"<code>{_esc(key)}</code>\n\n"
+        f"💰 Remaining balance: <b>₹{balance:,.2f}</b>"
+    )
+
+
+def build_pending_notice(prod_name, plan_name):
+    return (
+        "✅ <b>Payment Verified &amp; Received!</b>\n\n"
+        f"⚠️ NOTICE: Auto-stock for <b>{_esc(prod_name)}</b> ({_esc(plan_name.replace('_', ' '))}) is currently restocking!\n\n"
+        "🛡️ 100% SECURE: Admin is preparing your fresh key right now. It will be delivered directly to this chat shortly!"
+    )
+
+
+# ----------------------------------------------------------------------
+# Telegram (plain HTTP so the web admin thread can use it too)
+# ----------------------------------------------------------------------
+def tg_call(method, payload):
+    if not BOT_TOKEN:
+        return None
+    try:
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/{method}",
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            return json.loads(resp.read().decode())
+    except Exception:
+        logger.exception("Telegram API call failed: %s", method)
+        return None
+
+
+# ----------------------------------------------------------------------
+# Reading bank alerts
+# ----------------------------------------------------------------------
+_CREDIT_RE = re.compile(r"\b(?:credited|received|deposited|paid you|sent you|credit alert)\b|\bcr\b", re.I)
+_DEBIT_RE = re.compile(r"\b(?:debited|withdrawn|sent to|paid to)\b|\bdebit\b(?!\s*card)", re.I)
+_BALANCE_RE = re.compile(
+    r"\b(?:avl\.?\s*)?(?:clear\s*)?bal(?:ance)?\b[^0-9₹]{0,12}(?:rs\.?|inr|₹)?\s*[0-9][0-9,]*(?:\.[0-9]{1,2})?",
+    re.I,
+)
+_AMOUNT_RE = re.compile(r"(?:rs\.?|inr|₹)\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)", re.I)
+_UTR_RES = [
+    re.compile(r"(?:utr|rrn|ref(?:erence)?(?:\s*(?:no|number|id))?\.?)[\s:#.\-]*([0-9]{9,18})", re.I),
+    re.compile(r"upi/(?:cr|credit)/([0-9]{9,18})", re.I),
+    re.compile(r"\b([0-9]{12})\b"),
+]
+
+
+def parse_sms(text):
+    """Return {"is_credit": bool, "amount": float | None, "utr": str | None} for an alert text."""
+    text = (text or "").strip()
+    result = {"is_credit": False, "amount": None, "utr": None}
+    if not text:
+        return result
+
+    result["is_credit"] = bool(_CREDIT_RE.search(text)) and not _DEBIT_RE.search(text)
+
+    without_balance = _BALANCE_RE.sub(" ", text)
+    m = _AMOUNT_RE.search(without_balance)
+    if m:
+        try:
+            result["amount"] = round(float(m.group(1).replace(",", "")), 2)
+        except ValueError:
+            pass
+
+    for rx in _UTR_RES:
+        m = rx.search(text)
+        if m:
+            result["utr"] = m.group(1)
+            break
+    return result
+
+
+_ORDER_ID_RE = re.compile(r"UPI\d{14}[0-9A-F]{8}", re.I)
+
+
+def _find_payment(text, amount):
+    """Which open payment does this bank alert belong to?
+
+    1) If the alert shows one of our order ids (the UPI payment note) and the amount is exactly right, use it.
+    2) Otherwise match by the exact amount (every open payment has its own paise, so only one can match).
+    """
+    for oid in _ORDER_ID_RE.findall(text or ""):
+        cand = db.get_payment(oid.upper())
+        if not cand or cand["status"] not in OPEN_STATUSES:
+            continue
+        created = cand.get("created_ts")
+        if created is not None and getattr(created, "tzinfo", None) is not None:
+            if datetime.now(created.tzinfo) - created > timedelta(hours=2):
+                continue
+        if abs(float(cand.get("pay_amount") or cand["amount"]) - float(amount)) < 0.005:
+            return cand
+    return db.find_open_payment_by_amount(amount)
+
+
+def _fingerprint(text):
+    bucket = int(datetime.now().timestamp() // 3600)
+    return hashlib.sha256((text or "").strip().encode()).hexdigest() + f":{bucket}"
+
+
+# ----------------------------------------------------------------------
+# Settling a payment
+# ----------------------------------------------------------------------
+def settle_payment(order_id, from_statuses, utr, via="auto"):
+    """Atomically mark a payment verified, credit the wallet and (for a product purchase) deliver the key.
+
+    Returns None when the payment was not in an allowed state (already settled), so it can never be
+    credited twice, otherwise a dict describing what happened.
+    """
+    row = db.claim_payment(order_id, from_statuses, "verified", utr, now_ist())
+    if not row:
+        return None
+
+    user_id = row["user_id"]
+    credit = float(row.get("pay_amount") or row["amount"])
+    db.update_balance(user_id, credit)
+
+    outcome = {"row": row, "amount": credit, "via": via, "purchase": None}
+    if row.get("is_deficit") and row.get("prod_key") and row.get("plan"):
+        try:
+            outcome["purchase"] = purchase_with_wallet(
+                user_id, row["prod_key"], row["plan"], allow_pending=True, utr="UPI_DEFICIT"
+            )
+        except Exception:
+            logger.exception("Purchase after verified payment failed (wallet stays credited)")
+    return outcome
+
+
+def notify_settlement(outcome):
+    """Tell the customer (and the admin) about an automatically settled payment."""
+    row = outcome["row"]
+    user_id = row["user_id"]
+    amount = outcome["amount"]
+    purchase = outcome.get("purchase")
+    admin_note = ""
+
+    if row.get("chat_id") and row.get("qr_msg_id"):
+        tg_call("deleteMessage", {"chat_id": row["chat_id"], "message_id": row["qr_msg_id"]})
+
+    buttons = [[{"text": "➡️ Back to Menu", "callback_data": "main_menu"}]]
+    if purchase and purchase["status"] == "ok":
+        text = build_key_card(purchase["prod"]["name"], row["plan"], purchase["key"], purchase["balance"])
+        if valid_url(purchase["prod"].get("download_link")):
+            buttons.insert(0, [{"text": "📥 Update File ↗️", "url": purchase["prod"]["download_link"]}])
+    elif purchase and purchase["status"] == "pending":
+        text = build_pending_notice(purchase["prod"]["name"], row["plan"])
+        admin_note = "\n⚠️ Out of stock: dispatch the key from <b>Pending Keys Queue</b> in the admin panel."
+    else:
+        text = f"✅ <b>Payment Verified Successfully!</b>\n₹{amount:,.2f} has been added to your wallet."
+        if row.get("is_deficit"):
+            text += "\n\nYour balance is ready — open the shop to complete your purchase."
+
+    tg_call("sendMessage", {
+        "chat_id": user_id, "text": text, "parse_mode": "HTML",
+        "reply_markup": {"inline_keyboard": buttons},
+    })
+    tg_call("sendMessage", {
+        "chat_id": ADMIN_ID, "parse_mode": "HTML",
+        "text": (
+            f"✅ <b>Payment auto-verified</b>\n"
+            f"👤 <code>{user_id}</code> · ₹{amount:,.2f}\n"
+            f"🆔 <code>{row['order_id']}</code>{admin_note}"
+        ),
+    })
+
+
+def process_bank_message(text, settle=True):
+    """Handle one forwarded alert. Returns {"status", "order_id", "parsed"}.
+
+    status: matched | unmatched | duplicate | ignored | logged
+    """
+    parsed = parse_sms(text)
+    out = {"status": "ignored", "order_id": None, "parsed": parsed}
+
+    if not parsed["is_credit"] or parsed["amount"] is None:
+        db.record_bank_credit(_fingerprint(text), parsed["amount"], parsed["utr"], text, "ignored")
+        return out
+
+    fingerprint = ("utr:" + parsed["utr"]) if parsed["utr"] else _fingerprint(text)
+    credit_id = db.record_bank_credit(
+        fingerprint, parsed["amount"], parsed["utr"], text, "new" if settle else "logged"
+    )
+    if credit_id is None:
+        out["status"] = "duplicate"
+        return out
+    if not settle:
+        out["status"] = "logged"
+        return out
+
+    pay = _find_payment(text, parsed["amount"])
+    outcome = None
+    if pay:
+        outcome = settle_payment(pay["order_id"], OPEN_STATUSES, parsed["utr"] or "AUTO", via="auto")
+
+    if not outcome:
+        db.set_bank_credit_status(credit_id, "unmatched")
+        out["status"] = "unmatched"
+        tg_call("sendMessage", {
+            "chat_id": ADMIN_ID, "parse_mode": "HTML",
+            "text": (
+                f"⚠️ <b>Money received but no matching order</b>\n"
+                f"💰 ₹{parsed['amount']:,.2f}" + (f" · UTR <code>{parsed['utr']}</code>" if parsed["utr"] else "") +
+                "\nThe customer may have changed the amount or paid after 60 minutes. Check the admin panel → UPI Payment Setup."
+            ),
+        })
+        return out
+
+    db.set_bank_credit_status(credit_id, "matched", pay["order_id"])
+    out["status"] = "matched"
+    out["order_id"] = pay["order_id"]
+    notify_settlement(outcome)
+    return out
+
+
+# ==========================================
+# 📧 GMAIL PAYMENT READER
+# Reads your bank's "money received" e-mails (Gmail + App Password) every 5 seconds and confirms the
+# matching payment by itself: exact amount (with its own paise), order id if shown, UTR (never twice),
+# and the e-mail time. Only e-mails really sent by your bank are trusted (sender + Gmail's DKIM check).
+#   Render Environment: GMAIL_USER, GMAIL_APP_PASSWORD, BANK_EMAIL_FROM
+# ==========================================
+GMAIL_POLL_SECONDS = 5               # the bot looks at Gmail every 5 seconds
+MAX_EMAIL_AGE = timedelta(minutes=90)   # never act on old e-mails
+MAX_PER_POLL = 30                    # newest e-mails looked at per poll
+BODY_CHARS = 800                     # the transaction is at the top; ignore long disclaimers
+
+
+_SECOND_LEVEL = {"co", "com", "net", "org", "gov", "bank", "ac", "edu"}
+
+
+def _suggest_domain(address):
+    """alerts@hdfcbank.bank.in -> hdfcbank.bank.in, alerts.hdfcbank.net -> hdfcbank.net"""
+    labels = address.split("@")[-1].lower().strip(".").split(".")
+    if len(labels) <= 2:
+        return ".".join(labels)
+    if labels[-2] in _SECOND_LEVEL:
+        return ".".join(labels[-3:])
+    return ".".join(labels[-2:])
+
+
+def _gmail_suggest_senders(imap):
+    """Find the senders of recent 'money received' e-mails and tell the admin what to put in BANK_EMAIL_FROM."""
+    imap.select("INBOX")
+    since = (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%d-%b-%Y")
+    typ, data = imap.uid("search", None, "SINCE", since)
+    uids = sorted(int(x) for x in (data[0].split() if typ == "OK" and data and data[0] else []))[-60:]
+    found = {}
+    for uid in uids:
+        typ, parts = imap.uid("fetch", str(uid), "(BODY.PEEK[])")
+        if typ != "OK" or not parts or not isinstance(parts[0], tuple):
+            continue
+        msg = email.message_from_bytes(parts[0][1])
+        text = _header_text(msg.get("Subject")) + " " + _body_text(msg)[:BODY_CHARS]
+        p = parse_sms(text)
+        addr = parseaddr(msg.get("From", ""))[1].lower()
+        if addr and p["is_credit"] and p["amount"] is not None:
+            found[addr] = found.get(addr, 0) + 1
+
+    if found:
+        top = sorted(found, key=found.get, reverse=True)[:3]
+        word = _suggest_domain(top[0])
+        text = (
+            "📧 <b>Gmail is connected!</b>\nI found bank 'money received' e-mails from:\n"
+            + "\n".join(f"• <code>{a}</code>" for a in top)
+            + "\n\nTo switch on automatic payments add this in Render → Environment, then save:\n"
+            + f"<code>BANK_EMAIL_FROM</code> = <code>{word}</code>"
+        )
+    else:
+        text = (
+            "📧 <b>Gmail is connected</b>, but I found no bank 'money received' e-mail from the last 3 days.\n"
+            "Make sure your bank sends e-mail alerts for money received, receive a small UPI payment "
+            "(₹1-₹2) and restart the bot. I will then tell you what to add."
+        )
+    tg_call("sendMessage", {"chat_id": ADMIN_ID, "text": text, "parse_mode": "HTML"})
+
+
+def _header_text(value):
+    try:
+        return str(make_header(decode_header(value or "")))
+    except Exception:
+        return value or ""
+
+
+def _body_text(msg):
+    plain, html_parts = [], []
+    for part in msg.walk():
+        ctype = part.get_content_type()
+        if ctype not in ("text/plain", "text/html") or part.get_filename():
+            continue
+        payload = part.get_payload(decode=True)
+        if payload is None:
+            continue
+        text = payload.decode(part.get_content_charset() or "utf-8", errors="replace")
+        (plain if ctype == "text/plain" else html_parts).append(text)
+
+    if plain:
+        text = " ".join(plain)
+    else:
+        text = " ".join(html_parts)
+        text = re.sub(r"(?is)<(script|style).*?</\1>", " ", text)
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = htmllib.unescape(text)
+    return " ".join(text.split())
+
+
+def _domain_ok(domain, allowed):
+    """True if `domain` is exactly an allowed bank domain or a sub-domain of it (never a look-alike)."""
+    domain = (domain or "").lower().strip(".@ ")
+    return any(domain == a or domain.endswith("." + a) for a in allowed)
+
+
+def sender_is_trusted(msg, allowed):
+    """True only if the sender is the bank's domain AND Gmail verified a DKIM signature of that domain.
+
+    `allowed` holds real domains such as hdfcbank.net. A look-alike such as hdfcbank.net.evil.com or
+    hdfcbank-secure.com is NOT accepted, even if it carries a valid signature of its own.
+    """
+    from_addr = parseaddr(msg.get("From", ""))[1].lower()
+    if not from_addr or not _domain_ok(from_addr.split("@")[-1], allowed):
+        return False, f"sender {from_addr or '?'} is not from the bank domain in BANK_EMAIL_FROM"
+
+    # The top-most Authentication-Results header is the one Gmail added itself.
+    results = msg.get_all("Authentication-Results") or []
+    if not results:
+        return False, "no Authentication-Results header"
+    header = " ".join(str(results[0]).split())
+    if header.split(";")[0].strip().lower() != "mx.google.com":
+        return False, "top Authentication-Results is not from Gmail"
+    for clause in re.findall(r"dkim=pass[^;]*", header, re.I):
+        for d in re.findall(r"header\.(?:d|i)=@?([A-Za-z0-9.\-]+)", clause, re.I):
+            if _domain_ok(d, allowed):
+                return True, "ok"
+    return False, "DKIM not verified for the bank domain"
+
+
+def _mark_processed(key):
+    """Remember an e-mail forever (survives restarts). False if it was already handled."""
+    row = db.fetchone(
+        "INSERT INTO processed_mails (message_key) VALUES (%s) ON CONFLICT DO NOTHING RETURNING message_key",
+        (key,),
+    )
+    return row is not None
+
+
+def _unmark(key):
+    db.execute("DELETE FROM processed_mails WHERE message_key = %s", (key,))
+
+
+def handle_email(raw, allowed):
+    """Process one raw e-mail. Returns a short status string (useful for logs/tests)."""
+    msg = email.message_from_bytes(raw)
+
+    try:
+        sent = parsedate_to_datetime(msg.get("Date", ""))
+        if sent.tzinfo is None:
+            sent = sent.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) - sent > MAX_EMAIL_AGE:
+            return "too old"
+    except Exception:
+        return "bad date"
+
+    ok, reason = sender_is_trusted(msg, allowed)
+    if not ok:
+        return "rejected: " + reason
+
+    message_id = (msg.get("Message-ID") or "").strip() or hashlib.sha1(raw).hexdigest()
+    key = hashlib.sha256(message_id.encode()).hexdigest()
+    if not _mark_processed(key):
+        return "already processed"
+
+    text = _header_text(msg.get("Subject")) + " " + _body_text(msg)[:BODY_CHARS]
+    try:
+        settle = bool(db.get_payment_settings().get("auto_verify"))
+        result = process_bank_message(text, settle=settle)
+    except Exception:
+        _unmark(key)   # try again on the next poll
+        raise
+    return "processed: " + result["status"]
+
+
+def _gmail_poll_once(imap, allowed, last_uid):
+    imap.select("INBOX")
+    since = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%d-%b-%Y")
+    typ, data = imap.uid("search", None, "SINCE", since)
+    if typ != "OK" or not data or not data[0]:
+        return last_uid
+
+    uids = sorted(int(x) for x in data[0].split())
+    for uid in [u for u in uids if u > last_uid][-MAX_PER_POLL:]:
+        typ, parts = imap.uid("fetch", str(uid), "(BODY.PEEK[])")
+        if typ != "OK" or not parts or not isinstance(parts[0], tuple):
+            continue
+        status = handle_email(parts[0][1], allowed)
+        logger.info("Gmail alert uid=%s -> %s", uid, status)
+    return max(uids[-1], last_uid)
+
+
+def _gmail_close(imap):
+    try:
+        if imap is not None:
+            imap.logout()
+    except Exception:
+        pass
+
+
+def _gmail_run(user, password, allowed):
+    if not allowed:
+        # No BANK_EMAIL_FROM yet: never accept any e-mail, just tell the admin what to set.
+        try:
+            imap = imaplib.IMAP4_SSL("imap.gmail.com", 993, timeout=30)
+            imap.login(user, password)
+            _gmail_suggest_senders(imap)
+            _gmail_close(imap)
+        except imaplib.IMAP4.error as e:
+            logger.error("Gmail login/IMAP error: %s", e)
+            tg_call("sendMessage", {
+                "chat_id": ADMIN_ID,
+                "text": "⚠️ Gmail payment reader could not log in. Check GMAIL_USER and GMAIL_APP_PASSWORD "
+                        "in Render (it must be a Google App Password, 2-Step Verification must be on).",
+            })
+        except Exception:
+            logger.exception("Gmail suggestion failed")
+        return
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS processed_mails ("
+        "message_key TEXT PRIMARY KEY, created_ts TIMESTAMPTZ NOT NULL DEFAULT now())"
+    )
+    imap, last_uid, alerted = None, 0, False
+    logger.info("Gmail payment reader started for %s (trusted senders: %s)", user, ", ".join(allowed))
+    while True:
+        try:
+            if imap is None:
+                imap = imaplib.IMAP4_SSL("imap.gmail.com", 993, timeout=30)
+                imap.login(user, password)
+                alerted = False
+                logger.info("Gmail login OK")
+            last_uid = _gmail_poll_once(imap, allowed, last_uid)
+            time.sleep(GMAIL_POLL_SECONDS)
+        except imaplib.IMAP4.error as e:
+            logger.error("Gmail login/IMAP error: %s", e)
+            if not alerted:
+                alerted = True
+                tg_call("sendMessage", {
+                    "chat_id": ADMIN_ID,
+                    "text": "⚠️ Gmail payment reader could not log in. Check GMAIL_USER and GMAIL_APP_PASSWORD "
+                            "in Render (it must be a Google App Password, 2-Step Verification must be on).",
+                })
+            _gmail_close(imap)
+            imap = None
+            time.sleep(120)
+        except Exception:
+            logger.exception("Gmail reader error")
+            _gmail_close(imap)
+            imap = None
+            time.sleep(30)
+
+
+def start_gmail_reader():
+    """Start the Gmail reader in the background if GMAIL_USER and GMAIL_APP_PASSWORD are set."""
+    user = os.getenv("GMAIL_USER", "").strip()
+    password = "".join(os.getenv("GMAIL_APP_PASSWORD", "").split())
+    allowed = [a.strip().lower().lstrip("@*. ") for a in os.getenv("BANK_EMAIL_FROM", "").split(",") if a.strip()]
+    if any("." not in a for a in allowed):
+        logger.error("BANK_EMAIL_FROM must be a full domain like hdfcbank.net (not a single word): %s", allowed)
+    allowed = [a for a in allowed if "." in a]   # a bare word could be matched by look-alike domains
+
+    if not user or not password:
+        logger.info("Gmail payment reader is off (GMAIL_USER / GMAIL_APP_PASSWORD not set).")
+        return None
+
+    t = Thread(target=_gmail_run, args=(user, password, allowed), daemon=True)
+    t.start()
+    return t
+
+# The web admin (imported at the top) uses these two for its optional SMS webhook / "test parser" box.
+web_admin.parse_sms = parse_sms
+web_admin.process_bank_message = process_bank_message
 
 def key_card_keyboard(prod):
     keyboard = []
@@ -532,91 +1111,11 @@ async def preset_dep_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await generate_deposit_qr(update, context, amt)
 
 # 📷 Dynamic QR Generator with 5-Min Auto Expiry
-async def razorpay_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE, amount: float,
-                            is_deficit, prod_name, plan_name, prod_key, rz):
-    """Razorpay flow: the customer pays on Razorpay's page; the bot confirms it by itself."""
-    query = update.callback_query
-    user_id = query.from_user.id
-    chat_id = query.message.chat_id
-    pay_amount = max(round(float(amount), 2), 1.00)   # Razorpay's minimum payment is Rs 1
-    order_id = f"RZP{datetime.now(IST).strftime('%Y%m%d%H%M%S')}{os.urandom(4).hex().upper()}"
-
-    try:
-        db.create_payment(
-            user_id=user_id, order_id=order_id, amount=pay_amount, method="razorpay", upi_id="",
-            created_at=get_ist_time(), prod_key=prod_key, plan=plan_name, is_deficit=is_deficit,
-            unique_amount=False,
-        )
-        description = f"{prod_name} - {plan_name}".replace("_", " ") if is_deficit else "Wallet top-up"
-        link = await asyncio.to_thread(razorpay_gateway.create_payment_link, order_id, pay_amount, description, rz)
-        db.set_payment_gateway_ref(order_id, "razorpay", link["id"], link["url"])
-    except Exception as e:
-        logger.exception("Could not create the Razorpay payment: %s", e)
-        try:
-            db.claim_payment(order_id, "pending", "cancelled", None, get_ist_time())
-        except Exception:
-            pass
-        await context.bot.send_message(
-            chat_id=chat_id, text="⚠️ Could not start the payment. Please try again in a moment.",
-            reply_markup=back_to_menu_markup()
-        )
-        try:
-            await context.bot.send_message(
-                chat_id=ADMIN_ID, parse_mode="HTML",
-                text=f"⚠️ <b>Razorpay payment could not be created</b>\n<code>{html.escape(str(e))}</code>\n"
-                     "Check the keys in the admin panel → UPI Payment Setup → Razorpay → Test keys."
-            )
-        except Exception:
-            pass
-        return
-
-    if is_deficit:
-        u_data = db_get_user(user_id)
-        bal = u_data[4] if u_data else 0.0
-        head = (
-            f"🛒 <b>{html.escape(prod_name or '')} — {html.escape((plan_name or '').replace('_', ' '))}</b>\n\n"
-            f"💰 Balance: ₹{bal:,.2f} | Price: ₹{(bal + amount):,.2f}\n"
-            f"💸 Pay <b>₹{pay_amount:,.2f}</b> to complete this purchase.\n\n"
-        )
-    else:
-        head = f"🎟️ <b>Add Balance — ₹{pay_amount:,.2f}</b>\n\n"
-    text = (
-        head
-        + "Tap <b>Pay Now</b> and pay with any UPI app, card or net banking.\n"
-        + "✅ <b>Confirmed automatically</b> — your key / balance arrives here within seconds of paying. "
-        + "No need to press anything.\n\n"
-        + f"🆔 Order:\n<code>{order_id}</code>\n"
-        + "⏰ This payment link is valid for 20 minutes."
-        + ("\n\n🧪 <b>TEST MODE</b> — no real money is charged." if rz["mode"] == "test" else "")
-    )
-    keyboard = [
-        [InlineKeyboardButton(f"💳 Pay ₹{pay_amount:,.2f} Now", url=link["url"])],
-        [InlineKeyboardButton("❌ Cancel Payment", callback_data=f"canceldep_{order_id}")],
-    ]
-    try:
-        await query.message.delete()
-    except Exception:
-        pass
-    msg = await context.bot.send_message(
-        chat_id=chat_id, text=text, parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True
-    )
-    try:
-        db.set_payment_message(order_id, msg.chat_id, msg.message_id)
-    except Exception:
-        logger.exception("Could not remember the payment message for %s", order_id)
-
 async def generate_deposit_qr(update: Update, context: ContextTypes.DEFAULT_TYPE, amount: float,
                               is_deficit=False, prod_name=None, plan_name=None, prod_key=None):
     query = update.callback_query
     user_id = query.from_user.id
     chat_id = query.message.chat_id
-    # Real gateway switched on in the admin panel? Then use Razorpay instead of the UPI QR.
-    rz = razorpay_gateway.get_config()
-    if rz["active"]:
-        await razorpay_checkout(update, context, amount, is_deficit, prod_name, plan_name, prod_key, rz)
-        return
-
     method = "UPI"
 
     cfg = get_payment_config()
@@ -918,18 +1417,7 @@ async def cancel_deposit_click(update: Update, context: ContextTypes.DEFAULT_TYP
     pay = db.get_payment(order_id)
     if pay and pay["user_id"] == update.effective_user.id:
         try:
-            if pay.get("gateway") == "razorpay":
-                # Never cancel a payment that was already paid: that case is credited instead.
-                result = await asyncio.to_thread(razorpay_gateway.cancel_payment, order_id)
-                if result == "error":
-                    await context.bot.send_message(
-                        chat_id=update.effective_user.id,
-                        text="⚠️ Could not cancel right now. Don't pay this link. If you already paid, "
-                             "it will still be credited automatically.",
-                    )
-                    return
-            else:
-                db.claim_payment(order_id, "pending", "cancelled", None, get_ist_time())
+            db.claim_payment(order_id, "pending", "cancelled", None, get_ist_time())
         except Exception as e:
             logger.exception("Failed to update cancelled payment record: %s", e)
 
@@ -1298,11 +1786,7 @@ if __name__ == "__main__":
     t.start()
 
     # 📧 Optional: read bank credit e-mails from Gmail (needs GMAIL_USER, GMAIL_APP_PASSWORD, BANK_EMAIL_FROM)
-    import gmail_watcher
-    gmail_watcher.start()
-
-    # 💳 Razorpay: checks open payment links every few seconds (only active when Razorpay is switched on)
-    razorpay_gateway.start_poller()
+    start_gmail_reader()
 
     # 🛡️ Crash Prevention Loop (Never Dies)
     while True:
