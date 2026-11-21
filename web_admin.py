@@ -10,8 +10,9 @@ from threading import Thread
 from flask import Flask, render_template_string, request, jsonify, redirect, session
 
 from database import db, init_db, parse_prices
-import razorpay_gateway
-from fulfillment import parse_sms, process_bank_message
+# Filled in by main.py at start-up (the payment logic lives in main.py).
+parse_sms = None
+process_bank_message = None
 
 # Secrets come from Render Environment Variables (never hard-code them in GitHub).
 BOT_TOKEN = "".join(os.environ.get("BOT_TOKEN", "").split())
@@ -462,28 +463,6 @@ ADMIN_HTML = """
 
         <!-- 🔟 💳 TAB: UPI PAYMENT SETUP -->
         <div class="tab-pane-content" id="tab-upi" style="display:none;">
-            <div class="gold-box">
-                <h5 class="text-warning fw-bold mb-3"><i class="fas fa-credit-card me-2"></i>Razorpay Payment Gateway</h5>
-                <p class="small text-muted">Customers pay on Razorpay's secure page (any UPI app, card or net banking) and the bot confirms every payment <b>automatically</b>. Start with <code>rzp_test_</code> keys (no KYC, no real money). After Razorpay approves your KYC, paste the <code>rzp_live_</code> keys here.</p>
-                <div class="form-check form-switch mb-3">
-                    <input class="form-check-input" type="checkbox" id="rzp_enabled" {% if rzp.enabled %}checked{% endif %}>
-                    <label class="form-check-label" for="rzp_enabled">Use Razorpay for payments (the UPI QR below is then not used)</label>
-                </div>
-                <label class="small text-muted">Key ID</label>
-                <input type="text" id="rzp_key_id" class="form-control mb-2" value="{{ rzp.key_id }}" placeholder="rzp_test_xxxxxxxxxxxx" autocomplete="off">
-                <label class="small text-muted">Key Secret {% if rzp.has_secret %}(saved, leave empty to keep it){% endif %}</label>
-                <input type="password" id="rzp_key_secret" class="form-control mb-2" placeholder="{% if rzp.has_secret %}saved{% else %}Key Secret{% endif %}" autocomplete="new-password">
-                <label class="small text-muted">Webhook Secret (optional, makes confirmation instant) {% if rzp.has_webhook %}(saved){% endif %}</label>
-                <input type="password" id="rzp_webhook_secret" class="form-control mb-2" placeholder="{% if rzp.has_webhook %}saved{% else %}optional{% endif %}" autocomplete="new-password">
-                <label class="small text-muted">Webhook URL (Razorpay Dashboard &rarr; Webhooks, event: payment_link.paid)</label>
-                <input type="text" id="rzp_webhook_url" class="form-control mb-3" value="{{ rzp.webhook_url }}" readonly>
-                <div class="d-flex gap-2">
-                    <button class="btn btn-custom flex-fill" onclick="saveRazorpay()"><i class="fas fa-save me-1"></i> Save</button>
-                    <button class="btn btn-outline-warning flex-fill" onclick="testRazorpay()"><i class="fas fa-plug me-1"></i> Test keys</button>
-                </div>
-                <div class="small mt-2 text-info">Mode: <b>{{ rzp.mode_label }}</b>. Payments are also checked every few seconds even without a webhook.</div>
-            </div>
-
             <div class="cyan-box">
                 <h5 class="text-info fw-bold mb-3"><i class="fas fa-qrcode me-2"></i>UPI Payment Setup</h5>
                 <p class="small text-muted">Customers scan a QR made from the UPI ID below (GPay, PhonePe, Paytm... any UPI ID works). Changes apply to the bot <b>instantly</b>. No redeploy needed.</p>
@@ -529,7 +508,7 @@ ADMIN_HTML = """
                     <li>Paste a real "money received" SMS below and press Test. It must say <b>Credit detected</b>.</li>
                     <li>Switch on <b>Fully automatic payment verification</b> above and save.</li>
                 </ol>
-                <div class="small text-info mb-3"><i class="fas fa-envelope me-1"></i> <b>No phone app?</b> Let the bot read your bank's email alerts from Gmail instead: add <code>GMAIL_USER</code>, <code>GMAIL_APP_PASSWORD</code> and <code>BANK_EMAIL_FROM</code> in Render → Environment. Emails are accepted only from your bank (checked by Gmail).</div>
+                <div class="small text-info mb-3"><i class="fas fa-envelope me-1"></i> <b>Gmail (no phone app):</b> add <code>GMAIL_USER</code> and <code>GMAIL_APP_PASSWORD</code> (a Google App Password) in Render &rarr; Environment. The bot reads your bank's "money received" e-mails every 5 seconds and confirms payments by itself. It then messages you on Telegram which <code>BANK_EMAIL_FROM</code> value to add. Fake e-mails are ignored.</div>
                 <label class="small text-muted">Test parser (nothing is credited)</label>
                 <textarea id="test_sms" class="form-control mb-2" rows="3" placeholder="Paste a bank SMS, for example: Rs 100.07 credited to A/c XX1234 by UPI Ref No 432112345678"></textarea>
                 <button class="btn btn-custom w-100" onclick="testParse()"><i class="fas fa-vial me-1"></i> Test this message</button>
@@ -704,19 +683,6 @@ ADMIN_HTML = """
             fetch('/api/payment/save', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({upi_id: upi, payee_name: name, auto_verify: auto}) })
             .then(r => r.json()).then(d => alert(d.message));
         }
-        function saveRazorpay() {
-            let body = {
-                enabled: document.getElementById('rzp_enabled').checked,
-                key_id: document.getElementById('rzp_key_id').value.trim(),
-                key_secret: document.getElementById('rzp_key_secret').value,
-                webhook_secret: document.getElementById('rzp_webhook_secret').value
-            };
-            fetch('/api/razorpay/save', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) })
-            .then(r => r.json()).then(d => { alert(d.message); location.reload(); });
-        }
-        function testRazorpay() {
-            fetch('/api/razorpay/test', { method: 'POST' }).then(r => r.json()).then(d => alert(d.message));
-        }
         function copyWebhook() {
             let el = document.getElementById('webhook_url');
             el.select();
@@ -833,13 +799,6 @@ def dashboard():
         "upi_id": pay["upi_id"], "payee_name": pay["payee_name"], "auto_verify": bool(pay["auto_verify"]),
         "webhook_url": f"{base}/api/payment/webhook?token={pay['webhook_secret']}",
     }
-    rz = razorpay_gateway.get_config()
-    rzp = {
-        "enabled": rz["selected"], "key_id": rz["key_id"],
-        "has_secret": bool(rz["key_secret"]), "has_webhook": bool(rz["webhook_secret"]),
-        "webhook_url": f"{base}/api/razorpay/webhook",
-        "mode_label": {"test": "TEST (no real money)", "live": "LIVE (real money)"}.get(rz["mode"], "not set up yet"),
-    }
     ist = timezone(timedelta(hours=5, minutes=30))
     alerts = [
         {
@@ -854,7 +813,7 @@ def dashboard():
         ADMIN_HTML, bot_info=BOT_INFO,
         stats={"users": tot_users, "total_wallet": f"{tot_wallet:,.2f}", "products_count": tot_prods, "orders": tot_orders, "revenue": f"{tot_rev:,.2f}", "keys": tot_keys},
         products=prods, all_orders=all_orders, pending_orders=pending, users_list=users_list,
-        pay_cfg=pay_cfg, rzp=rzp, alerts=alerts, store={"support_username": st_r[0], "how_to_use_link": st_r[1]}
+        pay_cfg=pay_cfg, alerts=alerts, store={"support_username": st_r[0], "how_to_use_link": st_r[1]}
     )
 
 UPI_RE = re.compile(r'^[a-zA-Z0-9.\-_]{2,64}@[a-zA-Z0-9]{2,32}$')
@@ -871,51 +830,6 @@ def api_payment_save():
     db.set_payment_settings(upi_id, payee, auto)
     mode = "AUTOMATIC verification is ON." if auto else "Manual approval mode (you approve in Telegram)."
     return jsonify({"message": f"UPI settings saved! New payments use this QR immediately. {mode}"})
-
-RZP_KEY_RE = re.compile(r'^rzp_(test|live)_[A-Za-z0-9]{8,40}$')
-
-@app.route('/api/razorpay/save', methods=['POST'])
-def api_razorpay_save():
-    if not admin_required(): return unauthorized()
-    d = request.json or {}
-    enabled = bool(d.get('enabled'))
-    key_id = "".join((d.get('key_id') or '').split())
-    key_secret = "".join((d.get('key_secret') or '').split()) or None
-    webhook_secret = (d.get('webhook_secret') or '').strip() or None
-    current = db.get_razorpay_config()
-    if key_id and not RZP_KEY_RE.match(key_id):
-        return jsonify({"message": "Key ID should look like rzp_test_xxxx or rzp_live_xxxx"}), 400
-    if enabled and (not key_id or not (key_secret or current.get('rzp_key_secret'))):
-        return jsonify({"message": "Enter the Key ID and Key Secret before switching Razorpay on."}), 400
-    db.set_razorpay_config(enabled, key_id, key_secret, webhook_secret)
-    state = "Razorpay is ON: customers now pay through Razorpay." if enabled else "Razorpay is OFF: the UPI QR is used."
-    return jsonify({"message": "Saved! " + state})
-
-@app.route('/api/razorpay/test', methods=['POST'])
-def api_razorpay_test():
-    if not admin_required(): return unauthorized()
-    try:
-        return jsonify({"message": "✅ " + razorpay_gateway.test_connection()})
-    except razorpay_gateway.RazorpayError as e:
-        return jsonify({"message": "❌ " + str(e)}), 400
-
-@app.route('/api/razorpay/webhook', methods=['POST'])
-def razorpay_webhook():
-    """Razorpay calls this when a payment link is paid. Only requests with a valid signature are accepted."""
-    cfg = razorpay_gateway.get_config()
-    raw = request.get_data()
-    if not razorpay_gateway.verify_webhook(raw, request.headers.get('X-Razorpay-Signature', ''), cfg['webhook_secret']):
-        return jsonify({"status": "forbidden"}), 403
-    try:
-        data = json.loads(raw.decode() or '{}')
-    except ValueError:
-        return jsonify({"status": "bad request"}), 400
-    try:
-        result = razorpay_gateway.handle_webhook(data)
-    except Exception:
-        app.logger.exception("Razorpay webhook failed")
-        return jsonify({"status": "error"}), 500   # Razorpay retries on errors
-    return jsonify({"status": result}), 200
 
 @app.route('/api/payment/rotate_secret', methods=['POST'])
 def api_rotate_secret():
@@ -1167,6 +1081,7 @@ def run_web():
 if __name__ == "__main__":
     init_db()
     run_web()
+
 
 
 
