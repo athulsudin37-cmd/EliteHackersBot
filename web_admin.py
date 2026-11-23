@@ -1624,8 +1624,8 @@ def dashboard():
             f"SELECT o.prod_name, COUNT(*), SUM(o.amount) FROM order_history o WHERE {delivered_sql} GROUP BY o.prod_name")
     }
     bc_row = q_one(
-        "SELECT COUNT(*), COUNT(*) FILTER (WHERE orders_count > 0), COUNT(*) FILTER (WHERE orders_count = 0), "
-        "COUNT(*) FILTER (WHERE account_type = 'Reseller') FROM users"
+        "SELECT COUNT(*) AS c_all, COUNT(*) FILTER (WHERE orders_count > 0) AS c_cust, COUNT(*) FILTER (WHERE orders_count = 0) AS c_non, "
+        "COUNT(*) FILTER (WHERE account_type = 'Reseller') AS c_res FROM users"
     )
     bc_counts = {"all": bc_row[0] or 0, "customers": bc_row[1] or 0, "non_buyers": bc_row[2] or 0, "resellers": bc_row[3] or 0}
     st = db.get_settings()
@@ -2289,4 +2289,5 @@ def run_web():
 if __name__ == "__main__":
     init_db()
     run_web()
+
 
