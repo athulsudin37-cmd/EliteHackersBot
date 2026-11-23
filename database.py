@@ -24,22 +24,70 @@ logger = logging.getLogger(__name__)
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
 
-# Main-menu buttons whose color can be chosen in the admin panel.
-# key -> (label shown in the admin panel, default color). Colors: primary = blue,
-# success = green, danger = red, none = Telegram's normal grey.
-MENU_BUTTONS = {
-    "shop_key": ("🛒 Shop Key", "success"),
-    "add_balance": ("💰 Add Balance", "success"),
-    "my_profile": ("👤 My Profile", "primary"),
-    "all_history": ("🧾 All History", "primary"),
-    "tutorial": ("▶️ Tutorial watch", "primary"),
-    "selling_proof": ("💼 Selling Proof", "primary"),
-    "lucky_spin": ("🎰 Lucky Spin", "danger"),
-    "referral": ("👥 Referral", "danger"),
-    "reseller": ("👑 Reseller", "success"),
-    "support": ("💬 Support", "success"),
-    "web_admin": ("👑 Web Admin Panel (owner only)", "success"),
-}
+# Every bot button whose color can be chosen in the admin panel, grouped by screen.
+# (key, label shown in the admin panel, default color). Colors: primary = blue,
+# success = green, danger = red, "" = Telegram's normal grey.
+BUTTON_GROUPS = [
+    ("🏠 Main Menu", [
+        ("shop_key", "🛒 Shop Key", "success"),
+        ("add_balance", "💰 Add Balance", "success"),
+        ("my_profile", "👤 My Profile", "primary"),
+        ("all_history", "🧾 All History", "primary"),
+        ("tutorial", "▶️ Tutorial watch", "primary"),
+        ("selling_proof", "💼 Selling Proof", "primary"),
+        ("lucky_spin", "🎰 Lucky Spin", "danger"),
+        ("referral", "👥 Referral", "danger"),
+        ("reseller", "👑 Reseller", "success"),
+        ("support", "💬 Support", "success"),
+        ("web_admin", "👑 Web Admin Panel (owner only)", "success"),
+    ]),
+    ("🛒 Shop & Products", [
+        ("cat_non_root", "☎️ Non-Root Mobile", "primary"),
+        ("cat_root", "🔓 Root Mobile", "primary"),
+        ("cat_ios", "🍏 iOS Panels", "primary"),
+        ("cat_pc", "💻 PC Panels", "primary"),
+        ("cat_likes", "🆔 8 Level ID", "primary"),
+        ("product_item", "Product buttons (every product in a category)", ""),
+        ("plan_item", "Plan / duration buttons (🕒 1 Day | ₹50)", "success"),
+        ("preview_video", "🎥 Preview Video", "primary"),
+        ("open_shop", "🛒 Open Shop", "success"),
+    ]),
+    ("💳 Add Balance & Payment", [
+        ("pay_upi", "💳 Pay via UPI", "success"),
+        ("preset_amount", "₹100 / ₹500 / ₹1000 / ₹2000 buttons", "primary"),
+        ("custom_amount", "✏️ Custom Amount", "primary"),
+        ("np_digit", "Number pad digits 0-9", ""),
+        ("np_clear", "Number pad: C (clear)", "danger"),
+        ("np_backspace", "Number pad: ⌫ (backspace)", ""),
+        ("np_confirm", "Number pad: ✅ Confirm", "success"),
+        ("paid", "✅ I have paid", "success"),
+        ("cancel_payment", "❌ Cancel Payment", "danger"),
+        ("paid_not_credited", "💬 I paid but wasn't credited", "primary"),
+    ]),
+    ("👤 Profile, Reseller & Support", [
+        ("profile_upgrade", "👑 Upgrade To Reseller", "success"),
+        ("reseller_buy", "Buy Reseller Plan", "success"),
+        ("reseller_add_balance", "💰 Add Balance (reseller screen)", "success"),
+        ("view_profile", "👤 View Profile", "primary"),
+        ("support_contact", "💬 Contact Support", "success"),
+    ]),
+    ("🎰 Lucky Spin", [
+        ("spin_now", "🍯 Spin Now! (FREE)", "success"),
+        ("spin_shop", "🛒 Shop Now — Use ₹X", "primary"),
+    ]),
+    ("🔑 After Purchase (key card)", [
+        ("update_file", "📥 Update File", "primary"),
+    ]),
+    ("↩️ Navigation", [
+        ("back", "🔜 Back (all Back / Back to Plans buttons)", ""),
+        ("back_menu", "➡️ Back to Menu", ""),
+    ]),
+    ("🛡️ Admin alerts (owner only)", [
+        ("admin_approve", "✅ Approve payment", "success"),
+        ("admin_reject", "❌ Reject payment", "danger"),
+    ]),
+]
+MENU_BUTTONS = {k: (label, default) for _g, items in BUTTON_GROUPS for k, label, default in items}
 BUTTON_COLORS = ("primary", "success", "danger")
 
 
@@ -955,3 +1003,4 @@ def init_db():
         )
     db.init_db()
     return db
+
