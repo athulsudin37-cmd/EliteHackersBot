@@ -7,6 +7,7 @@ import re
 import random
 import urllib.parse
 import html
+import io
 from threading import Thread
 from datetime import datetime, timedelta
 import pytz
@@ -316,6 +317,15 @@ def build_key_card(prod_name, plan_name, key, balance):
     )
 
 
+def build_out_of_stock_notice(prod_name, plan_name, amount):
+    return (
+        "⚠️ <b>Out of Stock</b>\n\n"
+        f"<b>{_esc(prod_name)}</b> ({_esc(plan_name.replace('_', ' '))}) has no stock right now.\n"
+        f"🛡️ Your money is safe — <b>₹{amount:,.2f}</b> has been added to your wallet.\n"
+        "You can buy it as soon as it is restocked."
+    )
+
+
 def build_pending_notice(prod_name, plan_name):
     return (
         "✅ <b>Payment Verified &amp; Received!</b>\n\n"
@@ -433,7 +443,7 @@ def settle_payment(order_id, from_statuses, utr, via="auto"):
     if row.get("is_deficit") and row.get("prod_key") and row.get("plan"):
         try:
             outcome["purchase"] = purchase_with_wallet(
-                user_id, row["prod_key"], row["plan"], allow_pending=True, utr="UPI_DEFICIT"
+                user_id, row["prod_key"], row["plan"], allow_pending=False, utr="UPI_DEFICIT"
             )
         except Exception:
             logger.exception("Purchase after verified payment failed (wallet stays credited)")
@@ -456,6 +466,9 @@ def notify_settlement(outcome):
         text = build_key_card(purchase["prod"]["name"], row["plan"], purchase["key"], purchase["balance"])
         if valid_url(purchase["prod"].get("download_link")):
             buttons.insert(0, [tg_button("📥 Update File ↗️", "update_file", url=purchase["prod"]["download_link"])])
+    elif purchase and purchase["status"] in ("out_of_stock", "unavailable"):
+        text = build_out_of_stock_notice(purchase["prod"]["name"], row["plan"], amount)
+        admin_note = "\n⚠️ Out of stock: the amount was added to the customer's wallet."
     elif purchase and purchase["status"] == "pending":
         text = build_pending_notice(purchase["prod"]["name"], row["plan"])
         admin_note = "\n⚠️ Out of stock: dispatch the key from <b>Pending Keys Queue</b> in the admin panel."
@@ -1305,6 +1318,69 @@ async def preset_dep_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     amt = float(update.callback_query.data.replace("preset_dep_", ""))
     await generate_deposit_qr(update, context, amt)
 
+# ----------------------------------------------------------------------
+# 🖼️ Clean UPI QR image (white background, big, UPI badge in the middle)
+# Needs the optional package  qrcode[pil]  (add it to requirements.txt).
+# Without it the bot automatically falls back to the online QR service.
+# ----------------------------------------------------------------------
+try:
+    import qrcode
+    from qrcode.constants import ERROR_CORRECT_H
+    from PIL import Image, ImageDraw, ImageFont
+    _QR_LOCAL = True
+except Exception:  # package not installed -> use the fallback URL
+    _QR_LOCAL = False
+
+
+def _qr_font(size):
+    for path in (
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+        "DejaVuSans-Bold.ttf",
+    ):
+        try:
+            return ImageFont.truetype(path, size)
+        except Exception:
+            continue
+    try:
+        return ImageFont.load_default(size=size)
+    except Exception:
+        return ImageFont.load_default()
+
+
+def build_upi_qr_png(upi_uri):
+    """Return PNG bytes of a large black-on-white QR with a small UPI badge in the centre."""
+    qr = qrcode.QRCode(error_correction=ERROR_CORRECT_H, box_size=10, border=4)
+    qr.add_data(upi_uri)
+    qr.make(fit=True)
+    modules = qr.modules_count + 8
+    qr.box_size = max(10, 960 // modules)
+    img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+
+    w, h = img.size
+    d = int(w * 0.20)                      # badge covers ~4% of the code (safe with level H)
+    badge = Image.new("RGB", (d, d), "white")
+    draw = ImageDraw.Draw(badge)
+    draw.rounded_rectangle((2, 2, d - 3, d - 3), radius=d // 6, fill="white", outline="#1f2937", width=max(2, d // 28))
+    # two small arrows (orange + green) like the UPI mark, with the text below
+    a = d // 6
+    top = d // 5
+    draw.polygon([(d // 2 - a * 2, top), (d // 2 - a // 2, top), (d // 2 + a // 2, top + a * 2), (d // 2 - a, top + a * 2)], fill="#f97316")
+    draw.polygon([(d // 2 - a // 2, top), (d // 2 + a * 2, top), (d // 2 + a, top + a * 2), (d // 2 + a // 2, top + a * 2)], fill="#16a34a")
+    font = _qr_font(max(10, d // 4))
+    text = "UPI"
+    try:
+        tw = draw.textlength(text, font=font)
+    except Exception:
+        tw = d // 2
+    draw.text(((d - tw) / 2, d - d // 3 - d // 12), text, fill="#1f2937", font=font)
+    img.paste(badge, ((w - d) // 2, (h - d) // 2))
+
+    out = io.BytesIO()
+    img.save(out, format="PNG", optimize=True)
+    return out.getvalue()
+
+
 # 📷 Dynamic QR Generator with auto expiry (minutes set in the admin panel)
 async def generate_deposit_qr(update: Update, context: ContextTypes.DEFAULT_TYPE, amount: float,
                               is_deficit=False, prod_name=None, plan_name=None, prod_key=None):
@@ -1348,16 +1424,29 @@ async def generate_deposit_qr(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     upi_uri = f"upi://pay?pa={upi_id}&pn={urllib.parse.quote(payee_name, safe='')}&am={pay_amount:.2f}&cu=INR&tn={order_id}"
-    qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=500x500&data={urllib.parse.quote(upi_uri)}"
+    # Fallback image (used only if the local generator is not available): big, white background.
+    qr_url = (
+        "https://api.qrserver.com/v1/create-qr-code/?size=800x800&margin=30&ecc=H&bgcolor=ffffff&color=000000"
+        f"&data={urllib.parse.quote(upi_uri)}"
+    )
+    qr_photo = qr_url
+    if _QR_LOCAL:
+        try:
+            qr_photo = io.BytesIO(await asyncio.to_thread(build_upi_qr_png, upi_uri))
+            qr_photo.name = "payment_qr.png"
+        except Exception:
+            logger.exception("Local QR generation failed - using the online QR service")
+            qr_photo = qr_url
 
     if auto_on:
         how_to = (
-            f"⚠️ Pay the <b>exact amount ₹{pay_amount:,.2f}</b> (with the paise) so it can be matched.\n"
-            "✅ Your payment is <b>confirmed automatically</b>. Tap <b>I have paid</b> once after paying and "
-            "I will check every 5 seconds — or just wait, it is detected without the button too."
+            f"Scan &amp; pay exactly <b>₹{pay_amount:,.2f}</b> via any UPI app.\n\n"
+            "Your balance updates <b>automatically</b> the moment payment is confirmed — "
+            "no button tap needed."
         )
     else:
         how_to = (
+            f"Scan &amp; pay exactly <b>₹{pay_amount:,.2f}</b> via any UPI app.\n\n"
             "After paying, tap <b>✅ I have paid</b>. "
             "It is confirmed as soon as the admin approves the payment."
         )
@@ -1366,20 +1455,18 @@ async def generate_deposit_qr(update: Update, context: ContextTypes.DEFAULT_TYPE
         u_data = db_get_user(user_id)
         bal = u_data[4] if u_data else 0.0
         caption = (
-            f"🛒 <b>{html.escape(prod_name or '')} — {html.escape((plan_name or '').replace('_', ' '))}</b>\n\n"
-            f"💰 Balance: ₹{bal:,.2f} | Price: ₹{(bal + amount):,.2f}\n"
-            f"💸 Scan & pay <b>₹{pay_amount:,.2f}</b> to complete this purchase.\n\n"
+            f"🛒 <b>{html.escape(prod_name or '')} — {html.escape((plan_name or '').replace('_', ' '))}</b>\n"
+            f"💰 Balance: ₹{bal:,.2f}  |  Price: ₹{(bal + amount):,.2f}\n\n"
             f"{how_to}\n\n"
-            f"🆔 Order:\n<code>{order_id}</code>\n\n"
-            f"⏰ <b>This QR expires in {qr_minutes_txt} if payment isn't completed.</b>"
+            f"⏰ <b>This QR expires in {qr_minutes_txt} if payment isn't completed.</b>\n"
+            f"🆔 <code>{order_id}</code>"
         )
     else:
         caption = (
-            f"🎟️ <b>{method} — ₹{pay_amount:,.2f}</b>\n\n"
-            f"💰 Amount: <b>₹{pay_amount:,.2f}</b>\n"
-            f"🆔 Order:\n<code>{order_id}</code>\n\n"
+            f"💵 <b>Add Balance — ₹{amount:,.2f}</b>\n\n"
             f"{how_to}\n\n"
-            f"⏰ <b>This QR expires in {qr_minutes_txt} if payment isn't completed.</b>"
+            f"⏰ <b>This QR expires in {qr_minutes_txt} if payment isn't completed.</b>\n"
+            f"🆔 <code>{order_id}</code>"
         )
 
     keyboard = [
@@ -1392,13 +1479,28 @@ async def generate_deposit_qr(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception:
         pass
 
-    qr_msg = await context.bot.send_photo(
-        chat_id=chat_id,
-        photo=qr_url,
-        caption=caption,
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    try:
+        qr_msg = await context.bot.send_photo(
+            chat_id=chat_id,
+            photo=qr_photo,
+            caption=caption,
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    except Exception:
+        logger.exception("Sending the QR photo failed for %s - retrying with the online QR", order_id)
+        try:
+            qr_msg = await context.bot.send_photo(
+                chat_id=chat_id, photo=qr_url, caption=caption,
+                parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        except Exception:
+            logger.exception("QR fallback failed for %s - sending UPI details as text", order_id)
+            qr_msg = await context.bot.send_message(
+                chat_id=chat_id,
+                text=caption + f"\n\n💳 UPI ID: <code>{html.escape(upi_id)}</code>\n💰 Amount: <b>₹{pay_amount:,.2f}</b>",
+                parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard)
+            )
     try:
         db.set_payment_message(order_id, qr_msg.chat_id, qr_msg.message_id)
     except Exception:
@@ -1635,7 +1737,7 @@ async def admin_payment_decision(update: Update, context: ContextTypes.DEFAULT_T
     notice = f"✅ <b>Payment Verified Successfully!</b>\n₹{amount:,.2f} has been added to your wallet."
     try:
         if row.get("is_deficit") and row.get("prod_key") and row.get("plan"):
-            res = purchase_with_wallet(user_id, row["prod_key"], row["plan"], allow_pending=True, utr="UPI_DEFICIT")
+            res = purchase_with_wallet(user_id, row["prod_key"], row["plan"], allow_pending=False, utr="UPI_DEFICIT")
             status = res["status"]
             if status == "ok":
                 await context.bot.send_message(
@@ -1643,6 +1745,14 @@ async def admin_payment_decision(update: Update, context: ContextTypes.DEFAULT_T
                     text=build_key_card(res["prod"]["name"], row["plan"], res["key"], res["balance"]),
                     parse_mode="HTML",
                     reply_markup=key_card_keyboard(res["prod"])
+                )
+            elif status in ("out_of_stock", "unavailable"):
+                note += "\n⚠️ Out of stock: the amount was added to the customer's wallet."
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=build_out_of_stock_notice(res["prod"]["name"], row["plan"], amount),
+                    parse_mode="HTML",
+                    reply_markup=back_to_menu_markup()
                 )
             elif status == "pending":
                 note += "\n⚠️ Out of stock: key is in the <b>Pending Keys Queue</b>. Dispatch it from the admin panel."
