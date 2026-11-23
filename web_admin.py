@@ -9,7 +9,7 @@ from datetime import timedelta, timezone
 from threading import Thread
 from flask import Flask, render_template_string, request, jsonify, redirect, session
 
-from database import db, init_db, parse_prices, MENU_BUTTONS, BUTTON_COLORS
+from database import db, init_db, parse_prices, MENU_BUTTONS, BUTTON_GROUPS, BUTTON_COLORS
 # Filled in by main.py at start-up (the payment logic lives in main.py).
 parse_sms = None
 gmail_status = None
@@ -76,7 +76,7 @@ Thread(target=refresh_bot_meta, daemon=True).start()
 # ==========================================
 ADMIN_HTML = """
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-bs-theme="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -86,13 +86,19 @@ ADMIN_HTML = """
     <style>
         :root {
             --bg-deep: #080318;
-            --card-glass: rgba(22, 13, 44, 0.94);
-            --neon-border: rgba(147, 51, 234, 0.35);
-            --sidebar-w: 270px;
+            --card-glass: rgba(24, 14, 52, 0.95);
+            --neon-border: rgba(147, 51, 234, 0.38);
+            --sidebar-w: 290px;
+            --txt: #eef2ff;
+            --txt-soft: #b4bdd9;
+            --bs-body-color: #eef2ff;
+            --bs-body-bg: #080318;
+            --bs-border-color: rgba(147, 51, 234, 0.38);
         }
+        * { -webkit-tap-highlight-color: transparent; }
         body {
             background: radial-gradient(circle at top center, #1b0c3f 0%, #0c051d 60%, #05020c 100%);
-            background-attachment: fixed; color: #f8fafc; font-family: -apple-system, system-ui, sans-serif;
+            background-attachment: fixed; color: var(--txt); font-family: -apple-system, system-ui, 'Segoe UI', Roboto, sans-serif;
             min-height: 100vh; margin: 0; overflow-x: hidden;
         }
         body::before {
@@ -101,7 +107,23 @@ ADMIN_HTML = """
             background-size: 36px 36px; pointer-events: none; z-index: 0;
         }
 
-        /* 🔐 SCREENSHOT-EXACT CYBER LOGIN */
+        /* ✅ READABILITY FIX: every text inside cards, tables, labels and inputs is light on dark */
+        .card, .card h1, .card h2, .card h3, .card h4, .card h5, .card h6, .card label, .card p, .card td, .card th,
+        .modal-card, .modal-card label, .modal-card h5, .modal-card h6, .table, .table td, .table th { color: var(--txt); }
+        .card { --bs-card-color: var(--txt); --bs-card-bg: transparent; }
+        .text-muted, .small.text-muted, label.small, .form-text { color: var(--txt-soft) !important; }
+        .table { --bs-table-color: var(--txt); --bs-table-bg: transparent; --bs-table-border-color: rgba(147,51,234,.25); --bs-table-striped-bg: rgba(255,255,255,.03); }
+        .table > :not(caption) > * > * { background-color: transparent; color: var(--txt); }
+        .table thead th { color: #c4b5fd; font-size: .78rem; letter-spacing: .04em; text-transform: uppercase; }
+        .form-control, .form-select { background-color: #0d0622; border: 1px solid var(--neon-border); color: #fff; border-radius: 12px; padding: 11px 13px; }
+        .form-control:focus, .form-select:focus { background-color: #0d0622; color: #fff; border-color: #a855f7; box-shadow: 0 0 0 3px rgba(168,85,247,.2); }
+        .form-control::placeholder { color: #8d96b5; opacity: 1; }
+        .form-select option { background: #13072e; color: #fff; }
+        code { color: #f9a8d4; }
+        a { color: #7dd3fc; }
+        .form-check-input { border-color: #a78bfa; }
+
+        /* 🔐 LOGIN */
         .login-box { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; position: relative; z-index: 10; }
         .login-card { background: var(--card-glass); backdrop-filter: blur(25px); border: 1px solid var(--neon-border); border-radius: 28px; padding: 42px 32px; width: 100%; max-width: 400px; text-align: center; box-shadow: 0 0 50px rgba(139, 92, 246, 0.25); }
         .avatar-ring { width: 88px; height: 88px; margin: 0 auto 20px; border-radius: 50%; padding: 3px; background: linear-gradient(135deg, #06b6d4, #a855f7, #f59e0b); display: flex; align-items: center; justify-content: center; }
@@ -112,26 +134,95 @@ ADMIN_HTML = """
         .eye-btn { position: absolute; right: 15px; top: 50%; transform: translateY(-50%); color: #a78bfa; cursor: pointer; }
         .btn-unlock { width: 100%; padding: 13px; border: none; border-radius: 14px; background: linear-gradient(135deg, #7c3aed, #6366f1); color: white; font-weight: 700; cursor: pointer; }
 
-        /* 💻 DASHBOARD LAYOUT */
-        .sidebar { position: fixed; top: 0; left: -270px; width: var(--sidebar-w); height: 100vh; background: #0f0724; border-right: 1px solid var(--neon-border); padding-top: 20px; z-index: 1050; transition: 0.3s; overflow-y: auto; }
-        .sidebar.active { left: 0; }
-        .sidebar-link { padding: 12px 20px; color: #94a3b8; display: flex; align-items: center; gap: 12px; cursor: pointer; text-decoration: none; border-left: 4px solid transparent; }
-        .sidebar-link:hover, .sidebar-link.active { background: #1a0b3b; color: #38bdf8; border-left-color: #38bdf8; }
-        .main-content { padding: 25px; transition: 0.3s; position: relative; z-index: 10; }
-        @media (min-width: 769px) { .sidebar { left: 0; } .main-content { margin-left: var(--sidebar-w); } }
-        
-        .stat-card { background: var(--card-glass); border: 1px solid var(--neon-border); border-radius: 16px; padding: 20px; border-left: 4px solid #8b5cf6; }
-        .card { background: var(--card-glass); border: 1px solid var(--neon-border); border-radius: 18px; margin-bottom: 20px; }
-        .btn-custom { background: linear-gradient(135deg, #7c3aed, #6366f1); color: white; border: none; border-radius: 10px; padding: 10px 18px; font-weight: 600; }
-        .form-control, .form-select { background-color: #0d0622; border: 1px solid var(--neon-border); color: white; border-radius: 10px; padding: 10px; }
-        .form-control:focus { background-color: #0d0622; color: white; border-color: #a855f7; box-shadow: none; }
-        
+        /* 💻 LAYOUT + DRAWER SIDEBAR */
+        .sidebar { position: fixed; top: 0; left: calc(-1 * var(--sidebar-w) - 20px); width: var(--sidebar-w); height: 100vh; background: linear-gradient(180deg, #14082e, #0b0420); border-right: 1px solid var(--neon-border); padding: 18px 14px 30px; z-index: 1060; transition: left .28s ease; overflow-y: auto; }
+        .sidebar.active { left: 0; box-shadow: 12px 0 40px rgba(0,0,0,.6); }
+        .sb-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.6); backdrop-filter: blur(3px); z-index: 1055; opacity: 0; pointer-events: none; transition: opacity .25s; }
+        .sb-overlay.show { opacity: 1; pointer-events: auto; }
+        .sb-brand { display: flex; align-items: center; gap: 10px; padding: 4px 8px 16px; border-bottom: 1px solid var(--neon-border); margin-bottom: 14px; font-weight: 800; color: #a78bfa; font-size: 1.1rem; }
+        .sb-link { display: flex; align-items: center; gap: 14px; padding: 9px 10px; margin-bottom: 6px; border-radius: 16px; color: #dbe3ff; font-weight: 600; cursor: pointer; text-decoration: none; border: 1px solid transparent; }
+        .sb-link:hover { background: rgba(124,58,237,.15); color: #fff; }
+        .sb-link.active { background: linear-gradient(135deg, rgba(124,58,237,.55), rgba(99,102,241,.35)); border-color: #8b5cf6; color: #fff; }
+        .sb-ic { width: 46px; height: 46px; border-radius: 14px; display: flex; align-items: center; justify-content: center; font-size: 1.35rem; flex-shrink: 0; box-shadow: inset 0 0 0 1px rgba(255,255,255,.12); }
+        .g1 { background: linear-gradient(135deg, #7c3aed, #c026d3); } .g2 { background: linear-gradient(135deg, #1d4ed8, #3b82f6); }
+        .g3 { background: linear-gradient(135deg, #0f766e, #14b8a6); } .g4 { background: linear-gradient(135deg, #b45309, #f59e0b); }
+        .g5 { background: linear-gradient(135deg, #0e7490, #22d3ee); } .g6 { background: linear-gradient(135deg, #9d174d, #ec4899); }
+        .g7 { background: linear-gradient(135deg, #4338ca, #818cf8); } .g8 { background: linear-gradient(135deg, #b91c1c, #f87171); }
+        .main-content { padding: 18px 16px 60px; position: relative; z-index: 10; max-width: 1100px; }
+        @media (min-width: 769px) { .sidebar { left: 0; } .sb-overlay { display: none; } .main-content { margin-left: var(--sidebar-w); padding: 25px; } }
+
+        .topbar { display: flex; align-items: center; justify-content: space-between; padding: 6px 0 16px; margin-bottom: 18px; border-bottom: 1px solid var(--neon-border); }
+        .menu-btn { width: 56px; height: 56px; border-radius: 18px; background: rgba(40,20,90,.7); border: 1px solid var(--neon-border); color: #a78bfa; font-size: 1.4rem; }
+        .crown-ring { width: 56px; height: 56px; border-radius: 50%; padding: 3px; background: linear-gradient(135deg, #f59e0b, #ec4899, #8b5cf6); display: flex; }
+        .crown-ring span { flex: 1; border-radius: 50%; background: #0d0622; display: flex; align-items: center; justify-content: center; font-size: 1.5rem; }
+
+        .hero-card { background: linear-gradient(135deg, #2a1466, #120832); border: 1px solid var(--neon-border); border-radius: 26px; padding: 26px 24px; margin-bottom: 22px; box-shadow: 0 10px 40px rgba(88,28,135,.35); }
+        .hero-kicker { color: #a78bfa; font-weight: 800; letter-spacing: .06em; font-size: .85rem; }
+        .hero-card h2 { font-weight: 800; margin: 6px 0 8px; color: #fff; }
+        .hero-card p { color: var(--txt-soft); margin: 0; }
+        .stat-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin-bottom: 22px; }
+        @media (min-width: 769px) { .stat-grid { grid-template-columns: repeat(4, 1fr); } }
+        .stat-card { background: var(--card-glass); border: 1px solid var(--neon-border); border-left: 5px solid #8b5cf6; border-radius: 22px; padding: 18px 18px 16px; min-height: 150px; }
+        .stat-card .si { font-size: 1.9rem; margin-bottom: 6px; }
+        .stat-card .sv { font-size: 2rem; font-weight: 800; color: #fff; line-height: 1.1; word-break: break-word; }
+        .stat-card .sl { color: var(--txt-soft); font-size: .82rem; letter-spacing: .05em; text-transform: uppercase; margin-top: 8px; }
+        .c-green { border-left-color: #10b981; } .c-blue { border-left-color: #38bdf8; } .c-gold { border-left-color: #facc15; } .c-cyan { border-left-color: #22d3ee; } .c-pink { border-left-color: #f472b6; }
+
+        .quick-box { background: var(--card-glass); border: 1px solid var(--neon-border); border-top: 4px solid #8b5cf6; border-radius: 26px; padding: 24px 20px; margin-bottom: 20px; }
+        .quick-box h5 { color: #a78bfa; font-weight: 800; margin-bottom: 16px; }
+        .qa { display: flex; align-items: center; gap: 14px; width: 100%; text-align: left; margin-bottom: 12px; padding: 16px 18px; border-radius: 20px; background: linear-gradient(135deg, rgba(88,50,180,.45), rgba(40,20,100,.55)); border: 1px solid rgba(139,92,246,.55); color: #fff; font-weight: 700; font-size: 1.02rem; }
+        .qa:active { transform: scale(.985); }
+        .qa .qi { font-size: 1.5rem; }
+        .bot-link { color: var(--txt-soft); margin-top: 6px; }
+
+        .page-head { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; }
+        .ph-ic { width: 66px; height: 66px; border-radius: 20px; background: rgba(60,30,140,.6); border: 1px solid var(--neon-border); display: flex; align-items: center; justify-content: center; font-size: 2rem; flex-shrink: 0; }
+        .page-head h3 { margin: 0; font-weight: 800; color: #fff; }
+        .page-head p { margin: 2px 0 0; color: var(--txt-soft); }
+        .sec-title { color: #38bdf8; font-weight: 800; margin: 0; }
+        .btn-grad { background: linear-gradient(135deg, #8b5cf6, #6366f1); color: #fff; border: none; border-radius: 14px; padding: 11px 18px; font-weight: 700; box-shadow: 0 6px 20px rgba(99,102,241,.4); }
+        .btn-custom { background: linear-gradient(135deg, #7c3aed, #6366f1); color: white; border: none; border-radius: 12px; padding: 10px 18px; font-weight: 600; }
+        .btn-custom:hover { color: #fff; filter: brightness(1.1); }
+
+        .prod-wrap { background: var(--card-glass); border: 1px solid var(--neon-border); border-radius: 26px; padding: 16px; margin-bottom: 18px; }
+        .prod-card { background: linear-gradient(135deg, #2a1466 0%, #3a1650 100%); border: 1px solid rgba(139,92,246,.5); border-radius: 22px; padding: 22px 20px; }
+        .prod-icon { width: 62px; height: 52px; border-radius: 14px; background: linear-gradient(135deg, #fbbf24, #f97316); display: flex; align-items: center; justify-content: center; font-size: 1.7rem; margin-bottom: 18px; }
+        .prod-label { color: var(--txt-soft); font-size: .78rem; letter-spacing: .1em; }
+        .prod-name { font-size: 1.45rem; font-weight: 800; color: #fff; }
+        .prod-meta { color: var(--txt-soft); font-size: .86rem; margin: 6px 0 14px; line-height: 1.7; }
+        .status { font-weight: 800; font-size: .88rem; letter-spacing: .05em; white-space: nowrap; }
+        .st-ok { color: #34d399; } .st-maint { color: #fbbf24; } .st-off { color: #f87171; }
+        .pa { display: inline-flex; align-items: center; gap: 8px; padding: 10px 16px; margin: 0 8px 10px 0; border-radius: 14px; background: rgba(20,10,50,.6); border: 1px solid rgba(139,92,246,.5); color: #fff; font-weight: 700; }
+        .pa.del { background: rgba(120,20,60,.35); border-color: #e11d48; color: #fda4af; }
+
         .gold-box { border: 1px solid rgba(250, 204, 21, 0.4); border-radius: 16px; padding: 20px; background: rgba(22, 13, 44, 0.95); margin-bottom: 20px; }
         .cyan-box { border: 1px solid rgba(56, 189, 248, 0.4); border-radius: 16px; padding: 20px; background: rgba(22, 13, 44, 0.95); margin-bottom: 20px; }
-        
-        .modal-bg { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0, 0, 0, 0.8); backdrop-filter: blur(10px); z-index: 2000; display: none; align-items: center; justify-content: center; padding: 20px; }
-        .modal-card { background: #13072e; border: 1px solid #8b5cf6; border-radius: 24px; padding: 30px; width: 100%; max-width: 600px; max-height: 90vh; overflow-y: auto; box-shadow: 0 0 50px rgba(139, 92, 246, 0.4); }
-    </style>
+        .card { background: var(--card-glass); border: 1px solid var(--neon-border); border-radius: 20px; margin-bottom: 20px; }
+
+        .modal-bg { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0, 0, 0, 0.8); backdrop-filter: blur(10px); z-index: 2000; display: none; align-items: flex-start; justify-content: center; padding: 20px 14px; overflow-y: auto; }
+        .modal-card { background: linear-gradient(160deg, #1f0f4d, #120730); border: 1px solid #8b5cf6; border-radius: 26px; padding: 24px 20px; width: 100%; max-width: 620px; margin: auto; box-shadow: 0 0 50px rgba(139, 92, 246, 0.4); }
+        .modal-card h5 { color: #c4b5fd; font-weight: 800; }
+        .plan-row { position: relative; border: 1px solid rgba(139,92,246,.5); border-radius: 18px; padding: 14px; margin-bottom: 12px; background: rgba(10,4,30,.55); }
+        .plan-x { position: absolute; top: -10px; right: -6px; width: 28px; height: 28px; border-radius: 50%; border: 1px solid #e11d48; background: #3b0a1f; color: #fda4af; font-size: .8rem; line-height: 1; }
+
+        .bc-group { background: var(--card-glass); border: 1px solid var(--neon-border); border-radius: 20px; margin-bottom: 14px; overflow: hidden; }
+        .bc-group > summary { list-style: none; cursor: pointer; padding: 16px 18px; font-weight: 800; color: #fff; display: flex; justify-content: space-between; align-items: center; }
+        .bc-group > summary::-webkit-details-marker { display: none; }
+        .bc-group[open] > summary { border-bottom: 1px solid var(--neon-border); background: rgba(124,58,237,.18); }
+        .bc-count { color: var(--txt-soft); font-weight: 600; font-size: .82rem; }
+        .bc-all { display: flex; align-items: center; gap: 10px; padding: 12px 18px; background: rgba(0,0,0,.18); border-bottom: 1px solid rgba(147,51,234,.2); color: var(--txt-soft); font-size: .85rem; }
+        .bc-row { padding: 14px 18px; border-bottom: 1px solid rgba(147,51,234,.15); }
+        .bc-row:last-child { border-bottom: none; }
+        .bc-prev { display: block; text-align: center; padding: 11px 12px; border-radius: 10px; font-weight: 700; color: #fff; margin-bottom: 10px; }
+        .s-none { background: #3a4052; } .s-primary { background: #2f7de1; } .s-success { background: #2e9b44; } .s-danger { background: #c9424a; }
+        .sw-wrap { display: flex; gap: 10px; align-items: center; }
+        .sw { width: 38px; height: 38px; border-radius: 50%; border: 3px solid transparent; cursor: pointer; box-shadow: 0 0 0 1px rgba(255,255,255,.2); }
+        .sw.on { border-color: #fff; box-shadow: 0 0 0 3px rgba(167,139,250,.8); }
+        .sw.s-none { background: #5b6378; }
+        .badge-st { padding: 4px 10px; border-radius: 10px; font-size: .75rem; font-weight: 700; }
+        .b-verified { background: rgba(16,185,129,.2); color: #6ee7b7; } .b-pending, .b-awaiting_approval { background: rgba(250,204,21,.2); color: #fde68a; }
+        .b-rejected, .b-cancelled, .b-expired { background: rgba(248,113,113,.2); color: #fca5a5; }
+</style>
 </head>
 <body>
 
@@ -169,29 +260,26 @@ ADMIN_HTML = """
     {% else %}
 
     <!-- 🌟 SIDEBAR DRAWER -->
+    <div class="sb-overlay" id="sbOverlay" onclick="toggleSidebar(false)"></div>
     <div class="sidebar" id="sidebar">
-        <div class="px-3 pb-3 border-bottom border-secondary d-flex align-items-center gap-2">
-            <span class="fs-4">⚡</span>
-            <strong class="text-info">{{ bot_info.name }}</strong>
-        </div>
-        <div class="mt-3">
-            <a class="sidebar-link active" onclick="showTab('dashboard', this)"><i class="fas fa-chart-line"></i> Dashboard</a>
-            <a class="sidebar-link" onclick="showTab('products', this)"><i class="fas fa-boxes-stacked"></i> Manage Product</a>
-            <a class="sidebar-link" onclick="showTab('keys', this)"><i class="fas fa-key"></i> Manage Keys</a>
-            <a class="sidebar-link" onclick="showTab('pending_keys', this)"><i class="fas fa-clock"></i> Pending Keys Queue</a>
-            <a class="sidebar-link" onclick="showTab('id_stock', this)"><i class="fas fa-id-badge"></i> ID Stock</a>
-            <a class="sidebar-link" onclick="showTab('members', this)"><i class="fas fa-users"></i> Members & Wallets</a>
-            <a class="sidebar-link" onclick="showTab('resellers', this)"><i class="fas fa-handshake"></i> Resellers</a>
-            <a class="sidebar-link" onclick="showTab('broadcast', this)"><i class="fas fa-bullhorn"></i> Broadcast</a>
-            <a class="sidebar-link" onclick="showTab('coupons', this)"><i class="fas fa-ticket"></i> Coupon Manager</a>
-            <a class="sidebar-link" onclick="showTab('upi', this)"><i class="fas fa-credit-card"></i> UPI Payment Setup</a>
-            <a class="sidebar-link" onclick="showTab('topups', this)"><i class="fas fa-wallet"></i> Top-ups Queue</a>
-            <a class="sidebar-link" onclick="showTab('links', this)"><i class="fas fa-link"></i> Product Links</a>
-            <a class="sidebar-link" onclick="showTab('security', this)"><i class="fas fa-shield-halved"></i> Security & Sessions</a>
-            <a class="sidebar-link" onclick="showTab('store', this)"><i class="fas fa-sliders"></i> Store Settings</a>
-            <a class="sidebar-link" onclick="showTab('btncolors', this)"><i class="fas fa-palette"></i> Button Colors</a>
-            <a href="/logout" class="sidebar-link text-danger mt-4"><i class="fas fa-lock"></i> Logout</a>
-        </div>
+        <div class="sb-brand"><span style="font-size:1.4rem;">⚡</span><span>{{ bot_info.name }}</span></div>
+        <a class="sb-link active" data-tab="dashboard" onclick="showTab('dashboard', this)"><span class="sb-ic g1">📈</span> Dashboard</a>
+        <a class="sb-link" data-tab="products" onclick="showTab('products', this)"><span class="sb-ic g2">📦</span> Manage Product</a>
+        <a class="sb-link" data-tab="keys" onclick="showTab('keys', this)"><span class="sb-ic g3">📜</span> Key Delivery Logs</a>
+        <a class="sb-link" data-tab="keystock" onclick="showTab('keystock', this)"><span class="sb-ic g4">🔑</span> Manage Keys</a>
+        <a class="sb-link" data-tab="pending_keys" onclick="showTab('pending_keys', this)"><span class="sb-ic g8">⏳</span> Pending Keys Queue</a>
+        <a class="sb-link" data-tab="id_stock" onclick="showTab('id_stock', this)"><span class="sb-ic g4">🆔</span> ID Stock</a>
+        <a class="sb-link" data-tab="links" onclick="showTab('links', this)"><span class="sb-ic g2">🔗</span> Product Links</a>
+        <a class="sb-link" data-tab="members" onclick="showTab('members', this)"><span class="sb-ic g6">👥</span> Members &amp; Wallets</a>
+        <a class="sb-link" data-tab="resellers" onclick="showTab('resellers', this)"><span class="sb-ic g5">🤝</span> Resellers</a>
+        <a class="sb-link" data-tab="topups" onclick="showTab('topups', this)"><span class="sb-ic g8">💳</span> Top-ups</a>
+        <a class="sb-link" data-tab="upi" onclick="showTab('upi', this)"><span class="sb-ic g3">💳</span> UPI Payment Setup</a>
+        <a class="sb-link" data-tab="broadcast" onclick="showTab('broadcast', this)"><span class="sb-ic g8">📢</span> Broadcast</a>
+        <a class="sb-link" data-tab="coupons" onclick="showTab('coupons', this)"><span class="sb-ic g4">🎟️</span> Coupon Manager</a>
+        <a class="sb-link" data-tab="btncolors" onclick="showTab('btncolors', this)"><span class="sb-ic g1">🎨</span> Button Colors</a>
+        <a class="sb-link" data-tab="store" onclick="showTab('store', this)"><span class="sb-ic g7">⚙️</span> Store Settings</a>
+        <a class="sb-link" data-tab="security" onclick="showTab('security', this)"><span class="sb-ic g7">🛡️</span> Security &amp; Sessions</a>
+        <a href="/logout" class="sb-link" style="color:#fca5a5;margin-top:10px;"><span class="sb-ic g8">🔒</span> Logout</a>
     </div>
 
     <!-- 🌟 1. CUSTOMER PROFILE INSPECTOR MODAL -->
@@ -235,82 +323,117 @@ ADMIN_HTML = """
     </div>
 
     <div class="main-content">
-        <div class="d-flex justify-content-between align-items-center mb-4">
+        <div class="topbar">
             <div class="d-flex align-items-center gap-3">
-                <button class="btn btn-dark d-md-none" onclick="document.getElementById('sidebar').classList.toggle('active')"><i class="fas fa-bars"></i></button>
-                <h4 class="fw-bold m-0 title-grad">Bot Control Center</h4>
+                <button class="menu-btn d-md-none" id="menuBtn" onclick="toggleSidebar()"><i id="menuIcon" class="fas fa-bars"></i></button>
+                <div class="title-grad" style="font-size:1.5rem;">⚡ Bot Control Center</div>
             </div>
-            <a href="/logout" class="btn btn-outline-danger btn-sm"><i class="fas fa-arrow-right-from-bracket"></i></a>
+            <a href="/" class="crown-ring" title="Home"><span>👑</span></a>
         </div>
 
         <!-- 1️⃣ 📊 TAB: DASHBOARD -->
         <div class="tab-pane-content" id="tab-dashboard">
-            <div class="card p-4 mb-4" style="background:linear-gradient(135deg,#1f1042,#110729);">
-                <small class="text-info fw-bold">⚡ BOT CONTROL CENTER</small>
-                <h3 class="fw-bold mt-1">Welcome back.</h3>
-                <span class="text-muted">Here's how {{ bot_info.username }} is doing right now.</span>
+            <div class="hero-card">
+                <div class="hero-kicker">⚡ BOT CONTROL CENTER</div>
+                <h2>Welcome back.</h2>
+                <p>Here's how <b style="color:#fff;">{{ bot_info.username }}</b> is doing right now.</p>
             </div>
-            <div class="row g-3 mb-4">
-                <div class="col-6 col-md-3"><div class="stat-card"><h6>MEMBERS</h6><h2>{{ stats.users }}</h2></div></div>
-                <div class="col-6 col-md-3"><div class="stat-card" style="border-left-color:#10b981;"><h6>WALLET (ALL)</h6><h2>₹{{ stats.total_wallet }}</h2></div></div>
-                <div class="col-6 col-md-3"><div class="stat-card" style="border-left-color:#38bdf8;"><h6>CATALOG ITEMS</h6><h2>{{ stats.products_count }}</h2></div></div>
-                <div class="col-6 col-md-3"><div class="stat-card" style="border-left-color:#10b981;"><h6>ORDERS FULFILLED</h6><h2>{{ stats.orders }}</h2></div></div>
-                <div class="col-6 col-md-3"><div class="stat-card" style="border-left-color:#facc15;"><h6>LIFETIME REVENUE</h6><h2>₹{{ stats.revenue }}</h2></div></div>
-                <div class="col-6 col-md-3"><div class="stat-card" style="border-left-color:#06b6d4;"><h6>KEYS IN STOCK</h6><h2>{{ stats.keys }}</h2></div></div>
+            <div class="stat-grid">
+                <div class="stat-card"><div class="si">👥</div><div class="sv">{{ stats.users }}</div><div class="sl">Members</div></div>
+                <div class="stat-card c-green"><div class="si">💰</div><div class="sv">₹{{ stats.total_wallet }}</div><div class="sl">Wallet balance (all)</div></div>
+                <div class="stat-card c-blue"><div class="si">📦</div><div class="sv">{{ stats.products_count }}</div><div class="sl">Catalog items</div></div>
+                <div class="stat-card c-green"><div class="si">✅</div><div class="sv">{{ stats.orders }}</div><div class="sl">Orders fulfilled</div></div>
+                <div class="stat-card c-gold"><div class="si">💎</div><div class="sv">₹{{ stats.revenue }}</div><div class="sl">Lifetime revenue</div></div>
+                <div class="stat-card c-cyan"><div class="si">📅</div><div class="sv">₹{{ stats.today_deposit }}</div><div class="sl">Today's deposit</div></div>
+                <div class="stat-card c-pink"><div class="si">⏳</div><div class="sv">{{ stats.awaiting }}</div><div class="sl">Awaiting review</div></div>
+                <div class="stat-card c-blue"><div class="si">🔑</div><div class="sv">{{ stats.key_stock }}</div><div class="sl">Keys in stock</div></div>
+            </div>
+            <div class="quick-box">
+                <h5>Quick Actions</h5>
+                <button class="qa" onclick="showTab('products')"><span class="qi">📦</span> Manage Product</button>
+                <button class="qa" onclick="showTab('keys')"><span class="qi">📜</span> Key Delivery Logs</button>
+                <button class="qa" onclick="showTab('keystock')"><span class="qi">🔑</span> Manage Keys</button>
+                <button class="qa" onclick="showTab('members')"><span class="qi">👥</span> Members &amp; Wallets</button>
+                <button class="qa" onclick="showTab('topups')"><span class="qi">💳</span> Top-ups</button>
+                <button class="qa" onclick="showTab('broadcast')"><span class="qi">📢</span> Broadcast</button>
+                <button class="qa" onclick="showTab('btncolors')"><span class="qi">🎨</span> Button Colors</button>
+                <button class="qa" onclick="showTab('store')"><span class="qi">⚙️</span> Store Settings</button>
+                <div class="bot-link">🔗 Bot: <a href="https://t.me/{{ bot_info.username.replace('@','') }}" target="_blank">{{ bot_info.username }}</a></div>
             </div>
         </div>
 
         <!-- 2️⃣ 📦 TAB: MANAGE PRODUCTS -->
         <div class="tab-pane-content" id="tab-products" style="display:none;">
-            <div class="card p-4">
+            <div class="page-head">
+                <div class="ph-icon ph-ic">📦</div>
+                <div><h3>Manage Product</h3><p>Add products, plans, pricing and keys.</p></div>
+            </div>
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h5 class="sec-title">📦 Manage Products</h5>
+                <button class="btn-grad" onclick="openProductModal()">＋ Add Product</button>
+            </div>
+            {% for p in products %}
+            <div class="prod-wrap">
+                <div class="prod-card">
+                    <div class="prod-icon">{{ p.icon }}</div>
+                    <div class="prod-label">PRODUCT</div>
+                    <div class="d-flex justify-content-between align-items-center gap-2">
+                        <div class="prod-name">{{ p.name }}</div>
+                        {% if p.maintenance %}<span class="status st-maint">● MAINTENANCE</span>
+                        {% elif p.stock_out %}<span class="status st-off">● DISABLED</span>
+                        {% else %}<span class="status st-ok">● ACTIVE</span>{% endif %}
+                    </div>
+                    <div class="prod-meta">
+                        {{ p.category }}<br>
+                        {% for pl in p.prices %}🕒 {{ pl[0]|replace('_', ' ') }} · ₹{{ '%g'|format(pl[1]) }} · stock {{ p.stock.get(pl[0], 0) }}<br>{% else %}No plans yet{% endfor %}
+                    </div>
+                    <div>
+                        <button class="pa" onclick="openProductModal({{ loop.index0 }})">✏️ Edit</button>
+                        <button class="pa" onclick="toggleProduct('{{ p.prod_key }}', 'stock_out')">{% if p.stock_out %}▶️ Enable{% else %}⏸️ Disable{% endif %}</button>
+                        <button class="pa" onclick="toggleProduct('{{ p.prod_key }}', 'maintenance')">🛠️ {% if p.maintenance %}End Maintenance{% else %}Maintenance{% endif %}</button>
+                        <button class="pa del" onclick="deleteProduct('{{ p.prod_key }}')">🗑️ Delete</button>
+                    </div>
+                </div>
+            </div>
+            {% else %}
+            <div class="card p-4 text-center text-muted">No products yet. Tap “Add Product” to create the first one.</div>
+            {% endfor %}
+        </div>
+
+        <!-- ➕ ADD / EDIT PRODUCT MODAL -->
+        <div class="modal-bg" id="prodModal">
+            <div class="modal-card">
                 <div class="d-flex justify-content-between align-items-center mb-3">
-                    <h5 class="m-0 fw-bold">📦 Manage Products</h5>
-                    <button class="btn btn-custom btn-sm" onclick="document.getElementById('addProdBox').style.display='block'"><i class="fas fa-plus me-1"></i> Add Product</button>
+                    <h5 class="m-0" id="pm_title">＋ Add Product</h5>
+                    <button class="btn-close btn-close-white" onclick="closeProductModal()"></button>
                 </div>
-                <div id="addProdBox" class="p-3 mb-4 card" style="display:none;background:#13082e;">
-                    <h6>➕ Add Product Specification</h6>
-                    <div class="row g-3 mt-1">
-                        <div class="col-md-4"><label class="small text-muted">Product Name</label><input type="text" id="ap_name" class="form-control" placeholder="BALA MOD NON ROOT"></div>
-                        <div class="col-md-4">
-                            <label class="small text-muted">Category</label>
-                            <select id="ap_cat" class="form-select">
-                                <option value="non_root">Non-Root Mobile</option><option value="root">Root Mobile</option>
-                                <option value="ios">iOS Panels</option><option value="pc">PC Panels</option><option value="likes">8 Level ID / Likes</option>
-                            </select>
-                        </div>
-                        <div class="col-md-4"><label class="small text-muted">Icon / Emoji</label><input type="text" id="ap_icon" class="form-control" placeholder="⚡"></div>
-                        <div class="col-md-4"><label class="small text-muted">Plan Name</label><input type="text" id="ap_plan" class="form-control" placeholder="10_Days"></div>
-                        <div class="col-md-4"><label class="small text-muted">Regular Price (₹)</label><input type="number" id="ap_price" class="form-control" placeholder="400"></div>
-                        <div class="col-md-4"><label class="small text-muted">Reseller Price (₹)</label><input type="number" id="ap_rprice" class="form-control" placeholder="250"></div>
-                        <div class="col-12"><label class="small text-muted">Download Link</label><input type="text" id="ap_link" class="form-control"></div>
-                        <div class="col-12"><label class="small text-muted">Bulk Keys (One per line)</label><textarea id="ap_keys" class="form-control" rows="3" placeholder="KEY1&#10;KEY2"></textarea></div>
-                        <div class="col-12"><button class="btn btn-custom w-100" onclick="saveProduct()">Save Product</button></div>
+                <label class="small mb-1">Product Name</label>
+                <input type="text" id="pm_name" class="form-control mb-3" placeholder="e.g. Netflix Premium">
+                <div class="row g-2 mb-3">
+                    <div class="col-8">
+                        <label class="small mb-1">Category (where it shows in the bot)</label>
+                        <select id="pm_cat" class="form-select">
+                            <option value="non_root">Non-Root Mobile</option><option value="root">Root Mobile</option>
+                            <option value="ios">iOS Panels</option><option value="pc">PC Panels</option><option value="likes">8 Level ID / Likes</option>
+                        </select>
                     </div>
+                    <div class="col-4"><label class="small mb-1">Icon</label><input type="text" id="pm_icon" class="form-control" placeholder="⚡"></div>
                 </div>
-                <div class="row g-3">
-                    {% for p in products %}
-                    <div class="col-md-6">
-                        <div class="card p-3" style="background:#12072c;border:1px solid #3b1d6e;">
-                            <div class="d-flex justify-content-between align-items-center">
-                                <span class="fs-4">{{ p.icon }}</span>
-                                <span class="badge bg-secondary">{{ p.category }}</span>
-                            </div>
-                            <h5 class="fw-bold mt-2">{{ p.name }}</h5>
-                            <div class="text-muted small">Prices: {{ p.prices }}</div>
-                            <div class="d-flex gap-2 mt-3">
-                                <button class="btn btn-sm btn-outline-danger" onclick="deleteProduct('{{ p.prod_key }}')"><i class="fas fa-trash"></i> Delete</button>
-                            </div>
-                        </div>
-                    </div>
-                    {% endfor %}
-                </div>
+                <label class="small mb-1">Channel / Download Link (optional)</label>
+                <input type="text" id="pm_link" class="form-control mb-3" placeholder="e.g. https://t.me/yourchannel">
+                <hr style="border-color:rgba(147,51,234,.4);">
+                <div class="fw-bold mb-2" style="color:#c4b5fd;">＋ Plans</div>
+                <div id="pm_plans"></div>
+                <button type="button" class="pa" onclick="addPlanRow()">＋ Add More Plan</button>
+                <div class="small text-muted mb-3">Reseller price is automatic (60% of the regular price). Keys are optional — you can add more later in “Manage Keys”.</div>
+                <button class="btn-grad w-100 py-3" id="pm_submit" onclick="submitProduct()">＋ Add Product</button>
             </div>
         </div>
 
         <!-- 3️⃣ 🗝️ TAB: MANAGE KEYS & SALES ANALYTICS -->
         <div class="tab-pane-content" id="tab-keys" style="display:none;">
             <div class="card p-4">
-                <h5>🗝️ Manage Keys & Sales Analytics</h5>
+                <h5>📜 Key Delivery Logs</h5>
                 <input type="text" id="keySearch" class="form-control mt-3 mb-3" placeholder="🔍 Search by Telegram ID, User, Product, Key..." onkeyup="filterTable('keySearch', 'keysTable')">
                 <div class="table-responsive">
                     <table class="table table-dark align-middle" id="keysTable">
@@ -549,12 +672,23 @@ ADMIN_HTML = """
         <!-- 1️⃣1️⃣ 💳 TAB: TOP-UPS QUEUE -->
         <div class="tab-pane-content" id="tab-topups" style="display:none;">
             <div class="card p-4">
-                <h5>💳 Review Pending Deposit Requests</h5>
-                <div class="table-responsive mt-3">
-                    <table class="table table-dark">
-                        <thead><tr><th>User ID</th><th>Amount</th><th>UTR</th><th>Action</th></tr></thead>
+                <h5>💳 Deposit Requests (latest 30)</h5>
+                <p class="text-muted small">Payments waiting for approval are approved or rejected from the Telegram message the bot sends you.</p>
+                <div class="table-responsive mt-2">
+                    <table class="table align-middle">
+                        <thead><tr><th>Time</th><th>User ID</th><th>Amount</th><th>Status</th><th>Order</th></tr></thead>
                         <tbody>
-                            <tr><td colspan="4" class="text-center text-muted">No pending deposit requests.</td></tr>
+                            {% for t in topups %}
+                            <tr>
+                                <td class="small">{{ t[0] }}</td>
+                                <td><code>{{ t[1] }}</code></td>
+                                <td>₹{{ '%.2f'|format(t[2] or 0) }}</td>
+                                <td><span class="badge-st b-{{ t[3] }}">{{ t[3] }}</span></td>
+                                <td class="small"><code>{{ t[4] }}</code></td>
+                            </tr>
+                            {% else %}
+                            <tr><td colspan="5" class="text-center text-muted">No deposit requests yet.</td></tr>
+                            {% endfor %}
                         </tbody>
                     </table>
                 </div>
@@ -605,33 +739,73 @@ ADMIN_HTML = """
             </div>
         </div>
 
-        <!-- 1️⃣5️⃣ 🎨 TAB: BUTTON COLORS -->
-        <div class="tab-pane-content" id="tab-btncolors" style="display:none;">
+        <!-- 1️⃣5️⃣ 🔑 TAB: MANAGE KEYS (add stock) -->
+        <div class="tab-pane-content" id="tab-keystock" style="display:none;">
+            <div class="page-head">
+                <div class="ph-ic">🔑</div>
+                <div><h3>Manage Keys</h3><p>Add key stock to a product plan.</p></div>
+            </div>
             <div class="card p-4">
-                <h5>🎨 Main Menu Button Colors</h5>
-                <p class="small text-muted">Choose a color for each button of the bot's main menu. Changes show up in the bot within a few seconds (customers see them the next time the menu opens).</p>
+                <div class="row g-3">
+                    <div class="col-md-6"><label class="small mb-1">Product</label><select id="ks_prod" class="form-select" onchange="fillKeyPlans()"></select></div>
+                    <div class="col-md-6"><label class="small mb-1">Plan</label><select id="ks_plan" class="form-select"></select></div>
+                    <div class="col-12"><label class="small mb-1">Keys (one per line)</label><textarea id="ks_keys" class="form-control" rows="5" placeholder="KEY1&#10;KEY2"></textarea></div>
+                    <div class="col-12"><button class="btn-grad w-100" onclick="addKeys()">＋ Add Keys to Stock</button></div>
+                </div>
+            </div>
+            <div class="card p-4">
+                <h5>Stock available</h5>
                 <div class="table-responsive">
-                    <table class="table table-dark align-middle">
-                        <thead><tr><th>Button</th><th style="width:200px;">Color</th></tr></thead>
+                    <table class="table align-middle">
+                        <thead><tr><th>Product</th><th>Plan</th><th>Keys left</th></tr></thead>
                         <tbody>
-                            {% for b in menu_buttons %}
-                            <tr>
-                                <td>{{ b.label }}</td>
-                                <td>
-                                    <select class="form-select btn-color-select" data-key="{{ b.key }}">
-                                        <option value="none" {% if b.style == 'none' %}selected{% endif %}>⚪ Default (grey)</option>
-                                        <option value="primary" {% if b.style == 'primary' %}selected{% endif %}>🔵 Blue</option>
-                                        <option value="success" {% if b.style == 'success' %}selected{% endif %}>🟢 Green</option>
-                                        <option value="danger" {% if b.style == 'danger' %}selected{% endif %}>🔴 Red</option>
-                                    </select>
-                                </td>
-                            </tr>
+                            {% for p in products %}{% for pl in p.prices %}
+                            <tr><td>{{ p.name }}</td><td>{{ pl[0]|replace('_', ' ') }}</td><td><strong>{{ p.stock.get(pl[0], 0) }}</strong></td></tr>
+                            {% endfor %}{% else %}
+                            <tr><td colspan="3" class="text-center text-muted">No products yet.</td></tr>
                             {% endfor %}
                         </tbody>
                     </table>
                 </div>
-                <button class="btn btn-custom" onclick="saveButtonColors()"><i class="fas fa-save me-1"></i> Save Colors</button>
             </div>
+        </div>
+
+        <!-- 1️⃣6️⃣ 🎨 TAB: BUTTON COLORS -->
+        <div class="tab-pane-content" id="tab-btncolors" style="display:none;">
+            <div class="page-head">
+                <div class="ph-ic">🎨</div>
+                <div><h3>Button Colors</h3><p>Pick a color for every bot button. Tap a group to open it.</p></div>
+            </div>
+            <div class="d-flex gap-2 mb-3 flex-wrap">
+                <button class="btn-grad" onclick="saveButtonColors()">💾 Save Colors</button>
+                <button class="pa" style="margin:0;" onclick="resetButtonColors()">↩️ Reset all to default</button>
+            </div>
+            {% for g in button_groups %}
+            <details class="bc-group" {% if loop.first %}open{% endif %}>
+                <summary><span>{{ g.title }}</span><span class="bc-count">{{ g['items']|length }} buttons ▾</span></summary>
+                <div class="bc-all">
+                    <span>Set whole group:</span>
+                    <div class="sw-wrap">
+                        <span class="sw s-none" onclick="setGroup(this, 'none')" title="Grey"></span>
+                        <span class="sw s-primary" onclick="setGroup(this, 'primary')" title="Blue"></span>
+                        <span class="sw s-success" onclick="setGroup(this, 'success')" title="Green"></span>
+                        <span class="sw s-danger" onclick="setGroup(this, 'danger')" title="Red"></span>
+                    </div>
+                </div>
+                {% for b in g['items'] %}
+                <div class="bc-row" data-key="{{ b.key }}" data-style="{{ b.style }}" data-default="{{ b.default }}">
+                    <span class="bc-prev s-{{ b.style }}">{{ b.label }}</span>
+                    <div class="sw-wrap">
+                        <span class="sw s-none {% if b.style == 'none' %}on{% endif %}" onclick="pickColor(this, 'none')" title="Grey"></span>
+                        <span class="sw s-primary {% if b.style == 'primary' %}on{% endif %}" onclick="pickColor(this, 'primary')" title="Blue"></span>
+                        <span class="sw s-success {% if b.style == 'success' %}on{% endif %}" onclick="pickColor(this, 'success')" title="Green"></span>
+                        <span class="sw s-danger {% if b.style == 'danger' %}on{% endif %}" onclick="pickColor(this, 'danger')" title="Red"></span>
+                    </div>
+                </div>
+                {% endfor %}
+            </details>
+            {% endfor %}
+            <button class="btn-grad w-100 py-3 mt-2" onclick="saveButtonColors()">💾 Save Colors</button>
         </div>
     </div>
     {% endif %}
@@ -660,38 +834,126 @@ ADMIN_HTML = """
             if(isNaN(val)) return alert('Enter valid number');
             quickAddBal(val);
         }
+        const PRODUCTS = {% if session.get('admin_logged') %}{{ products|tojson }}{% else %}[]{% endif %};
+        function toggleSidebar(force) {
+            const sb = document.getElementById('sidebar');
+            if (!sb) return;
+            const open = (force === undefined) ? !sb.classList.contains('active') : force;
+            sb.classList.toggle('active', open);
+            document.getElementById('sbOverlay').classList.toggle('show', open);
+            const ic = document.getElementById('menuIcon');
+            if (ic) ic.className = open ? 'fas fa-xmark' : 'fas fa-bars';
+        }
         function showTab(t, el) {
             document.querySelectorAll('.tab-pane-content').forEach(d => d.style.display = 'none');
             let target = document.getElementById('tab-' + t);
             if (target) target.style.display = 'block';
-            document.querySelectorAll('.sidebar-link').forEach(l => l.classList.remove('active'));
-            if (el) el.classList.add('active');
-            if (window.innerWidth < 769) document.getElementById('sidebar').classList.remove('active');
+            document.querySelectorAll('.sb-link').forEach(l => l.classList.toggle('active', l.dataset.tab === t));
+            if (window.innerWidth < 769) toggleSidebar(false);
+            window.scrollTo(0, 0);
         }
         function filterTable(inputId, tableId) {
             let filter = document.getElementById(inputId).value.toLowerCase();
             let rows = document.querySelectorAll('#' + tableId + ' tbody tr');
             rows.forEach(r => r.style.display = r.innerText.toLowerCase().includes(filter) ? '' : 'none');
         }
-        function saveProduct() {
-            let name = document.getElementById('ap_name').value;
-            let cat = document.getElementById('ap_cat').value;
-            let icon = document.getElementById('ap_icon').value;
-            let plan = document.getElementById('ap_plan').value;
-            let price = document.getElementById('ap_price').value;
-            let rprice = document.getElementById('ap_rprice').value;
-            let link = document.getElementById('ap_link').value;
-            let keys = document.getElementById('ap_keys').value;
-            if(!name || !plan || !price) return alert('Fill required fields!');
-            fetch('/api/product/save', {
-                method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({name: name, category: cat, icon: icon, prices: [[plan, parseFloat(price)]], reseller_price: parseFloat(rprice||price), download_link: link, keys: keys})
-            }).then(r => r.json()).then(d => { alert(d.message); location.reload(); });
+        let editingKey = null;
+        function addPlanRow(plan) {
+            const wrap = document.getElementById('pm_plans');
+            const row = document.createElement('div');
+            row.className = 'plan-row';
+            row.dataset.old = plan ? plan.name : '';
+            row.innerHTML =
+                '<button type="button" class="plan-x" onclick="this.parentElement.remove()">✕</button>' +
+                '<div class="row g-2">' +
+                '<div class="col-6"><input type="text" class="form-control pl-name" maxlength="22" placeholder="e.g. 1 Day / 30 Days"></div>' +
+                '<div class="col-6"><input type="number" step="0.01" min="0" class="form-control pl-price" placeholder="Price (₹)"></div>' +
+                '<div class="col-12"><textarea class="form-control pl-keys" rows="2" placeholder="Add keys for this plan (one per line, optional)"></textarea></div>' +
+                '<div class="col-12 small text-muted pl-stock"></div></div>';
+            if (plan) {
+                row.querySelector('.pl-name').value = plan.name;
+                row.querySelector('.pl-price').value = plan.price;
+                row.querySelector('.pl-stock').textContent = 'Keys in stock: ' + (plan.stock || 0);
+            }
+            wrap.appendChild(row);
+        }
+        function openProductModal(idx) {
+            const isEdit = (idx !== undefined && idx !== null);
+            const p = isEdit ? PRODUCTS[idx] : null;
+            editingKey = isEdit ? p.prod_key : null;
+            document.getElementById('pm_title').innerText = isEdit ? '✏️ Edit Product' : '＋ Add Product';
+            document.getElementById('pm_submit').innerText = isEdit ? '💾 Save Changes' : '＋ Add Product';
+            document.getElementById('pm_name').value = isEdit ? p.name : '';
+            document.getElementById('pm_cat').value = isEdit ? (p.category || 'non_root') : 'non_root';
+            document.getElementById('pm_icon').value = isEdit ? (p.icon || '') : '';
+            document.getElementById('pm_link').value = isEdit ? (p.download_link || '') : '';
+            document.getElementById('pm_plans').innerHTML = '';
+            if (isEdit && p.prices.length) {
+                p.prices.forEach(pl => addPlanRow({name: pl[0], price: pl[1], stock: (p.stock || {})[pl[0]] || 0}));
+            } else {
+                addPlanRow();
+            }
+            document.getElementById('prodModal').style.display = 'flex';
+        }
+        function closeProductModal() { document.getElementById('prodModal').style.display = 'none'; }
+        function submitProduct() {
+            const name = document.getElementById('pm_name').value.trim();
+            if (!name) return alert('Enter the product name!');
+            const plans = [];
+            for (const r of document.querySelectorAll('#pm_plans .plan-row')) {
+                const pn = r.querySelector('.pl-name').value.trim();
+                const pr = parseFloat(r.querySelector('.pl-price').value);
+                const keys = r.querySelector('.pl-keys').value;
+                if (!pn && isNaN(pr) && !keys.trim()) continue;
+                if (!pn || isNaN(pr) || pr < 0) return alert('Every plan needs a name and a price!');
+                plans.push({old: r.dataset.old || '', name: pn, price: pr, keys: keys});
+            }
+            if (!plans.length) return alert('Add at least one plan!');
+            const body = {
+                prod_key: editingKey, name: name,
+                category: document.getElementById('pm_cat').value,
+                icon: document.getElementById('pm_icon').value.trim(),
+                download_link: document.getElementById('pm_link').value.trim(),
+                plans: plans
+            };
+            fetch(editingKey ? '/api/product/update' : '/api/product/save', {
+                method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+            }).then(r => r.json()).then(d => { alert(d.message); if (!d.error) location.reload(); });
+        }
+        function toggleProduct(k, field) {
+            fetch('/api/product/toggle', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({prod_key: k, field: field}) })
+            .then(r => r.json()).then(d => { alert(d.message); location.reload(); });
         }
         function deleteProduct(k) {
             if(!confirm('Delete this product?')) return;
             fetch('/api/product/delete', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({prod_key: k}) })
             .then(r => r.json()).then(d => { alert(d.message); location.reload(); });
+        }
+        function fillKeyPlans() {
+            const sel = document.getElementById('ks_prod');
+            const planSel = document.getElementById('ks_plan');
+            if (!sel || !planSel) return;
+            planSel.innerHTML = '';
+            const p = PRODUCTS.find(x => x.prod_key === sel.value);
+            (p ? p.prices : []).forEach(pl => {
+                const o = document.createElement('option');
+                o.value = pl[0]; o.textContent = pl[0].replace(/_/g, ' ');
+                planSel.appendChild(o);
+            });
+        }
+        (function initKeyStock() {
+            const sel = document.getElementById('ks_prod');
+            if (!sel) return;
+            PRODUCTS.forEach(p => { const o = document.createElement('option'); o.value = p.prod_key; o.textContent = p.name; sel.appendChild(o); });
+            fillKeyPlans();
+        })();
+        function addKeys() {
+            const prod = document.getElementById('ks_prod').value;
+            const plan = document.getElementById('ks_plan').value;
+            const keys = document.getElementById('ks_keys').value;
+            if (!prod || !plan || !keys.trim()) return alert('Choose a product, a plan and paste the keys!');
+            fetch('/api/keys/add', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({prod_key: prod, plan: plan, keys: keys}) })
+            .then(r => r.json()).then(d => { alert(d.message); if (!d.error) location.reload(); });
         }
         function dispatchKey(oid, uid) {
             let key = document.getElementById('key_disp_' + oid).value;
@@ -781,9 +1043,22 @@ ADMIN_HTML = """
             fetch('/api/store/save', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({support_username: document.getElementById('st_supp').value, how_to_use_link: document.getElementById('st_how').value}) })
             .then(r => r.json()).then(d => alert(d.message));
         }
+        function applyColor(row, style) {
+            row.dataset.style = style;
+            row.querySelector('.bc-prev').className = 'bc-prev s-' + style;
+            row.querySelectorAll('.sw').forEach(s => s.classList.toggle('on', s.classList.contains('s-' + style)));
+        }
+        function pickColor(el, style) { applyColor(el.closest('.bc-row'), style); }
+        function setGroup(el, style) {
+            el.closest('.bc-group').querySelectorAll('.bc-row').forEach(r => applyColor(r, style));
+        }
+        function resetButtonColors() {
+            if (!confirm('Reset every button to its default color? (not saved until you press Save)')) return;
+            document.querySelectorAll('.bc-row').forEach(r => applyColor(r, r.dataset.default || 'none'));
+        }
         function saveButtonColors() {
             let styles = {};
-            document.querySelectorAll('.btn-color-select').forEach(s => { styles[s.dataset.key] = s.value; });
+            document.querySelectorAll('.bc-row').forEach(r => { styles[r.dataset.key] = r.dataset.style; });
             fetch('/api/buttons/save', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({styles: styles}) })
             .then(r => r.json()).then(d => alert(d.message));
         }
@@ -834,24 +1109,34 @@ def dashboard():
 
     r_u = q_one('SELECT COUNT(*), COALESCE(SUM(wallet_balance), 0) FROM users')
     tot_users, tot_wallet = r_u[0] or 0, float(r_u[1] or 0)
-    r_o = q_one('SELECT COUNT(*), COALESCE(SUM(amount), 0) FROM order_history')
+    r_o = q_one("SELECT COUNT(*), COALESCE(SUM(amount), 0) FROM order_history WHERE LEFT(COALESCE(key_delivered, ''), 7) <> 'PENDING'")
     tot_orders, tot_rev = r_o[0] or 0, float(r_o[1] or 0)
     tot_prods = q_one('SELECT COUNT(*) FROM products')[0]
     tot_keys = q_one('SELECT COUNT(*) FROM keys_inventory WHERE is_used = 0')[0]
+    today_dep = float(q_one(
+        """
+        SELECT COALESCE(SUM(COALESCE(pay_amount, amount)), 0) FROM payment_records
+        WHERE status = 'verified'
+          AND (created_ts AT TIME ZONE 'Asia/Kolkata')::date = (now() AT TIME ZONE 'Asia/Kolkata')::date
+        """
+    )[0] or 0)
+    awaiting = q_one("SELECT COUNT(*) FROM payment_records WHERE status = 'awaiting_approval'")[0] or 0
 
+    stock = {}
+    for pk, plan, cnt in q_all('SELECT prod_key, plan, COUNT(*) FROM keys_inventory WHERE is_used = 0 GROUP BY prod_key, plan'):
+        stock.setdefault(pk, {})[plan] = cnt
     prods = [
         {"prod_key": p[0], "name": p[1], "category": p[2], "prices": parse_prices(p[3]),
-         "icon": p[4] or "⚡", "download_link": p[5]}
-        for p in q_all('SELECT prod_key, name, category, prices, icon, download_link FROM products ORDER BY name')
+         "icon": p[4] or "⚡", "download_link": p[5] or "", "maintenance": int(p[6] or 0),
+         "stock_out": int(p[7] or 0), "stock": stock.get(p[0], {})}
+        for p in q_all('SELECT prod_key, name, category, prices, icon, download_link, maintenance, stock_out FROM products ORDER BY name')
     ]
     all_orders = q_all('SELECT id, user_id, prod_name, plan, key_delivered, amount, utr, timestamp FROM order_history ORDER BY id DESC LIMIT 50')
     pending = q_all("SELECT id, user_id, prod_name, plan, key_delivered, amount, timestamp FROM order_history WHERE LEFT(key_delivered, 7) = 'PENDING' ORDER BY id DESC")
     users_list = q_all('SELECT user_id, full_name, username, joined_date, orders_count, wallet_balance, total_spent, total_referrals, referral_earnings, account_type FROM users ORDER BY user_id DESC LIMIT 50')
+    topups = q_all('SELECT created_at, user_id, COALESCE(pay_amount, amount), status, order_id FROM payment_records ORDER BY id DESC LIMIT 30')
     st_r = q_one('SELECT support_username, how_to_use_link FROM store_settings WHERE id = 1') or ("@Athulsudin", "")
     pay = db.get_payment_settings()
-    base = (os.environ.get("RENDER_EXTERNAL_URL") or request.host_url).rstrip("/")
-    if base.startswith("http://") and "localhost" not in base and "127.0.0.1" not in base:
-        base = "https://" + base[len("http://"):]
     pay_cfg = {
         "upi_id": pay["upi_id"], "payee_name": pay["payee_name"], "auto_verify": bool(pay["auto_verify"]),
     }
@@ -875,14 +1160,20 @@ def dashboard():
     ]
 
     saved_styles = db.get_button_styles()
-    menu_buttons = [
-        {"key": k, "label": label, "style": saved_styles.get(k, default) or "none"}
-        for k, (label, default) in MENU_BUTTONS.items()
+    button_groups = [
+        {"title": title, "items": [
+            {"key": k, "label": label, "default": default or "none",
+             "style": (saved_styles.get(k) if saved_styles.get(k) is not None else default) or "none"}
+            for k, label, default in items
+        ]}
+        for title, items in BUTTON_GROUPS
     ]
 
     return render_template_string(
-        ADMIN_HTML, bot_info=BOT_INFO, menu_buttons=menu_buttons,
-        stats={"users": tot_users, "total_wallet": f"{tot_wallet:,.2f}", "products_count": tot_prods, "orders": tot_orders, "revenue": f"{tot_rev:,.2f}", "keys": tot_keys},
+        ADMIN_HTML, bot_info=BOT_INFO, button_groups=button_groups, topups=topups,
+        stats={"users": tot_users, "total_wallet": f"{tot_wallet:,.2f}", "products_count": tot_prods,
+               "orders": tot_orders, "revenue": f"{tot_rev:,.2f}", "key_stock": tot_keys,
+               "today_deposit": f"{today_dep:,.2f}", "awaiting": awaiting},
         products=prods, all_orders=all_orders, pending_orders=pending, users_list=users_list,
         pay_cfg=pay_cfg, gmail=gmail_cfg, alerts=alerts, store={"support_username": st_r[0], "how_to_use_link": st_r[1]}
     )
@@ -941,47 +1232,133 @@ def api_gmail_detect():
         return jsonify({"ok": False, "message": "The payment reader is still starting. Try again in a moment."})
     return jsonify(gmail_detect())
 
+PLAN_RE = re.compile(r'^[A-Za-z0-9 _.\-+]{1,22}$')   # short enough for Telegram's 64-byte callback data
+CATEGORIES = ("non_root", "root", "ios", "pc", "likes")
+
+def _clean_plans(raw):
+    """Validate the plans sent by the admin form. Returns (plans, error)."""
+    plans, seen = [], set()
+    for item in raw or []:
+        name = (item.get('name') or '').strip()
+        try:
+            price = round(float(item.get('price')), 2)
+        except (TypeError, ValueError):
+            return None, f"Invalid price for plan '{name}'!"
+        if not PLAN_RE.match(name):
+            return None, f"Plan name '{name}' is invalid (max 22 letters/numbers, no special symbols)."
+        if price < 0:
+            return None, "Price cannot be negative!"
+        if name in seen:
+            return None, f"Plan '{name}' is added twice!"
+        seen.add(name)
+        keys = [x.strip() for x in (item.get('keys') or '').split('\n') if x.strip()]
+        plans.append({"old": (item.get('old') or '').strip(), "name": name, "price": price, "keys": keys})
+    if not plans:
+        return None, "Add at least one plan!"
+    return plans, None
+
+def _save_product(d, is_update):
+    name = (d.get('name') or '').strip()
+    category = d.get('category') if d.get('category') in CATEGORIES else 'non_root'
+    icon = (d.get('icon') or '').strip()[:8] or '⚡'
+    link = (d.get('download_link') or '').strip()
+    plans, err = _clean_plans(d.get('plans'))
+    if not name:
+        return jsonify({"message": "Enter the product name!", "error": True}), 400
+    if err:
+        return jsonify({"message": err, "error": True}), 400
+    prices = [[p["name"], p["price"]] for p in plans]
+
+    if is_update:
+        k = (d.get('prod_key') or '').strip()
+    else:
+        k = re.sub(r'[^a-zA-Z0-9]', '_', name).strip('_').lower()[:32]
+    if not k:
+        return jsonify({"message": "Invalid product name!", "error": True}), 400
+
+    with db.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute('SELECT 1 FROM products WHERE prod_key = %s', (k,))
+            exists = cur.fetchone() is not None
+            if is_update and not exists:
+                return jsonify({"message": "Product not found!", "error": True}), 404
+            if not is_update and exists:
+                return jsonify({"message": "A product with this name already exists. Edit it instead.", "error": True}), 400
+            if is_update:
+                cur.execute(
+                    'UPDATE products SET name=%s, category=%s, prices=%s, download_link=%s, icon=%s WHERE prod_key=%s',
+                    (name, category, json.dumps(prices), link, icon, k),
+                )
+                for p in plans:   # a renamed plan keeps its unused keys
+                    if p["old"] and p["old"] != p["name"]:
+                        cur.execute('UPDATE keys_inventory SET plan=%s WHERE prod_key=%s AND plan=%s AND is_used=0',
+                                    (p["name"], k, p["old"]))
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO products (prod_key, name, category, prices, download_link, icon, maintenance, stock_out)
+                    VALUES (%s, %s, %s, %s, %s, %s, 0, 0)
+                    """,
+                    (k, name, category, json.dumps(prices), link, icon),
+                )
+            rows = [(k, p["name"], item) for p in plans for item in p["keys"]]
+            if rows:
+                cur.executemany('INSERT INTO keys_inventory (prod_key, plan, item_key, is_used) VALUES (%s, %s, %s, 0)', rows)
+    return jsonify({"message": "Product updated!" if is_update else "Product added!"})
+
 @app.route('/api/product/save', methods=['POST'])
 def api_save_p():
     if not admin_required(): return unauthorized()
-    d = request.json or {}
-    name = (d.get('name') or '').strip()
-    prices = parse_prices(d.get('prices'))
-    k = re.sub(r'[^a-zA-Z0-9]', '_', name).strip('_').lower()[:32]
-    if not name or not k or not prices:
-        return jsonify({"message": "Product name and at least one plan are required!"}), 400
+    return _save_product(request.json or {}, is_update=False)
 
-    key_lines = [x.strip() for x in (d.get('keys', '') or '').split('\n') if x.strip()]
-    with db.connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO products (prod_key, name, category, prices, download_link, icon, maintenance, stock_out)
-                VALUES (%s, %s, %s, %s, %s, %s, 0, 0)
-                ON CONFLICT (prod_key) DO UPDATE SET
-                    name = EXCLUDED.name,
-                    category = EXCLUDED.category,
-                    prices = EXCLUDED.prices,
-                    download_link = EXCLUDED.download_link,
-                    icon = EXCLUDED.icon,
-                    maintenance = 0,
-                    stock_out = 0
-                """,
-                (k, name, d.get('category', 'non_root'), json.dumps(prices),
-                 d.get('download_link', ''), d.get('icon') or '⚡')
-            )
-            if key_lines:
-                cur.executemany(
-                    'INSERT INTO keys_inventory (prod_key, plan, item_key, is_used) VALUES (%s, %s, %s, 0)',
-                    [(k, prices[0][0], item) for item in key_lines]
-                )
-    return jsonify({"message": "Product and keys saved successfully!"})
+@app.route('/api/product/update', methods=['POST'])
+def api_update_p():
+    if not admin_required(): return unauthorized()
+    return _save_product(request.json or {}, is_update=True)
+
+@app.route('/api/product/toggle', methods=['POST'])
+def api_toggle_p():
+    if not admin_required(): return unauthorized()
+    d = request.json or {}
+    field = d.get('field')
+    if field not in ('maintenance', 'stock_out'):
+        return jsonify({"message": "Invalid option!"}), 400
+    row = db.fetchone(
+        f"UPDATE products SET {field} = CASE WHEN {field} = 0 THEN 1 ELSE 0 END WHERE prod_key = %s RETURNING maintenance, stock_out",
+        (d.get('prod_key'),),
+    )
+    if not row:
+        return jsonify({"message": "Product not found!"}), 404
+    if row["maintenance"]:
+        msg = "Product is now under MAINTENANCE (hidden from the shop)."
+    elif row["stock_out"]:
+        msg = "Product is now DISABLED (hidden from the shop)."
+    else:
+        msg = "Product is ACTIVE again."
+    return jsonify({"message": msg})
 
 @app.route('/api/product/delete', methods=['POST'])
 def api_del_p():
     if not admin_required(): return unauthorized()
     db.execute('DELETE FROM products WHERE prod_key = %s', ((request.json or {}).get('prod_key'),))
     return jsonify({"message": "Product deleted!"})
+
+@app.route('/api/keys/add', methods=['POST'])
+def api_keys_add():
+    if not admin_required(): return unauthorized()
+    d = request.json or {}
+    prod = db.get_product_by_key(d.get('prod_key') or '')
+    plan = (d.get('plan') or '').strip()
+    if not prod or not any(n == plan for n, _ in prod["prices"]):
+        return jsonify({"message": "Choose a valid product and plan!", "error": True}), 400
+    keys = [x.strip() for x in (d.get('keys') or '').split('\n') if x.strip()]
+    if not keys:
+        return jsonify({"message": "Paste at least one key!", "error": True}), 400
+    with db.connection() as conn:
+        with conn.cursor() as cur:
+            cur.executemany('INSERT INTO keys_inventory (prod_key, plan, item_key, is_used) VALUES (%s, %s, %s, 0)',
+                            [(d['prod_key'], plan, x) for x in keys])
+    return jsonify({"message": f"{len(keys)} key(s) added to {prod['name']} — {plan}."})
 
 @app.route('/api/pending/dispatch', methods=['POST'])
 def api_dispatch():
@@ -1142,5 +1519,6 @@ def run_web():
 if __name__ == "__main__":
     init_db()
     run_web()
+
 
 
