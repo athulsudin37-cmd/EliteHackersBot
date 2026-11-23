@@ -39,6 +39,7 @@ BUTTON_GROUPS = [
         ("referral", "👥 Referral", "danger"),
         ("reseller", "👑 Reseller", "success"),
         ("support", "💬 Support", "success"),
+        ("check_updates", "📢 Check All Updates", "primary"),
         ("web_admin", "👑 Web Admin Panel (owner only)", "success"),
     ]),
     ("🛒 Shop & Products", [
@@ -361,6 +362,45 @@ class Database:
                 style TEXT NOT NULL DEFAULT ''
             )
             """,
+            # --- Admin panel upgrades: store settings, spin-reward expiry, session control ---
+            "ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS shop_name TEXT",
+            "ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS tagline TEXT",
+            "ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS update_link TEXT",
+            "ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS min_deposit DOUBLE PRECISION",
+            "ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS max_deposit DOUBLE PRECISION",
+            "ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS qr_expiry_minutes INTEGER",
+            "ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS referral_bonus DOUBLE PRECISION",
+            "ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS spin_min DOUBLE PRECISION",
+            "ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS spin_max DOUBLE PRECISION",
+            "ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS spin_cooldown_hours DOUBLE PRECISION",
+            "ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS spin_expiry_hours DOUBLE PRECISION",
+            "ALTER TABLE admin_auth ADD COLUMN IF NOT EXISTS session_version INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE order_history ADD COLUMN IF NOT EXISTS created_ts TIMESTAMPTZ",
+            "ALTER TABLE order_history ALTER COLUMN created_ts SET DEFAULT now()",
+            """
+            CREATE TABLE IF NOT EXISTS spin_rewards (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                amount DOUBLE PRECISION NOT NULL DEFAULT 0,
+                created_ts TIMESTAMPTZ NOT NULL DEFAULT now(),
+                expires_ts TIMESTAMPTZ NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active'
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_spin_rewards_open ON spin_rewards(status, expires_ts)",
+            """
+            CREATE TABLE IF NOT EXISTS broadcast_history (
+                id BIGSERIAL PRIMARY KEY,
+                created_ts TIMESTAMPTZ NOT NULL DEFAULT now(),
+                audience TEXT,
+                media_type TEXT,
+                preview TEXT,
+                total INTEGER NOT NULL DEFAULT 0,
+                sent INTEGER NOT NULL DEFAULT 0,
+                failed INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'running'
+            )
+            """,
             # --- Default rows ---
             """
             INSERT INTO store_settings (id, support_username, how_to_use_link, welcome_message)
@@ -441,6 +481,7 @@ class Database:
             """,
             (generate_password_hash(new_password),),
         )
+        self.bump_session_version()
 
     # ------------------------------------------------------------------
     # Users & wallet
@@ -520,6 +561,137 @@ class Database:
         if not row or row["secs"] is None:
             return 0
         return max(0, int(float(row["secs"])))
+
+    # ------------------------------------------------------------------
+    # Store settings (editable from the admin panel, read live by the bot)
+    # ------------------------------------------------------------------
+    SETTING_DEFAULTS = {
+        "shop_name": "Elite Hackers Store",
+        "tagline": "",
+        "update_link": "",
+        "min_deposit": 10.0,
+        "max_deposit": 50000.0,
+        "qr_expiry_minutes": 5,
+        "referral_bonus": 0.0,
+        "spin_min": 2.0,
+        "spin_max": 10.0,
+        "spin_cooldown_hours": 24.0,
+        "spin_expiry_hours": 1.0,   # 0 = spin cash never expires
+    }
+
+    def get_settings(self):
+        """All store settings with defaults filled in for anything not saved yet."""
+        row = self.fetchone(
+            """
+            SELECT support_username, how_to_use_link, shop_name, tagline, update_link,
+                   min_deposit, max_deposit, qr_expiry_minutes, referral_bonus,
+                   spin_min, spin_max, spin_cooldown_hours, spin_expiry_hours
+            FROM store_settings WHERE id = 1
+            """
+        ) or {}
+        cfg = dict(self.SETTING_DEFAULTS)
+        cfg["support_username"] = row.get("support_username") or ""
+        cfg["how_to_use_link"] = row.get("how_to_use_link") or ""
+        for key in self.SETTING_DEFAULTS:
+            value = row.get(key)
+            if value is None or (isinstance(value, str) and value == "" and key not in ("tagline", "update_link")):
+                continue
+            cfg[key] = value
+        return cfg
+
+    def save_branding(self, shop_name, tagline, support_username, update_link, how_to_use_link):
+        self.execute(
+            """
+            UPDATE store_settings SET shop_name = %s, tagline = %s, support_username = %s,
+                update_link = %s, how_to_use_link = %s
+            WHERE id = 1
+            """,
+            (shop_name, tagline, support_username, update_link, how_to_use_link),
+        )
+
+    def save_limits(self, min_deposit, max_deposit, qr_expiry_minutes, referral_bonus,
+                    spin_min, spin_max, spin_cooldown_hours, spin_expiry_hours):
+        self.execute(
+            """
+            UPDATE store_settings SET min_deposit = %s, max_deposit = %s, qr_expiry_minutes = %s,
+                referral_bonus = %s, spin_min = %s, spin_max = %s,
+                spin_cooldown_hours = %s, spin_expiry_hours = %s
+            WHERE id = 1
+            """,
+            (min_deposit, max_deposit, qr_expiry_minutes, referral_bonus,
+             spin_min, spin_max, spin_cooldown_hours, spin_expiry_hours),
+        )
+
+    # ------------------------------------------------------------------
+    # Spin-reward expiry: the cash won must be used for a purchase within N hours
+    # ------------------------------------------------------------------
+    def add_spin_reward(self, user_id, amount, expiry_hours):
+        self.execute(
+            """
+            INSERT INTO spin_rewards (user_id, amount, expires_ts)
+            VALUES (%s, %s, now() + (%s * INTERVAL '1 hour'))
+            """,
+            (user_id, amount, expiry_hours),
+        )
+
+    def mark_spin_rewards_used(self, user_id):
+        """The customer bought something in time: their active spin cash is kept for good."""
+        return self.execute(
+            "UPDATE spin_rewards SET status = 'used' WHERE user_id = %s AND status = 'active'",
+            (user_id,),
+        )
+
+    def claim_expired_spin_rewards(self, limit=50):
+        """Atomically close every spin reward whose time ran out and return them."""
+        return self.fetchall(
+            """
+            UPDATE spin_rewards SET status = 'expired'
+            WHERE id IN (
+                SELECT id FROM spin_rewards
+                WHERE status = 'active' AND expires_ts <= now()
+                ORDER BY id LIMIT %s
+                FOR UPDATE SKIP LOCKED
+            )
+            RETURNING id, user_id, amount
+            """,
+            (limit,),
+        )
+
+    def take_back_spin_cash(self, user_id, amount):
+        """Remove expired spin cash from the wallet (never more than the balance). Returns the amount removed."""
+        row = self.fetchone(
+            """
+            WITH cur AS (SELECT wallet_balance AS bal FROM users WHERE user_id = %s FOR UPDATE)
+            UPDATE users SET wallet_balance = users.wallet_balance - LEAST(%s::double precision, cur.bal)
+            FROM cur WHERE users.user_id = %s
+            RETURNING LEAST(%s::double precision, cur.bal) AS taken, users.wallet_balance AS new_balance
+            """,
+            (user_id, amount, user_id, amount),
+        )
+        return (float(row["taken"]), float(row["new_balance"])) if row else (0.0, 0.0)
+
+    def active_spin_reward(self, user_id):
+        return self.fetchone(
+            """
+            SELECT amount, EXTRACT(EPOCH FROM (expires_ts - now())) AS secs
+            FROM spin_rewards WHERE user_id = %s AND status = 'active' AND expires_ts > now()
+            ORDER BY id DESC LIMIT 1
+            """,
+            (user_id,),
+        )
+
+    # ------------------------------------------------------------------
+    # Admin sessions ("Logout all devices")
+    # ------------------------------------------------------------------
+    def get_session_version(self):
+        row = self.fetchone("SELECT session_version FROM admin_auth WHERE id = 1")
+        return int(row["session_version"]) if row and row["session_version"] is not None else 1
+
+    def bump_session_version(self):
+        row = self.fetchone(
+            "UPDATE admin_auth SET session_version = session_version + 1 WHERE id = 1 RETURNING session_version"
+        )
+        return int(row["session_version"]) if row else 1
 
     # ------------------------------------------------------------------
     # Orders
@@ -1003,4 +1175,5 @@ def init_db():
         )
     db.init_db()
     return db
+
 
