@@ -196,57 +196,6 @@ class Database:
             "ALTER TABLE payment_records ADD COLUMN IF NOT EXISTS prod_key TEXT",
             "ALTER TABLE payment_records ADD COLUMN IF NOT EXISTS plan TEXT",
             "ALTER TABLE payment_records ADD COLUMN IF NOT EXISTS is_deficit INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE payment_records ADD COLUMN IF NOT EXISTS pay_amount DOUBLE PRECISION",
-            "ALTER TABLE payment_records ADD COLUMN IF NOT EXISTS created_ts TIMESTAMPTZ",
-            "ALTER TABLE payment_records ADD COLUMN IF NOT EXISTS chat_id BIGINT",
-            "ALTER TABLE payment_records ADD COLUMN IF NOT EXISTS qr_msg_id BIGINT",
-            "UPDATE payment_records SET pay_amount = amount WHERE pay_amount IS NULL",
-            """
-            CREATE TABLE IF NOT EXISTS payment_settings (
-                id INTEGER PRIMARY KEY,
-                upi_id TEXT NOT NULL DEFAULT '',
-                payee_name TEXT NOT NULL DEFAULT 'Elite Hackers Store',
-                auto_verify INTEGER NOT NULL DEFAULT 0
-            )
-            """,
-            """
-            INSERT INTO payment_settings (id, upi_id, payee_name, auto_verify)
-            VALUES (
-                1,
-                COALESCE((SELECT fampay_token FROM upi_settings WHERE id = 1), ''),
-                'Elite Hackers Store',
-                0
-            )
-            ON CONFLICT (id) DO NOTHING
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS gmail_settings (
-                id INTEGER PRIMARY KEY,
-                gmail_user TEXT NOT NULL DEFAULT '',
-                gmail_app_password TEXT NOT NULL DEFAULT '',
-                bank_domain TEXT NOT NULL DEFAULT ''
-            )
-            """,
-            "INSERT INTO gmail_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING",
-            """
-            CREATE TABLE IF NOT EXISTS bank_credits (
-                id BIGSERIAL PRIMARY KEY,
-                fingerprint TEXT UNIQUE NOT NULL,
-                amount DOUBLE PRECISION,
-                utr TEXT,
-                raw_text TEXT,
-                status TEXT NOT NULL DEFAULT 'new',
-                order_id TEXT,
-                received_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-            """,
-            "CREATE INDEX IF NOT EXISTS idx_bank_credits_received ON bank_credits(received_at DESC)",
-            """
-            CREATE TABLE IF NOT EXISTS processed_mails (
-                message_key TEXT PRIMARY KEY,
-                created_ts TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-            """,
             # --- Tables used by the web admin panel ---
             """
             CREATE TABLE IF NOT EXISTS admin_auth (
@@ -520,60 +469,17 @@ class Database:
     # Payments
     # ------------------------------------------------------------------
     def create_payment(self, user_id, order_id, amount, method, upi_id, created_at,
-                       prod_key=None, plan=None, is_deficit=False, unique_amount=False):
-        """Create a pending payment and return the exact amount to show in the QR.
-
-        Automatic verification gives each active order a distinct paise amount so
-        an incoming FamPay/bank credit can be matched to one order.
-        """
-        base_amount = round(float(amount), 2)
-        with self.connection() as conn:
-            with conn.cursor() as cur:
-                # Serialize amount assignment so two simultaneous orders cannot receive
-                # the same unique paise amount.
-                cur.execute("SELECT pg_advisory_xact_lock(727275)")
-                pay_amount = base_amount
-                if unique_amount:
-                    cur.execute(
-                        """
-                        SELECT pay_amount
-                        FROM payment_records
-                        WHERE status IN ('pending', 'awaiting_approval', 'expired', 'cancelled')
-                          AND (created_ts IS NULL OR created_ts >= now() - INTERVAL '90 minutes')
-                        """
-                    )
-                    used = {round(float(r["pay_amount"]), 2) for r in cur.fetchall()
-                            if r["pay_amount"] is not None}
-                    for cents in range(1, 100):
-                        candidate = round(base_amount + cents / 100.0, 2)
-                        if candidate not in used:
-                            pay_amount = candidate
-                            break
-                    else:
-                        raise RuntimeError("No unique paise amount is available for this payment.")
-
-                cur.execute(
-                    """
-                    INSERT INTO payment_records
-                    (user_id, order_id, amount, pay_amount, method, upi_id, created_at,
-                     created_ts, prod_key, plan, is_deficit, status)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, now(), %s, %s, %s, 'pending')
-                    ON CONFLICT (order_id) DO NOTHING
-                    RETURNING pay_amount
-                    """,
-                    (user_id, order_id, base_amount, pay_amount, method, upi_id, created_at,
-                     prod_key, plan, 1 if is_deficit else 0),
-                )
-                row = cur.fetchone()
-                if row:
-                    return float(row["pay_amount"])
-                existing = cur.execute(
-                    "SELECT pay_amount FROM payment_records WHERE order_id = %s",
-                    (order_id,),
-                ).fetchone()
-                if not existing:
-                    raise RuntimeError("Payment record could not be created.")
-                return float(existing["pay_amount"] or existing["amount"])
+                       prod_key=None, plan=None, is_deficit=False):
+        self.execute(
+            """
+            INSERT INTO payment_records
+            (user_id, order_id, amount, method, upi_id, created_at, prod_key, plan, is_deficit)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (order_id) DO NOTHING
+            """,
+            (user_id, order_id, amount, method, upi_id, created_at,
+             prod_key, plan, 1 if is_deficit else 0),
+        )
 
     def get_payment(self, order_id):
         return self.fetchone(
@@ -582,28 +488,11 @@ class Database:
         )
 
     def claim_payment(self, order_id, from_status, to_status, utr=None, verified_at=None):
-        """Atomically move a payment from one or more allowed statuses.
+        """Atomically move a payment from one status to another.
 
-        A string means one status; a tuple/list/set means any of those statuses.
-        This supports the bot's pending/expired button flow and multi-state
-        automatic settlement without allowing the same payment to be processed twice.
+        Returns the updated row, or None if the payment was not in `from_status`
+        (e.g. it was already approved), so a payment can never be processed twice.
         """
-        if isinstance(from_status, (list, tuple, set)):
-            statuses = list(from_status)
-            if not statuses:
-                return None
-            return self.fetchone(
-                """
-                UPDATE payment_records
-                SET status = %s,
-                    utr = COALESCE(%s, utr),
-                    verified_at = COALESCE(%s, verified_at)
-                WHERE order_id = %s AND status = ANY(%s)
-                RETURNING *
-                """,
-                (to_status, utr, verified_at, order_id, statuses),
-            )
-
         return self.fetchone(
             """
             UPDATE payment_records
@@ -628,94 +517,6 @@ class Database:
             (status, utr, verified_at, order_id),
         )
 
-    def set_payment_message(self, order_id, chat_id, message_id):
-        self.execute(
-            "UPDATE payment_records SET chat_id = %s, qr_msg_id = %s WHERE order_id = %s",
-            (chat_id, message_id, order_id),
-        )
-
-    # Payment settings used by the Telegram bot and web admin panel.
-    def get_payment_settings(self):
-        row = self.fetchone("SELECT upi_id, payee_name, auto_verify FROM payment_settings WHERE id = 1")
-        return row or {"upi_id": "", "payee_name": "Elite Hackers Store", "auto_verify": 0}
-
-    def set_payment_settings(self, upi_id, payee_name, auto_verify):
-        self.execute(
-            """
-            INSERT INTO payment_settings (id, upi_id, payee_name, auto_verify)
-            VALUES (1, %s, %s, %s)
-            ON CONFLICT (id) DO UPDATE SET
-                upi_id = EXCLUDED.upi_id,
-                payee_name = EXCLUDED.payee_name,
-                auto_verify = EXCLUDED.auto_verify
-            """,
-            (upi_id, payee_name, 1 if auto_verify else 0),
-        )
-
-    # Gmail credentials and trusted FamPay/bank sender domain.
-    def get_gmail_config(self):
-        row = self.fetchone(
-            "SELECT gmail_user, gmail_app_password, bank_domain FROM gmail_settings WHERE id = 1"
-        )
-        return row or {"gmail_user": "", "gmail_app_password": "", "bank_domain": ""}
-
-    def set_gmail_config(self, gmail_user, app_password, bank_domain):
-        current = self.get_gmail_config()
-        password = app_password if app_password is not None else current.get("gmail_app_password", "")
-        self.execute(
-            """
-            INSERT INTO gmail_settings (id, gmail_user, gmail_app_password, bank_domain)
-            VALUES (1, %s, %s, %s)
-            ON CONFLICT (id) DO UPDATE SET
-                gmail_user = EXCLUDED.gmail_user,
-                gmail_app_password = EXCLUDED.gmail_app_password,
-                bank_domain = EXCLUDED.bank_domain
-            """,
-            (gmail_user or "", password or "", bank_domain or ""),
-        )
-
-    # Incoming credit alerts are deduplicated before they can settle an order.
-    def record_bank_credit(self, fingerprint, amount, utr, raw_text, status):
-        row = self.fetchone(
-            """
-            INSERT INTO bank_credits (fingerprint, amount, utr, raw_text, status)
-            VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (fingerprint) DO NOTHING
-            RETURNING id
-            """,
-            (fingerprint, amount, utr, raw_text, status),
-        )
-        return row["id"] if row else None
-
-    def set_bank_credit_status(self, credit_id, status, order_id=None):
-        self.execute(
-            "UPDATE bank_credits SET status = %s, order_id = COALESCE(%s, order_id) WHERE id = %s",
-            (status, order_id, credit_id),
-        )
-
-    def recent_bank_credits(self, limit=20):
-        return self.fetchall(
-            """
-            SELECT id, amount, utr, raw_text, status, order_id, received_at
-            FROM bank_credits ORDER BY received_at DESC, id DESC LIMIT %s
-            """,
-            (limit,),
-        )
-
-    def find_open_payment_by_amount(self, amount):
-        """Find one recent unpaid order with the exact QR amount (including paise)."""
-        return self.fetchone(
-            """
-            SELECT * FROM payment_records
-            WHERE status IN ('pending', 'awaiting_approval', 'expired', 'cancelled')
-              AND ABS(COALESCE(pay_amount, amount) - %s) < 0.005
-              AND COALESCE(created_ts, now()) >= now() - INTERVAL '2 hours'
-            ORDER BY created_ts DESC NULLS LAST, id DESC
-            LIMIT 1
-            """,
-            (round(float(amount), 2),),
-        )
-
 
 db = Database(DATABASE_URL) if DATABASE_URL else None
 
@@ -727,7 +528,6 @@ def init_db():
         )
     db.init_db()
     return db
-
 
 
 
