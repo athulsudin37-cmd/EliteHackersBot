@@ -24,6 +24,25 @@ logger = logging.getLogger(__name__)
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
 
+# Main-menu buttons whose color can be chosen in the admin panel.
+# key -> (label shown in the admin panel, default color). Colors: primary = blue,
+# success = green, danger = red, none = Telegram's normal grey.
+MENU_BUTTONS = {
+    "shop_key": ("🛒 Shop Key", "success"),
+    "add_balance": ("💰 Add Balance", "success"),
+    "my_profile": ("👤 My Profile", "primary"),
+    "all_history": ("🧾 All History", "primary"),
+    "tutorial": ("▶️ Tutorial watch", "primary"),
+    "selling_proof": ("💼 Selling Proof", "primary"),
+    "lucky_spin": ("🎰 Lucky Spin", "danger"),
+    "referral": ("👥 Referral", "danger"),
+    "reseller": ("👑 Reseller", "success"),
+    "support": ("💬 Support", "success"),
+    "web_admin": ("👑 Web Admin Panel (owner only)", "success"),
+}
+BUTTON_COLORS = ("primary", "success", "danger")
+
+
 def parse_prices(raw):
     """Return prices as a list of [plan_name, price] pairs.
 
@@ -287,6 +306,13 @@ class Database:
             "CREATE INDEX IF NOT EXISTS idx_order_history_user ON order_history(user_id)",
             "CREATE INDEX IF NOT EXISTS idx_keys_product_plan ON keys_inventory(prod_key, plan, is_used)",
             "CREATE INDEX IF NOT EXISTS idx_payments_user_status ON payment_records(user_id, status)",
+            # --- Button colors chosen in the admin panel ---
+            """
+            CREATE TABLE IF NOT EXISTS button_styles (
+                btn_key TEXT PRIMARY KEY,
+                style TEXT NOT NULL DEFAULT ''
+            )
+            """,
             # --- Default rows ---
             """
             INSERT INTO store_settings (id, support_username, how_to_use_link, welcome_message)
@@ -529,6 +555,23 @@ class Database:
         if row:
             row["prices"] = parse_prices(row["prices"])
         return row
+
+    # ------------------------------------------------------------------
+    # Button colors (set from the admin panel)
+    # ------------------------------------------------------------------
+    def get_button_styles(self):
+        """{btn_key: style} where style is 'primary' | 'success' | 'danger' | 'none'."""
+        rows = self.fetchall("SELECT btn_key, style FROM button_styles")
+        return {r["btn_key"]: r["style"] for r in rows}
+
+    def set_button_style(self, btn_key, style):
+        self.execute(
+            """
+            INSERT INTO button_styles (btn_key, style) VALUES (%s, %s)
+            ON CONFLICT (btn_key) DO UPDATE SET style = EXCLUDED.style
+            """,
+            (btn_key, style),
+        )
 
     # ------------------------------------------------------------------
     # Payments
@@ -912,9 +955,3 @@ def init_db():
         )
     db.init_db()
     return db
-
-
-
-
-
-
