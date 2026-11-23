@@ -422,11 +422,11 @@ def notify_settlement(outcome):
     if row.get("chat_id") and row.get("qr_msg_id"):
         tg_call("deleteMessage", {"chat_id": row["chat_id"], "message_id": row["qr_msg_id"]})
 
-    buttons = [[{"text": "➡️ Back to Menu", "callback_data": "main_menu"}]]
+    buttons = [[tg_button("➡️ Back to Menu", "back_menu", callback_data="main_menu")]]
     if purchase and purchase["status"] == "ok":
         text = build_key_card(purchase["prod"]["name"], row["plan"], purchase["key"], purchase["balance"])
         if valid_url(purchase["prod"].get("download_link")):
-            buttons.insert(0, [{"text": "📥 Update File ↗️", "url": purchase["prod"]["download_link"]}])
+            buttons.insert(0, [tg_button("📥 Update File ↗️", "update_file", url=purchase["prod"]["download_link"])])
     elif purchase and purchase["status"] == "pending":
         text = build_pending_notice(purchase["prod"]["name"], row["plan"])
         admin_note = "\n⚠️ Out of stock: dispatch the key from <b>Pending Keys Queue</b> in the admin panel."
@@ -884,26 +884,38 @@ def get_button_styles():
         _style_cache["t"] = time.time()
     return _style_cache["data"]
 
-def styled_button(text, key, **kwargs):
-    """InlineKeyboardButton with the color saved for `key` (falls back to the default color).
-    The color is sent as the Bot API 'style' field through api_kwargs, which works on any
-    python-telegram-bot version."""
+def style_of(key):
+    """The color saved for a button key (or its default). None = Telegram's normal grey."""
     style = get_button_styles().get(key)
     if style is None:
         style = MENU_BUTTONS.get(key, ("", ""))[1]
-    if style in BUTTON_COLORS:
+    return style if style in BUTTON_COLORS else None
+
+def styled_button(text, key, **kwargs):
+    """InlineKeyboardButton with the color saved for `key`. The color is sent as the Bot API
+    'style' field through api_kwargs, which works on any python-telegram-bot version."""
+    style = style_of(key)
+    if style:
         kwargs["api_kwargs"] = {"style": style}
     return InlineKeyboardButton(text, **kwargs)
+
+def tg_button(text, key, **extra):
+    """Same as styled_button, for the plain-HTTP messages (dict buttons)."""
+    btn = {"text": text, **extra}
+    style = style_of(key)
+    if style:
+        btn["style"] = style
+    return btn
 
 def key_card_keyboard(prod):
     keyboard = []
     if prod and valid_url(prod.get("download_link")):
-        keyboard.append([InlineKeyboardButton("📥 Update File ↗️", url=prod["download_link"])])
-    keyboard.append([InlineKeyboardButton("➡️ Back to Menu", callback_data="main_menu")])
+        keyboard.append([styled_button("📥 Update File ↗️", "update_file", url=prod["download_link"])])
+    keyboard.append([styled_button("➡️ Back to Menu", "back_menu", callback_data="main_menu")])
     return InlineKeyboardMarkup(keyboard)
 
 def back_to_menu_markup():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("➡️ Back to Menu", callback_data="main_menu")]])
+    return InlineKeyboardMarkup([[styled_button("➡️ Back to Menu", "back_menu", callback_data="main_menu")]])
 
 # Initialize the persistent PostgreSQL schema before the bot starts.
 init_db()
@@ -1021,8 +1033,8 @@ async def support_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     keyboard = []
     if handle:
-        keyboard.append([InlineKeyboardButton("💬 Contact Support", url=f"https://t.me/{handle}")])
-    keyboard.append([InlineKeyboardButton("🔜 Back", callback_data="main_menu")])
+        keyboard.append([styled_button("💬 Contact Support", "support_contact", url=f"https://t.me/{handle}")])
+    keyboard.append([styled_button("🔜 Back", "back", callback_data="main_menu")])
     await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
 
 # ==========================================
@@ -1062,8 +1074,8 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     keyboard = [
-        [InlineKeyboardButton("👑 Upgrade To Reseller", callback_data="reseller_plan")],
-        [InlineKeyboardButton("🔜 Back", callback_data="main_menu")]
+        [styled_button("👑 Upgrade To Reseller", "profile_upgrade", callback_data="reseller_plan")],
+        [styled_button("🔜 Back", "back", callback_data="main_menu")]
     ]
     await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
 
@@ -1095,8 +1107,8 @@ async def reseller_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     keyboard = [
-        [InlineKeyboardButton("Buy Reseller Plan", callback_data="buy_reseller_action")],
-        [InlineKeyboardButton("🔜 Back", callback_data="main_menu")]
+        [styled_button("Buy Reseller Plan", "reseller_buy", callback_data="buy_reseller_action")],
+        [styled_button("🔜 Back", "back", callback_data="main_menu")]
     ]
     await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
 
@@ -1114,7 +1126,7 @@ async def buy_reseller_action(update: Update, context: ContextTypes.DEFAULT_TYPE
             "You are now officially a <b>👑 VIP Reseller!</b>\n"
             "₹700 activation fee deducted. Your remaining ₹1800+ is safe in your wallet for purchases."
         )
-        keyboard = [[InlineKeyboardButton("👤 View Profile", callback_data="my_profile")]]
+        keyboard = [[styled_button("👤 View Profile", "view_profile", callback_data="my_profile")]]
         await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
     else:
         text = (
@@ -1124,8 +1136,8 @@ async def buy_reseller_action(update: Update, context: ContextTypes.DEFAULT_TYPE
             "Please add balance to your wallet to activate the VIP Reseller Plan."
         )
         keyboard = [
-            [InlineKeyboardButton("💰 Add Balance", callback_data="add_balance")],
-            [InlineKeyboardButton("🔜 Back", callback_data="reseller_plan")]
+            [styled_button("💰 Add Balance", "reseller_add_balance", callback_data="add_balance")],
+            [styled_button("🔜 Back", "back", callback_data="reseller_plan")]
         ]
         await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
 
@@ -1144,8 +1156,8 @@ async def add_balance_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "_________________________"
     )
     keyboard = [
-        [InlineKeyboardButton("💳 Pay via UPI", callback_data="dep_method_upi")],
-        [InlineKeyboardButton("🔜 Back", callback_data="main_menu")]
+        [styled_button("💳 Pay via UPI", "pay_upi", callback_data="dep_method_upi")],
+        [styled_button("🔜 Back", "back", callback_data="main_menu")]
     ]
     await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
 
@@ -1165,10 +1177,10 @@ async def select_deposit_amount(update: Update, context: ContextTypes.DEFAULT_TY
         f"Min: ₹10.00 · Max: ₹50,000.00"
     )
     keyboard = [
-        [InlineKeyboardButton("₹100", callback_data="preset_dep_100"), InlineKeyboardButton("₹500", callback_data="preset_dep_500")],
-        [InlineKeyboardButton("₹1000", callback_data="preset_dep_1000"), InlineKeyboardButton("₹2000", callback_data="preset_dep_2000")],
-        [InlineKeyboardButton("✏️ Custom Amount", callback_data="numpad_open")],
-        [InlineKeyboardButton("👆 Back to Menu", callback_data="add_balance")]
+        [styled_button("₹100", "preset_amount", callback_data="preset_dep_100"), styled_button("₹500", "preset_amount", callback_data="preset_dep_500")],
+        [styled_button("₹1000", "preset_amount", callback_data="preset_dep_1000"), styled_button("₹2000", "preset_amount", callback_data="preset_dep_2000")],
+        [styled_button("✏️ Custom Amount", "custom_amount", callback_data="numpad_open")],
+        [styled_button("👆 Back to Menu", "back", callback_data="add_balance")]
     ]
     await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
 
@@ -1190,12 +1202,12 @@ async def render_numpad(update: Update, context: ContextTypes.DEFAULT_TYPE):
     confirm_text = f"✅ Confirm {amt_display}" if current_digits and int(current_digits) >= 10 else "✅ Confirm"
 
     keyboard = [
-        [InlineKeyboardButton("1", callback_data="np_1"), InlineKeyboardButton("2", callback_data="np_2"), InlineKeyboardButton("3", callback_data="np_3")],
-        [InlineKeyboardButton("4", callback_data="np_4"), InlineKeyboardButton("5", callback_data="np_5"), InlineKeyboardButton("6", callback_data="np_6")],
-        [InlineKeyboardButton("7", callback_data="np_7"), InlineKeyboardButton("8", callback_data="np_8"), InlineKeyboardButton("9", callback_data="np_9")],
-        [InlineKeyboardButton("C", callback_data="np_clear"), InlineKeyboardButton("0", callback_data="np_0"), InlineKeyboardButton("⌫", callback_data="np_backspace")],
-        [InlineKeyboardButton(confirm_text, callback_data="np_confirm")],
-        [InlineKeyboardButton("✋ Back", callback_data="dep_method_upi")]
+        [styled_button("1", "np_digit", callback_data="np_1"), styled_button("2", "np_digit", callback_data="np_2"), styled_button("3", "np_digit", callback_data="np_3")],
+        [styled_button("4", "np_digit", callback_data="np_4"), styled_button("5", "np_digit", callback_data="np_5"), styled_button("6", "np_digit", callback_data="np_6")],
+        [styled_button("7", "np_digit", callback_data="np_7"), styled_button("8", "np_digit", callback_data="np_8"), styled_button("9", "np_digit", callback_data="np_9")],
+        [styled_button("C", "np_clear", callback_data="np_clear"), styled_button("0", "np_digit", callback_data="np_0"), styled_button("⌫", "np_backspace", callback_data="np_backspace")],
+        [styled_button(confirm_text, "np_confirm", callback_data="np_confirm")],
+        [styled_button("✋ Back", "back", callback_data="dep_method_upi")]
     ]
     markup = InlineKeyboardMarkup(keyboard)
 
@@ -1322,8 +1334,8 @@ async def generate_deposit_qr(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
 
     keyboard = [
-        [InlineKeyboardButton("✅ I have paid", callback_data=f"paid_{order_id}")],
-        [InlineKeyboardButton("❌ Cancel Payment", callback_data=f"canceldep_{order_id}")],
+        [styled_button("✅ I have paid", "paid", callback_data=f"paid_{order_id}")],
+        [styled_button("❌ Cancel Payment", "cancel_payment", callback_data=f"canceldep_{order_id}")],
     ]
 
     try:
@@ -1374,7 +1386,7 @@ async def generate_deposit_qr(update: Update, context: ContextTypes.DEFAULT_TYPE
                     f"<i>Paid but nothing arrived? Tap the button below. Or tap /start for a new order.</i>"
                 )
                 exp_markup = InlineKeyboardMarkup(
-                    [[InlineKeyboardButton("💬 I paid but wasn't credited", callback_data=f"paid_{order_id}")]]
+                    [[styled_button("💬 I paid but wasn't credited", "paid_not_credited", callback_data=f"paid_{order_id}")]]
                 )
             else:
                 exp_text = (
@@ -1414,8 +1426,8 @@ async def notify_admin_to_verify(bot, pay, user_id, full_name, note=""):
         lines += ["", note]
     lines += ["", "Check your FamPay / bank app for this amount, then choose:"]
     markup = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Approve", callback_data=f"adm_ok_{order_id}"),
-        InlineKeyboardButton("❌ Reject", callback_data=f"adm_no_{order_id}"),
+        styled_button("✅ Approve", "admin_approve", callback_data=f"adm_ok_{order_id}"),
+        styled_button("❌ Reject", "admin_reject", callback_data=f"adm_no_{order_id}"),
     ]])
     try:
         await bot.send_message(chat_id=ADMIN_ID, text="\n".join(lines), parse_mode="HTML", reply_markup=markup)
@@ -1652,8 +1664,8 @@ async def lucky_spin_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     keyboard = []
     if remaining <= 0:
-        keyboard.append([InlineKeyboardButton("🍯 Spin Now! (FREE)", callback_data="spin_action_play")])
-    keyboard.append([InlineKeyboardButton("🔜 Back", callback_data="main_menu")])
+        keyboard.append([styled_button("🍯 Spin Now! (FREE)", "spin_now", callback_data="spin_action_play")])
+    keyboard.append([styled_button("🔜 Back", "back", callback_data="main_menu")])
     await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
 
 async def perform_lucky_spin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1695,8 +1707,8 @@ async def perform_lucky_spin(update: Update, context: ContextTypes.DEFAULT_TYPE)
         f"🕒 Next free spin available in {SPIN_COOLDOWN_HOURS} Hours!"
     )
     keyboard = [
-        [InlineKeyboardButton(f"🛒 Shop Now — Use ₹{won_amount}", callback_data="shop_key")],
-        [InlineKeyboardButton("🔜 Back", callback_data="main_menu")]
+        [styled_button(f"🛒 Shop Now — Use ₹{won_amount}", "spin_shop", callback_data="shop_key")],
+        [styled_button("🔜 Back", "back", callback_data="main_menu")]
     ]
     await query.message.edit_text(result_text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -1725,7 +1737,7 @@ async def referral_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "_________________________\n\n"
         "💰 Invite your friends → Get a guaranteed bonus on their first purchase!"
     )
-    keyboard = [[InlineKeyboardButton("🔜 Back", callback_data="main_menu")]]
+    keyboard = [[styled_button("🔜 Back", "back", callback_data="main_menu")]]
     await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
 
 # ==========================================
@@ -1759,7 +1771,7 @@ async def history_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         text += "__________________________________"
 
-    keyboard = [[InlineKeyboardButton("🔜 Back", callback_data="main_menu")]]
+    keyboard = [[styled_button("🔜 Back", "back", callback_data="main_menu")]]
     await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
 
 # ==========================================
@@ -1771,12 +1783,12 @@ async def shop_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = "🛒 <b>PRODUCT STORE — SHOP</b> 🛒\n\n📱 Select your device type:"
     keyboard = [
-        [InlineKeyboardButton("☎️ Non-Root Mobile", callback_data="pcat_non_root")],
-        [InlineKeyboardButton("🔓 Root Mobile", callback_data="pcat_root")],
-        [InlineKeyboardButton("🍏 iOS Panels", callback_data="pcat_ios")],
-        [InlineKeyboardButton("💻 PC Panels", callback_data="pcat_pc")],
-        [InlineKeyboardButton("🆔 8 Level ID", callback_data="pcat_likes")],
-        [InlineKeyboardButton("👆 Back", callback_data="main_menu")]
+        [styled_button("☎️ Non-Root Mobile", "cat_non_root", callback_data="pcat_non_root")],
+        [styled_button("🔓 Root Mobile", "cat_root", callback_data="pcat_root")],
+        [styled_button("🍏 iOS Panels", "cat_ios", callback_data="pcat_ios")],
+        [styled_button("💻 PC Panels", "cat_pc", callback_data="pcat_pc")],
+        [styled_button("🆔 8 Level ID", "cat_likes", callback_data="pcat_likes")],
+        [styled_button("👆 Back", "back", callback_data="main_menu")]
     ]
     await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
 
@@ -1790,13 +1802,13 @@ async def list_category_products(update: Update, context: ContextTypes.DEFAULT_T
 
     if not prods:
         text = "🛒 <b>PRODUCT STORE — SHOP</b> 🛒\n\n⚠️ No products available in this category yet. Admin will restock soon!"
-        keyboard = [[InlineKeyboardButton("👆 Back", callback_data="shop_key")]]
+        keyboard = [[styled_button("👆 Back", "back", callback_data="shop_key")]]
         await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
         return
 
     text = "🛒 <b>PRODUCT STORE — SHOP</b> 🛒\n\n🔥 Choose a product:"
-    keyboard = [[InlineKeyboardButton(f"{p['icon']} {p['name']}", callback_data=f"selprod_{k}")] for k, p in prods.items()]
-    keyboard.append([InlineKeyboardButton("👆 Back", callback_data="shop_key")])
+    keyboard = [[styled_button(f"{p['icon']} {p['name']}", "product_item", callback_data=f"selprod_{k}")] for k, p in prods.items()]
+    keyboard.append([styled_button("👆 Back", "back", callback_data="shop_key")])
     await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
 
 def build_plans_view(user_id, prod_key):
@@ -1824,15 +1836,15 @@ def build_plans_view(user_id, prod_key):
     keyboard = []
     for pl_name, reg_price in prod.get("prices", []):
         final_price = unit_price(reg_price, is_reseller)
-        keyboard.append([InlineKeyboardButton(
-            f"🕒 {pl_name.replace('_', ' ')} | {fmt_price(final_price)}",
+        keyboard.append([styled_button(
+            f"🕒 {pl_name.replace('_', ' ')} | {fmt_price(final_price)}", "plan_item",
             callback_data=f"buyplan_{prod_key}_{pl_name}"
         )])
 
     if valid_url(prod.get("download_link")):
-        keyboard.append([InlineKeyboardButton("🎥 Preview Video", url=prod["download_link"])])
+        keyboard.append([styled_button("🎥 Preview Video", "preview_video", url=prod["download_link"])])
 
-    keyboard.append([InlineKeyboardButton("🔜 Back", callback_data="pcat_" + (prod.get("category") or "non_root"))])
+    keyboard.append([styled_button("🔜 Back", "back", callback_data="pcat_" + (prod.get("category") or "non_root"))])
     return text, InlineKeyboardMarkup(keyboard)
 
 async def show_product_plans(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1902,13 +1914,13 @@ async def process_plan_purchase(update: Update, context: ContextTypes.DEFAULT_TY
             f"Select payment method below:"
         )
         keyboard = [
-            [InlineKeyboardButton("💳 Pay via UPI", callback_data="def_pay_upi")],
-            [InlineKeyboardButton("🔜 Back to Plans", callback_data=f"selprod_{prod_key}")]
+            [styled_button("💳 Pay via UPI", "pay_upi", callback_data="def_pay_upi")],
+            [styled_button("🔜 Back to Plans", "back", callback_data=f"selprod_{prod_key}")]
         ]
         await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
 
     elif status == "out_of_stock":
-        keyboard = [[InlineKeyboardButton("🔜 Back to Plans", callback_data=f"selprod_{prod_key}")]]
+        keyboard = [[styled_button("🔜 Back to Plans", "back", callback_data=f"selprod_{prod_key}")]]
         await replace_callback_message(
             query, context,
             "⚠️ <b>Out of Stock!</b> Keys will be restocked shortly. You were not charged.",
@@ -1927,7 +1939,7 @@ async def def_pay_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     def_data = context.user_data.get('pending_deficit')
     if not def_data:
-        keyboard = [[InlineKeyboardButton("🛒 Open Shop", callback_data="shop_key")]]
+        keyboard = [[styled_button("🛒 Open Shop", "open_shop", callback_data="shop_key")]]
         await replace_callback_message(
             query, context, "⚠️ Session expired. Please select the product again.", InlineKeyboardMarkup(keyboard)
         )
