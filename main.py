@@ -25,7 +25,7 @@ from telegram.error import BadRequest
 import web_admin
 
 # 🗄️ Persistent PostgreSQL database layer
-from database import db, init_db as init_persistent_db
+from database import db, init_db as init_persistent_db, MENU_BUTTONS, BUTTON_COLORS
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -869,6 +869,32 @@ web_admin.parse_sms = parse_sms
 web_admin.gmail_status = lambda: dict(GMAIL_STATUS)
 web_admin.gmail_detect = gmail_detect_sender
 
+# ==========================================
+# 🎨 BUTTON COLORS (chosen in the admin panel → "Button Colors")
+# ==========================================
+_style_cache = {"t": 0.0, "data": {}}
+
+def get_button_styles():
+    """Saved colors, cached for 5 seconds so a change in the admin panel shows up almost at once."""
+    if time.time() - _style_cache["t"] > 5:
+        try:
+            _style_cache["data"] = db.get_button_styles()
+        except Exception:
+            logger.exception("Could not load button colors")
+        _style_cache["t"] = time.time()
+    return _style_cache["data"]
+
+def styled_button(text, key, **kwargs):
+    """InlineKeyboardButton with the color saved for `key` (falls back to the default color).
+    The color is sent as the Bot API 'style' field through api_kwargs, which works on any
+    python-telegram-bot version."""
+    style = get_button_styles().get(key)
+    if style is None:
+        style = MENU_BUTTONS.get(key, ("", ""))[1]
+    if style in BUTTON_COLORS:
+        kwargs["api_kwargs"] = {"style": style}
+    return InlineKeyboardButton(text, **kwargs)
+
 def key_card_keyboard(prod):
     keyboard = []
     if prod and valid_url(prod.get("download_link")):
@@ -959,16 +985,16 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tutorial_link = "https://t.me/chatelitehackers"
 
     keyboard = [
-        [InlineKeyboardButton("🛒 Shop Key", callback_data="shop_key"), InlineKeyboardButton("👤 My Profile", callback_data="my_profile")],
-        [InlineKeyboardButton("💰 Add Balance", callback_data="add_balance"), InlineKeyboardButton("🧾 All History", callback_data="all_history")],
-        [InlineKeyboardButton("▶️ Tutorial watch", url=tutorial_link), InlineKeyboardButton("👑 Reseller", callback_data="reseller_plan")],
-        [InlineKeyboardButton("💼 Selling Proof ↗️", url="https://t.me/+fJrFACSrntgwNjll"), InlineKeyboardButton("💬 Support", callback_data="support_contact")],
-        [InlineKeyboardButton("🎰 Lucky Spin", callback_data="lucky_spin"), InlineKeyboardButton("👥 Referral", callback_data="referral_menu")]
+        [styled_button("🛒 Shop Key", "shop_key", callback_data="shop_key"), styled_button("👤 My Profile", "my_profile", callback_data="my_profile")],
+        [styled_button("💰 Add Balance", "add_balance", callback_data="add_balance"), styled_button("🧾 All History", "all_history", callback_data="all_history")],
+        [styled_button("▶️ Tutorial watch", "tutorial", url=tutorial_link), styled_button("👑 Reseller", "reseller", callback_data="reseller_plan")],
+        [styled_button("💼 Selling Proof ↗️", "selling_proof", url="https://t.me/+fJrFACSrntgwNjll"), styled_button("💬 Support", "support", callback_data="support_contact")],
+        [styled_button("🎰 Lucky Spin", "lucky_spin", callback_data="lucky_spin"), styled_button("👥 Referral", "referral", callback_data="referral_menu")]
     ]
 
     if user.id == ADMIN_ID:
         r_url = os.environ.get("RENDER_EXTERNAL_URL", "http://localhost:8080")
-        keyboard.append([InlineKeyboardButton("👑 Web Admin Panel", url=r_url)])
+        keyboard.append([styled_button("👑 Web Admin Panel", "web_admin", url=r_url)])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
 
