@@ -232,6 +232,108 @@ ADMIN_HTML = """
         .badge-st { padding: 4px 10px; border-radius: 10px; font-size: .75rem; font-weight: 700; }
         .b-verified { background: rgba(16,185,129,.2); color: #6ee7b7; } .b-pending, .b-awaiting_approval { background: rgba(250,204,21,.2); color: #fde68a; }
         .b-rejected, .b-cancelled, .b-expired { background: rgba(248,113,113,.2); color: #fca5a5; }
+
+        /* ===================== PANEL COMPONENTS (cards, sections, chips, stats) ===================== */
+        .gcard { --ac: #8b5cf6; position: relative; background: var(--card-glass); border: 1px solid var(--neon-border); border-top: 4px solid var(--ac); border-radius: 22px; padding: 18px 16px; margin-bottom: 18px; box-shadow: 0 10px 30px rgba(0,0,0,.35); }
+        .gcard.blue { --ac: #38bdf8; } .gcard.green { --ac: #34d399; } .gcard.amber { --ac: #fbbf24; } .gcard.pink { --ac: #f472b6; } .gcard.red { --ac: #fb7185; }
+        .gt { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 14px; font-weight: 800; font-size: 1.05rem; color: #fff; }
+        .sec-head { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; padding-bottom: 14px; border-bottom: 1px dashed rgba(167,139,250,.35); }
+        .sec-no { width: 36px; height: 36px; border-radius: 12px; background: var(--ac); color: #0b0420; font-weight: 900; font-size: 1.05rem; display: flex; align-items: center; justify-content: center; flex-shrink: 0; box-shadow: 0 4px 14px rgba(0,0,0,.35); }
+        .sec-head h5 { margin: 0; font-weight: 800; font-size: 1.08rem; color: #fff; }
+        .sec-head p { margin: 2px 0 0; color: var(--txt-soft); font-size: .82rem; line-height: 1.4; }
+        .sec-head .pill { margin-left: auto; }
+        .sec-nav { display: flex; gap: 8px; overflow-x: auto; padding: 2px 2px 14px; margin-bottom: 4px; -webkit-overflow-scrolling: touch; }
+        .sec-nav::-webkit-scrollbar { display: none; }
+
+        .chip-btn { display: inline-flex; align-items: center; gap: 6px; padding: 9px 14px; border-radius: 999px; background: rgba(40,20,90,.55); border: 1px solid rgba(139,92,246,.5); color: #e9e5ff; font-weight: 700; font-size: .85rem; white-space: nowrap; cursor: pointer; }
+        .chip-btn:hover { color: #fff; border-color: #c4b5fd; }
+        .chip-btn.on { background: linear-gradient(135deg, #8b5cf6, #6366f1); border-color: #c4b5fd; color: #fff; box-shadow: 0 4px 14px rgba(99,102,241,.45); }
+
+        .pill { display: inline-flex; align-items: center; gap: 4px; padding: 4px 11px; border-radius: 999px; font-size: .76rem; font-weight: 800; background: rgba(139,92,246,.22); color: #ddd6fe; border: 1px solid rgba(139,92,246,.4); white-space: nowrap; }
+        .pill.g { background: rgba(16,185,129,.18); color: #6ee7b7; border-color: rgba(16,185,129,.45); }
+        .pill.a { background: rgba(250,204,21,.16); color: #fde68a; border-color: rgba(250,204,21,.45); }
+        .pill.r { background: rgba(248,113,113,.18); color: #fca5a5; border-color: rgba(248,113,113,.45); }
+        .pill.b { background: rgba(56,189,248,.16); color: #7dd3fc; border-color: rgba(56,189,248,.45); }
+
+        .set-note { font-size: .8rem; color: var(--txt-soft); line-height: 1.5; margin-top: 6px; }
+        .set-new { margin-left: 8px; padding: 2px 8px; border-radius: 8px; background: #22c55e; color: #052e16; font-size: .65rem; font-weight: 900; }
+        .empty-note { text-align: center; padding: 22px 10px; color: var(--txt-soft); border: 1px dashed rgba(167,139,250,.35); border-radius: 14px; }
+        .live-dot { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; background: rgba(16,185,129,.18); color: #6ee7b7; font-size: .68rem; font-weight: 900; letter-spacing: .08em; }
+        .live-dot::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: #34d399; animation: pulseDot 1.4s infinite; }
+        @keyframes pulseDot { 0% { box-shadow: 0 0 0 0 rgba(52,211,153,.7); } 100% { box-shadow: 0 0 0 9px rgba(52,211,153,0); } }
+
+        .ov-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+        .ov { background: rgba(10,4,30,.55); border: 1px solid rgba(139,92,246,.35); border-radius: 16px; padding: 14px 12px; text-align: center; }
+        .oi { font-size: 1.5rem; margin-bottom: 4px; }
+        .ov-v { font-size: 1.45rem; font-weight: 900; color: #fff; line-height: 1.1; }
+        .ov-l { font-size: .74rem; color: var(--txt-soft); margin-top: 4px; letter-spacing: .03em; }
+
+        .btn-danger-soft { background: rgba(225,29,72,.18); border: 1px solid #e11d48; color: #fda4af; border-radius: 12px; padding: 9px 16px; font-weight: 700; }
+        .btn-ghost { width: 100%; margin-top: 10px; padding: 12px; border-radius: 14px; background: transparent; border: 1px dashed rgba(167,139,250,.6); color: #ddd6fe; font-weight: 700; }
+        .btn-send { width: 100%; margin-top: 8px; padding: 15px; border: none; border-radius: 16px; background: linear-gradient(135deg, #10b981, #059669); color: #fff; font-weight: 900; font-size: 1.02rem; box-shadow: 0 8px 24px rgba(16,185,129,.4); }
+        .btn-send:disabled { opacity: .55; }
+
+        /* Live key status */
+        .lk-filters { display: grid; grid-template-columns: 1fr; gap: 8px; margin-bottom: 12px; }
+        @media (min-width: 700px) { .lk-filters { grid-template-columns: 2fr 1fr 1fr auto; } }
+        .lk-user { display: none; background: rgba(56,189,248,.1); border: 1px solid rgba(56,189,248,.4); border-radius: 14px; padding: 12px 14px; margin-bottom: 12px; }
+        .uname { font-weight: 800; color: #fff; } .umeta { font-size: .82rem; color: var(--txt-soft); margin-top: 3px; }
+        .lk-sum { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+        .lk-row { background: rgba(10,4,30,.55); border: 1px solid rgba(139,92,246,.3); border-left: 4px solid #8b5cf6; border-radius: 14px; padding: 12px 14px; margin-bottom: 10px; }
+        .lk-top { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
+        .lk-prod { font-weight: 800; color: #fff; margin-bottom: 6px; }
+        .lk-price { font-weight: 900; color: #6ee7b7; font-size: 1.1rem; white-space: nowrap; }
+        .lk-key { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; background: #0d0622; border: 1px solid rgba(139,92,246,.45); border-radius: 10px; padding: 6px 8px 6px 10px; font-family: monospace; font-size: .85rem; color: #e9e5ff; word-break: break-all; }
+        .lk-copy { border: none; background: rgba(139,92,246,.35); color: #fff; border-radius: 8px; padding: 3px 8px; }
+        .lk-meta { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 10px; padding-top: 8px; border-top: 1px dashed rgba(167,139,250,.25); font-size: .78rem; color: var(--txt-soft); }
+        .lk-pager { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 12px; font-size: .82rem; color: var(--txt-soft); }
+        .lk-pager button { background: rgba(40,20,90,.6); border: 1px solid rgba(139,92,246,.5); color: #fff; border-radius: 10px; padding: 6px 12px; font-weight: 700; }
+        .lk-pager button:disabled { opacity: .4; }
+
+        /* Broadcast */
+        .bc-premium { position: absolute; top: 14px; right: 14px; padding: 3px 10px; border-radius: 999px; background: linear-gradient(135deg, #f59e0b, #ec4899); color: #fff; font-size: .68rem; font-weight: 900; letter-spacing: .06em; }
+        .bc-aud { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 4px; }
+        .bc-tools { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 8px; }
+        .bc-tools button { min-width: 40px; padding: 7px 11px; border-radius: 10px; background: rgba(40,20,90,.6); border: 1px solid rgba(139,92,246,.5); color: #fff; font-weight: 700; }
+        .media-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+        .media-tile { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 16px 6px; border-radius: 16px; background: rgba(10,4,30,.55); border: 2px dashed rgba(139,92,246,.5); color: #e9e5ff; font-weight: 700; font-size: .88rem; cursor: pointer; text-align: center; }
+        .media-tile.on { border-style: solid; border-color: #34d399; background: rgba(16,185,129,.14); color: #6ee7b7; }
+        .mi { font-size: 1.8rem; }
+        .media-file { display: none; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; padding: 10px 12px; border-radius: 12px; background: rgba(16,185,129,.12); border: 1px solid rgba(16,185,129,.4); color: #d1fae5; font-size: .85rem; word-break: break-all; }
+        .tg-preview { background: #0e1621; border-radius: 16px; padding: 14px; margin-bottom: 12px; }
+        .tg-bubble { background: #182533; color: #fff; border-radius: 14px 14px 14px 4px; padding: 10px 13px; max-width: 100%; white-space: pre-wrap; word-break: break-word; font-size: .92rem; }
+        .tg-media { background: rgba(255,255,255,.08); border-radius: 10px; padding: 8px 10px; margin-bottom: 8px; font-size: .82rem; color: #93c5fd; }
+        .bc-hist { background: rgba(10,4,30,.55); border: 1px solid rgba(139,92,246,.3); border-radius: 14px; padding: 12px 14px; margin-bottom: 10px; }
+        .bar { height: 9px; border-radius: 99px; background: rgba(255,255,255,.1); overflow: hidden; margin-top: 8px; }
+        .bar > i { display: block; height: 100%; width: 0; border-radius: 99px; background: linear-gradient(90deg, #8b5cf6, #38bdf8, #34d399); transition: width .3s ease; }
+
+        /* Upload / send progress (Broadcast) */
+        .up-card { display: none; margin-top: 16px; padding: 14px; border-radius: 16px; background: rgba(10,4,30,.7); border: 1px solid rgba(56,189,248,.5); }
+        .up-card.done { border-color: rgba(52,211,153,.7); background: rgba(16,185,129,.1); }
+        .up-card.err { border-color: rgba(248,113,113,.7); background: rgba(225,29,72,.1); }
+        .up-title { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-weight: 800; color: #fff; }
+        .up-pct { font-size: 1.5rem; font-weight: 900; color: #7dd3fc; }
+        .up-card.done .up-pct { color: #6ee7b7; }
+        .up-bar { height: 14px; border-radius: 99px; background: rgba(255,255,255,.12); overflow: hidden; margin: 10px 0; }
+        .up-bar > i { display: block; height: 100%; width: 0; border-radius: 99px; background: linear-gradient(90deg, #8b5cf6, #38bdf8); transition: width .25s ease; }
+        .up-card.done .up-bar > i { background: linear-gradient(90deg, #10b981, #34d399); }
+        .up-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px 12px; font-size: .82rem; color: var(--txt-soft); }
+        .up-grid b { color: #fff; }
+        .up-steps { display: flex; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
+        .up-step { padding: 3px 10px; border-radius: 999px; font-size: .72rem; font-weight: 800; background: rgba(255,255,255,.08); color: var(--txt-soft); }
+        .up-step.on { background: rgba(56,189,248,.25); color: #7dd3fc; } .up-step.ok { background: rgba(16,185,129,.22); color: #6ee7b7; }
+
+        /* Profile */
+        .owner-card { display: flex; align-items: center; gap: 16px; background: linear-gradient(135deg, #2a1466, #120832); border: 1px solid var(--neon-border); border-radius: 22px; padding: 18px; margin-bottom: 18px; }
+        .owner-card h4 { margin: 0 0 6px; font-weight: 800; color: #fff; }
+        .crown-big { width: 64px; height: 64px; border-radius: 50%; background: linear-gradient(135deg, #f59e0b, #ec4899, #8b5cf6); display: flex; align-items: center; justify-content: center; font-size: 2rem; flex-shrink: 0; }
+        .meter { height: 7px; border-radius: 99px; background: rgba(255,255,255,.12); overflow: hidden; margin: 8px 0 4px; }
+        .meter > i { display: block; height: 100%; width: 0; background: #ef4444; transition: width .25s, background .25s; }
+
+        /* Toasts */
+        #toastBox { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 5000; display: flex; flex-direction: column; gap: 8px; align-items: center; width: calc(100% - 28px); max-width: 420px; pointer-events: none; }
+        .toast-i { background: #065f46; color: #fff; padding: 12px 18px; border-radius: 14px; font-weight: 700; box-shadow: 0 8px 28px rgba(0,0,0,.5); border: 1px solid #34d399; width: 100%; text-align: center; }
+        .toast-i.err { background: #7f1d1d; border-color: #f87171; }
 </style>
 </head>
 <body>
@@ -578,22 +680,29 @@ ADMIN_HTML = """
         <div class="tab-pane-content" id="tab-broadcast" style="display:none;">
             <div class="page-head">
                 <div class="ph-ic">📢</div>
-                <div><h3>Broadcast</h3><p>Send messages to all users.</p></div>
+                <div><h3>Broadcast</h3><p>Send a message, photo, video or voice note to your users.</p></div>
             </div>
 
+            <!-- STEP 1: AUDIENCE -->
             <div class="gcard">
-                <span class="bc-premium">✨ PREMIUM</span>
-                <h5 class="gt" style="margin-top:0;">Broadcast to Your Users</h5>
-
-                <label class="small mb-1">Audience</label>
+                <div class="sec-head">
+                    <span class="sec-no">1</span>
+                    <div><h5>Choose Audience</h5><p>Who should receive this broadcast?</p></div>
+                </div>
                 <div class="bc-aud" id="bc_aud">
                     <button type="button" class="chip-btn on" data-aud="all" data-n="{{ bc_counts.all }}" onclick="bcAud(this)">👥 All ({{ bc_counts.all }})</button>
                     <button type="button" class="chip-btn" data-aud="customers" data-n="{{ bc_counts.customers }}" onclick="bcAud(this)">🛒 Buyers ({{ bc_counts.customers }})</button>
                     <button type="button" class="chip-btn" data-aud="non_buyers" data-n="{{ bc_counts.non_buyers }}" onclick="bcAud(this)">🆕 Not bought yet ({{ bc_counts.non_buyers }})</button>
                     <button type="button" class="chip-btn" data-aud="resellers" data-n="{{ bc_counts.resellers }}" onclick="bcAud(this)">👑 Resellers ({{ bc_counts.resellers }})</button>
                 </div>
+            </div>
 
-                <label class="small mb-1">Message</label>
+            <!-- STEP 2: MESSAGE -->
+            <div class="gcard blue">
+                <div class="sec-head">
+                    <span class="sec-no">2</span>
+                    <div><h5>Write Message</h5><p>Use the buttons for bold, italic, code, links and emojis.</p></div>
+                </div>
                 <div class="bc-tools">
                     <button type="button" onclick="bcWrap('b')"><b>B</b></button>
                     <button type="button" onclick="bcWrap('i')"><i>I</i></button>
@@ -603,27 +712,55 @@ ADMIN_HTML = """
                     <button type="button" onclick="bcEmoji('🎁')">🎁</button>
                     <button type="button" onclick="bcEmoji('⚡')">⚡</button>
                 </div>
-                <textarea id="bc_msg" class="form-control" rows="6" placeholder="Message... (HTML supported: bold, italic, code, links)" oninput="bcPreview()"></textarea>
+                <textarea id="bc_msg" class="form-control" rows="6" placeholder="Type your message here..." oninput="bcPreview()"></textarea>
                 <div class="set-note"><span id="bc_count">0</span> characters · with media, text over 1024 characters is sent as a separate message.</div>
+            </div>
 
-                <label class="small mb-1 mt-3">Attach media (optional)</label>
+            <!-- STEP 3: MEDIA -->
+            <div class="gcard amber">
+                <div class="sec-head">
+                    <span class="sec-no">3</span>
+                    <div><h5>Attach Media <span class="pill">optional</span></h5><p>One file only. Maximum 50 MB.</p></div>
+                </div>
                 <div class="media-grid">
                     <label class="media-tile" id="mt_image"><span class="mi">🖼️</span>Image<input type="file" id="bc_image" accept="image/*" hidden onchange="bcPick('image', this)"></label>
                     <label class="media-tile" id="mt_video"><span class="mi">🎬</span>Video<input type="file" id="bc_video" accept="video/*" hidden onchange="bcPick('video', this)"></label>
                     <label class="media-tile" id="mt_voice"><span class="mi">🎙️</span>Voice<input type="file" id="bc_voice" accept="audio/*,.ogg,.oga,.opus" hidden onchange="bcPick('voice', this)"></label>
                 </div>
                 <div class="media-file" id="bc_file"><span id="bc_file_name"></span><button type="button" class="btn-danger-soft" onclick="bcClearMedia()">✕ Remove</button></div>
-                <div class="set-note mb-2">Max 50 MB. Voice: .ogg (Opus) plays as a voice note; mp3/m4a are sent as audio.</div>
-
-                <div class="small mb-1">Preview</div>
-                <div class="tg-preview"><div class="tg-bubble" id="bc_prev"><span style="color:#8d96b5;">Your message preview appears here...</span></div></div>
-
-                <button class="btn-send" id="bc_send" onclick="sendBroadcast()">🚀 Send to All {{ bc_counts.all }} Users</button>
-                <button class="btn-ghost" onclick="sendBroadcast(true)">📨 Send Test to Me First</button>
+                <div class="set-note">Voice: a .ogg (Opus) file plays as a voice note; mp3 / m4a are sent as audio.</div>
             </div>
 
-            <div class="gcard blue">
-                <h5 class="gt">📜 Broadcast History</h5>
+            <!-- STEP 4: PREVIEW & SEND -->
+            <div class="gcard green">
+                <span class="bc-premium">✨ PREMIUM</span>
+                <div class="sec-head">
+                    <span class="sec-no">4</span>
+                    <div><h5>Preview &amp; Send</h5><p>Check how it looks, send yourself a test, then send to everyone.</p></div>
+                </div>
+                <div class="tg-preview"><div class="tg-bubble" id="bc_prev"><span style="color:#8d96b5;">Your message preview appears here...</span></div></div>
+                <button class="btn-send" id="bc_send" onclick="sendBroadcast()">🚀 Send to All {{ bc_counts.all }} Users</button>
+                <button class="btn-ghost" id="bc_test" onclick="sendBroadcast(true)">📨 Send Test to Me First</button>
+
+                <!-- Live upload / sending progress -->
+                <div class="up-card" id="bc_prog">
+                    <div class="up-steps">
+                        <span class="up-step" id="ps_up">1 · Upload</span>
+                        <span class="up-step" id="ps_send">2 · Sending</span>
+                        <span class="up-step" id="ps_done">3 · Done</span>
+                    </div>
+                    <div class="up-title"><span id="up_title">Uploading...</span><span class="up-pct" id="up_pct">0%</span></div>
+                    <div class="up-bar"><i id="up_bar"></i></div>
+                    <div class="up-grid" id="up_grid"></div>
+                </div>
+            </div>
+
+            <!-- HISTORY -->
+            <div class="gcard pink">
+                <div class="sec-head">
+                    <span class="sec-no">5</span>
+                    <div><h5>Broadcast History</h5><p>Your last 15 broadcasts with delivery results.</p></div>
+                </div>
                 <div id="bc_hist"><div class="empty-note">No broadcasts yet.</div></div>
             </div>
         </div>
@@ -845,34 +982,132 @@ ADMIN_HTML = """
             </div>
         </div>
 
-        <!-- 1️⃣5️⃣ 🔑 TAB: MANAGE KEYS (add stock) -->
+        <!-- 1️⃣5️⃣ 🔑 TAB: MANAGE KEYS -->
         <div class="tab-pane-content" id="tab-keystock" style="display:none;">
             <div class="page-head">
                 <div class="ph-ic">🔑</div>
-                <div><h3>Manage Keys</h3><p>Track live sales, key generation analytics, and product-wise revenue.</p></div>
+                <div><h3>Manage Keys</h3><p>Add stock, watch sales and check every key that was delivered.</p></div>
             </div>
 
-            <!-- 📊 Key Delivery Overview -->
-            <div class="gcard">
-                <h5 class="gt">🔑 Key Delivery Overview</h5>
+            <!-- Quick jump bar -->
+            <div class="sec-nav">
+                <button class="chip-btn" onclick="ksGo('ks_overview')">📊 Overview</button>
+                <button class="chip-btn" onclick="ksGo('addKeysAnchor')">➕ Add Stock</button>
+                <button class="chip-btn" onclick="ksGo('ks_stock')">📦 Stock Left</button>
+                <button class="chip-btn" onclick="ksGo('ks_today')">📈 Today</button>
+                <button class="chip-btn" onclick="ksGo('ks_products')">🏷️ Products</button>
+                <button class="chip-btn" onclick="ksGo('ks_live')">📡 Live Status</button>
+                <button class="chip-btn" onclick="showTab('pending_keys')">⏳ Pending ({{ key_stats.pending }})</button>
+            </div>
+
+            <!-- 1. OVERVIEW -->
+            <div class="gcard" id="ks_overview">
+                <div class="sec-head">
+                    <span class="sec-no">1</span>
+                    <div><h5>Overview</h5><p>Your key business at a glance.</p></div>
+                </div>
                 <div class="ov-grid">
-                    <div class="ov"><div class="oi">🛒</div><div class="ov-v">{{ key_stats.total }}</div><div class="ov-l">Total generated / sold</div></div>
+                    <div class="ov"><div class="oi">🛒</div><div class="ov-v">{{ key_stats.total }}</div><div class="ov-l">Total keys sold</div></div>
                     <div class="ov"><div class="oi">📈</div><div class="ov-v">{{ key_stats.today }}</div><div class="ov-l">Sold today</div></div>
                     <div class="ov"><div class="oi">💎</div><div class="ov-v">₹{{ key_stats.today_rev }}</div><div class="ov-l">Today's revenue</div></div>
                     <div class="ov"><div class="oi">📦</div><div class="ov-v">{{ key_stats.live_products }}</div><div class="ov-l">Live products</div></div>
-                    <div class="ov"><div class="oi">⏳</div><div class="ov-v">{{ key_stats.pending }}</div><div class="ov-l">Pending queue</div></div>
                     <div class="ov"><div class="oi">🗝️</div><div class="ov-v">{{ stats.key_stock }}</div><div class="ov-l">Keys in stock</div></div>
-                </div>
-                <div class="d-flex gap-2 mt-3 flex-wrap">
-                    <button class="chip-btn" onclick="document.getElementById('addKeysAnchor').scrollIntoView({behavior:'smooth'})">＋ Add Keys to Stock</button>
-                    <button class="chip-btn" onclick="showTab('pending_keys')">⏳ Pending Keys Queue</button>
+                    <div class="ov"><div class="oi">⏳</div><div class="ov-v">{{ key_stats.pending }}</div><div class="ov-l">Pending queue</div></div>
                 </div>
             </div>
 
-            <!-- 📡 Live Key Status -->
-            <div class="gcard">
-                <h5 class="gt">📡 Live Key Status <span class="live-dot">LIVE</span></h5>
-                <div class="set-note mb-2">Search a Telegram ID, @username, product or the key itself. Use it to check a customer's complaint: you see exactly which key was delivered, when, for what price and how it was paid.</div>
+            <!-- 2. ADD KEY STOCK -->
+            <div class="gcard green" id="addKeysAnchor">
+                <div class="sec-head">
+                    <span class="sec-no">2</span>
+                    <div><h5>Add Key Stock</h5><p>Choose product and plan, paste the keys (one per line) and save.</p></div>
+                </div>
+                <div class="row g-3">
+                    <div class="col-md-6"><label class="small mb-1">Product</label><select id="ks_prod" class="form-select" onchange="fillKeyPlans()"></select></div>
+                    <div class="col-md-6"><label class="small mb-1">Plan</label><select id="ks_plan" class="form-select"></select></div>
+                    <div class="col-12"><label class="small mb-1">Keys (one per line)</label><textarea id="ks_keys" class="form-control" rows="5" placeholder="KEY1&#10;KEY2"></textarea></div>
+                    <div class="col-12"><button class="btn-grad w-100" onclick="addKeys()">＋ Add Keys to Stock</button></div>
+                </div>
+            </div>
+
+            <!-- 3. STOCK AVAILABLE -->
+            <div class="gcard blue" id="ks_stock">
+                <div class="sec-head">
+                    <span class="sec-no">3</span>
+                    <div><h5>Stock Available</h5><p>Keys left for every product and plan.</p></div>
+                </div>
+                <div class="table-responsive">
+                    <table class="table align-middle mb-0">
+                        <thead><tr><th>Product</th><th>Plan</th><th>Keys left</th></tr></thead>
+                        <tbody>
+                            {% for p in products %}{% for pl in p.prices %}
+                            <tr><td>{{ p.name }}</td><td>{{ pl[0]|replace('_', ' ') }}</td><td>{% set left = p.stock.get(pl[0], 0) %}<span class="pill {{ 'g' if left > 5 else ('a' if left > 0 else 'r') }}">{{ left }}</span></td></tr>
+                            {% endfor %}{% else %}
+                            <tr><td colspan="3" class="text-center text-muted">No products yet.</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- 4. TODAY'S SALES -->
+            <div class="gcard amber" id="ks_today">
+                <div class="sec-head">
+                    <span class="sec-no">4</span>
+                    <div><h5>Today's Sales</h5><p>Keys sold today, product by product.</p></div>
+                    <span class="pill a">{{ key_stats.today }} keys · ₹{{ key_stats.today_rev }}</span>
+                </div>
+                <div class="table-responsive">
+                    <table class="table align-middle mb-0">
+                        <thead><tr><th>Product</th><th>Keys sold</th><th>Amount</th></tr></thead>
+                        <tbody>
+                            {% for r in today_by_product %}
+                            <tr><td>{{ r[0] }}</td><td><b>{{ r[1] }}</b></td><td>₹{{ '%.2f'|format(r[2]) }}</td></tr>
+                            {% else %}
+                            <tr><td colspan="3" class="text-center text-muted">No sales yet today.</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- 5. PRODUCTS (LIFETIME) -->
+            <div class="gcard pink" id="ks_products">
+                <div class="sec-head">
+                    <span class="sec-no">5</span>
+                    <div><h5>Products &amp; Lifetime Sales</h5><p>Total keys sold and revenue for each product. Tap a button to edit or add keys.</p></div>
+                </div>
+                <div class="table-responsive">
+                    <table class="table align-middle mb-0">
+                        <thead><tr><th>Product</th><th>Status</th><th>Sold</th><th>Revenue</th><th>In stock</th><th>Actions</th></tr></thead>
+                        <tbody>
+                            {% for p in products %}
+                            <tr>
+                                <td style="min-width:120px;font-weight:700;text-transform:uppercase;">{{ p.name }}</td>
+                                <td>{% if p.maintenance %}<span class="pill a">Maintenance</span>{% elif p.stock_out %}<span class="pill r">Stock out</span>{% else %}<span class="pill g">Active</span>{% endif %}</td>
+                                <td>{{ lifetime.get(p.name, [0, 0])[0] }}</td>
+                                <td>₹{{ '%.2f'|format(lifetime.get(p.name, [0, 0])[1]) }}</td>
+                                <td>{{ p.stock.values()|sum }}</td>
+                                <td style="white-space:nowrap;">
+                                    <button class="chip-btn" onclick="showTab('products'); openProductModal({{ loop.index0 }})">✏️ Edit</button>
+                                    <button class="chip-btn" onclick="lkAddKeysFor({{ loop.index0 }})">＋ Keys</button>
+                                </td>
+                            </tr>
+                            {% else %}
+                            <tr><td colspan="6" class="text-center text-muted">No products yet.</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- 6. LIVE KEY STATUS -->
+            <div class="gcard blue" id="ks_live">
+                <div class="sec-head">
+                    <span class="sec-no">6</span>
+                    <div><h5>Live Key Status</h5><p>Search a customer complaint: see which key was delivered, when and how it was paid.</p></div>
+                    <span class="live-dot">LIVE</span>
+                </div>
                 <div class="lk-filters">
                     <input type="text" id="lk_q" class="form-control" placeholder="🔍 Telegram ID, @user, product or key..." oninput="lkDebounce()">
                     <select id="lk_prod" class="form-select" onchange="lkReset()"><option value="">All products</option></select>
@@ -888,78 +1123,7 @@ ADMIN_HTML = """
                     <span id="lk_info">—</span>
                     <span><button id="lk_prev" onclick="lkGo(-1)">« Prev</button> <span id="lk_pg" class="mx-2">Page 1 of 1</span> <button id="lk_next" onclick="lkGo(1)">Next »</button></span>
                 </div>
-                <div class="set-note mt-2" id="lk_upd">Auto-refreshes every 15 seconds while this page is open.</div>
-            </div>
-
-            <!-- 📈 Today's Key Sales by Product -->
-            <div class="gcard">
-                <h5 class="gt">📈 Today's Key Sales by Product <span class="pill">Total: {{ key_stats.today }} keys · ₹{{ key_stats.today_rev }}</span></h5>
-                <div class="table-responsive">
-                    <table class="table align-middle mb-0">
-                        <thead><tr><th>Product</th><th>Keys sold today</th><th>Amount</th></tr></thead>
-                        <tbody>
-                            {% for r in today_by_product %}
-                            <tr><td>{{ r[0] }}</td><td><b>{{ r[1] }}</b></td><td>₹{{ '%.2f'|format(r[2]) }}</td></tr>
-                            {% else %}
-                            <tr><td colspan="3" class="text-center text-muted">No sales yet today.</td></tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-
-            <!-- 📦 Lifetime Orders By Product -->
-            <div class="gcard">
-                <h5 class="gt">📦 Lifetime Orders By Product</h5>
-                <div class="table-responsive">
-                    <table class="table align-middle mb-0">
-                        <thead><tr><th>Product</th><th>Status</th><th>Total keys sold</th><th>Revenue</th><th>In stock</th><th>Action</th></tr></thead>
-                        <tbody>
-                            {% for p in products %}
-                            <tr>
-                                <td style="min-width:120px;font-weight:700;text-transform:uppercase;">{{ p.name }}</td>
-                                <td>{% if p.maintenance %}<span class="pill a">Maintenance</span>{% elif p.stock_out %}<span class="pill r">Stock out</span>{% else %}<span class="pill g">Active</span>{% endif %}</td>
-                                <td>{{ lifetime.get(p.name, [0, 0])[0] }}</td>
-                                <td>₹{{ '%.2f'|format(lifetime.get(p.name, [0, 0])[1]) }}</td>
-                                <td>{{ p.stock.values()|sum }}</td>
-                                <td style="white-space:nowrap;">
-                                    <button class="chip-btn" onclick="showTab('products'); openProductModal({{ loop.index0 }})">✏️ Configure Product</button>
-                                    <button class="chip-btn" onclick="lkAddKeysFor({{ loop.index0 }})">＋ Keys</button>
-                                </td>
-                            </tr>
-                            {% else %}
-                            <tr><td colspan="6" class="text-center text-muted">No products yet.</td></tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-
-            <!-- ＋ Add key stock (unchanged functionality) -->
-            <div id="addKeysAnchor"></div>
-            <div class="gcard blue">
-                <h5 class="gt">＋ Add Key Stock</h5>
-                <div class="row g-3">
-                    <div class="col-md-6"><label class="small mb-1">Product</label><select id="ks_prod" class="form-select" onchange="fillKeyPlans()"></select></div>
-                    <div class="col-md-6"><label class="small mb-1">Plan</label><select id="ks_plan" class="form-select"></select></div>
-                    <div class="col-12"><label class="small mb-1">Keys (one per line)</label><textarea id="ks_keys" class="form-control" rows="5" placeholder="KEY1&#10;KEY2"></textarea></div>
-                    <div class="col-12"><button class="btn-grad w-100" onclick="addKeys()">＋ Add Keys to Stock</button></div>
-                </div>
-            </div>
-            <div class="gcard blue">
-                <h5 class="gt">Stock available</h5>
-                <div class="table-responsive">
-                    <table class="table align-middle mb-0">
-                        <thead><tr><th>Product</th><th>Plan</th><th>Keys left</th></tr></thead>
-                        <tbody>
-                            {% for p in products %}{% for pl in p.prices %}
-                            <tr><td>{{ p.name }}</td><td>{{ pl[0]|replace('_', ' ') }}</td><td><strong>{{ p.stock.get(pl[0], 0) }}</strong></td></tr>
-                            {% endfor %}{% else %}
-                            <tr><td colspan="3" class="text-center text-muted">No products yet.</td></tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
+                <div class="set-note" id="lk_upd">Auto-refreshes every 15 seconds while this page is open.</div>
             </div>
         </div>
 
@@ -1415,24 +1579,64 @@ ADMIN_HTML = """
             const media = bcKind ? '<div class="tg-media">' + names[bcKind] + ' attached: ' + esc(bcFile ? bcFile.name : '') + '</div>' : '';
             document.getElementById('bc_prev').innerHTML = (media + html) || '<span style="color:#8d96b5;">Your message preview appears here...</span>';
         }
+        let bcDur = 0, bcBusy = false, bcPollT = null, bcTickT = null;
+        function fmtDur(s) { s = Math.max(0, Math.round(s)); const m = Math.floor(s / 60); const r = s % 60; return m ? m + 'm ' + r + 's' : r + 's'; }
+        function fmtClock(s) { s = Math.max(0, Math.round(s)); const m = Math.floor(s / 60); const r = s % 60; return m + ':' + (r < 10 ? '0' : '') + r; }
+        function fmtMB(b) { return (b / 1048576).toFixed(1) + ' MB'; }
+        function ksGo(id) { const el = document.getElementById(id); if (el) el.scrollIntoView({behavior: 'smooth', block: 'start'}); }
+        function bcFileLabel() {
+            if (!bcFile) return '';
+            return bcFile.name + ' (' + fmtMB(bcFile.size) + (bcDur ? ' · ⏱ ' + fmtClock(bcDur) + ' long' : '') + ')';
+        }
         function bcPick(kind, input) {
             if (!input.files || !input.files[0]) return;
             const f = input.files[0];
             if (f.size > 50 * 1024 * 1024) { input.value = ''; return toast('File is larger than 50 MB.', false); }
             ['image', 'video', 'voice'].forEach(k => { if (k !== kind) document.getElementById('bc_' + k).value = ''; });
-            bcKind = kind; bcFile = f;
+            bcKind = kind; bcFile = f; bcDur = 0;
             ['image', 'video', 'voice'].forEach(k => document.getElementById('mt_' + k).classList.toggle('on', k === kind));
             document.getElementById('bc_file').style.display = 'flex';
-            document.getElementById('bc_file_name').textContent = f.name + ' (' + (f.size / 1048576).toFixed(1) + ' MB)';
+            document.getElementById('bc_file_name').textContent = bcFileLabel();
+            if (kind === 'video' || kind === 'voice') {
+                const el = document.createElement(kind === 'video' ? 'video' : 'audio');
+                el.preload = 'metadata';
+                el.onloadedmetadata = () => {
+                    if (isFinite(el.duration)) { bcDur = el.duration; if (bcFile === f) document.getElementById('bc_file_name').textContent = bcFileLabel(); }
+                    URL.revokeObjectURL(el.src);
+                };
+                el.onerror = () => URL.revokeObjectURL(el.src);
+                el.src = URL.createObjectURL(f);
+            }
             bcPreview();
         }
         function bcClearMedia() {
             ['image', 'video', 'voice'].forEach(k => { document.getElementById('bc_' + k).value = ''; document.getElementById('mt_' + k).classList.remove('on'); });
-            bcKind = ''; bcFile = null;
+            bcKind = ''; bcFile = null; bcDur = 0;
             document.getElementById('bc_file').style.display = 'none';
             bcPreview();
         }
+        function bcStep(active) {
+            ['up', 'send', 'done'].forEach((k, i) => {
+                document.getElementById('ps_' + k).className = 'up-step' + (i < active ? ' ok' : (i === active ? ' on' : ''));
+            });
+        }
+        function bcUI(o) {
+            const card = document.getElementById('bc_prog');
+            card.style.display = 'block';
+            card.className = 'up-card' + (o.state ? ' ' + o.state : '');
+            document.getElementById('up_title').textContent = o.title;
+            document.getElementById('up_pct').textContent = Math.round(o.pct) + '%';
+            document.getElementById('up_bar').style.width = o.pct + '%';
+            document.getElementById('up_grid').innerHTML = o.rows.map(r => '<div>' + esc(r[0]) + '</div><div><b>' + esc(r[1]) + '</b></div>').join('');
+        }
+        function bcEnd() {
+            clearTimeout(bcPollT); clearInterval(bcTickT);
+            bcBusy = false;
+            document.getElementById('bc_send').disabled = false;
+            document.getElementById('bc_test').disabled = false;
+        }
         function sendBroadcast(testOnly) {
+            if (bcBusy) return;
             const msg = document.getElementById('bc_msg').value;
             if (!msg.trim() && !bcFile) return toast('Write a message or attach media.', false);
             if (!testOnly && !confirm('Send this broadcast now?')) return;
@@ -1441,12 +1645,70 @@ ADMIN_HTML = """
             fd.append('audience', bcAudience);
             fd.append('test', testOnly ? '1' : '0');
             if (bcFile) { fd.append('media_type', bcKind); fd.append('media', bcFile); }
-            const btn = document.getElementById('bc_send');
-            btn.disabled = true;
-            fetch('/api/broadcast/send', { method: 'POST', body: fd })
-                .then(r => r.json().then(d => { d._ok = r.ok; return d; }))
-                .then(d => { toast(d.message, d._ok); btn.disabled = false; if (d._ok && !testOnly) { bcHistLoad(); } })
-                .catch(() => { btn.disabled = false; toast('Upload failed. Check your connection.', false); });
+            bcBusy = true;
+            document.getElementById('bc_send').disabled = true;
+            document.getElementById('bc_test').disabled = true;
+            const t0 = Date.now();
+            const total = bcFile ? bcFile.size : 0;
+            const names = {image: 'image', video: 'video', voice: 'voice note'};
+            const what = bcKind ? names[bcKind] : 'message';
+            const fail = (m) => { bcEnd(); bcStep(-1); bcUI({state: 'err', title: '❌ ' + m, pct: 0, rows: [['Elapsed', fmtDur((Date.now() - t0) / 1000)]]}); toast(m, false); };
+            const showUp = (loaded) => {
+                const el = (Date.now() - t0) / 1000;
+                const speed = loaded / Math.max(el, 0.2);
+                const left = loaded >= total ? 'finishing...' : '~' + fmtDur((total - loaded) / Math.max(speed, 1));
+                bcStep(0);
+                bcUI({title: '⬆️ Uploading ' + what + '...', pct: total ? loaded * 100 / total : 0,
+                      rows: [['Uploaded', fmtMB(loaded) + ' of ' + fmtMB(total)], ['Speed', fmtMB(speed) + '/s'], ['Time elapsed', fmtDur(el)], ['Time left', left]]});
+            };
+            if (total) showUp(0); else { bcStep(0); bcUI({title: '⏳ Sending ' + what + '...', pct: 5, rows: [['Time elapsed', '0s']]}); }
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', '/api/broadcast/send');
+            xhr.upload.onprogress = (e) => { if (e.lengthComputable && total) showUp(e.loaded); };
+            xhr.onerror = () => fail('Upload failed. Check your connection.');
+            xhr.onabort = () => fail('Upload cancelled.');
+            xhr.onload = () => {
+                let d = {};
+                try { d = JSON.parse(xhr.responseText); } catch (e) {}
+                if (xhr.status < 200 || xhr.status >= 300) return fail(d.message || ('Failed (' + xhr.status + ')'));
+                const upSec = (Date.now() - t0) / 1000;
+                if (testOnly) {
+                    bcEnd(); bcStep(3);
+                    bcUI({state: 'done', title: '✅ Test sent to your Telegram', pct: 100, rows: [['Upload time', fmtDur(upSec)], ['Total time', fmtDur(upSec)]]});
+                    return toast(d.message, true);
+                }
+                bcStep(1);
+                let last = null;
+                const render = () => {
+                    const now = (Date.now() - t0) / 1000;
+                    const sendSec = Math.max(0.1, now - upSec);
+                    const done = last ? last.sent + last.failed : 0;
+                    const tot = last ? last.total : (d.total || 0);
+                    const rate = done / sendSec;
+                    const left = rate > 0 && tot > done ? '~' + fmtDur((tot - done) / rate) : '—';
+                    bcUI({title: '📤 Sending to users...', pct: tot ? done * 100 / tot : 0,
+                          rows: [['Delivered', done + ' of ' + tot], ['Failed', last ? last.failed : 0], ['Upload took', fmtDur(upSec)], ['Time elapsed', fmtDur(now)], ['Time left', left]]});
+                };
+                const poll = () => {
+                    fetch('/api/broadcast/history').then(r => r.json()).then(h => {
+                        const row = (h.rows || []).find(x => x.id === d.hist_id);
+                        if (row) { last = row; }
+                        if (row && row.status !== 'running') {
+                            const total2 = (Date.now() - t0) / 1000;
+                            bcEnd(); bcStep(3);
+                            bcUI({state: 'done', title: '✅ Broadcast completed', pct: 100,
+                                  rows: [['Delivered', row.sent + ' of ' + row.total], ['Failed', row.failed], ['Upload time', fmtDur(upSec)], ['Sending time', fmtDur(Math.max(0, total2 - upSec))], ['Total time', fmtDur(total2)]]});
+                            bcHistLoad(); toast('Broadcast completed in ' + fmtDur(total2), true);
+                            return;
+                        }
+                        render();
+                        bcPollT = setTimeout(poll, 1500);
+                    }).catch(() => { bcPollT = setTimeout(poll, 3000); });
+                };
+                bcTickT = setInterval(render, 1000);
+                render(); poll(); bcHistLoad();
+            };
+            xhr.send(fd);
         }
         let bcHistTimer = null;
         function bcHistLoad() {
@@ -1457,7 +1719,7 @@ ADMIN_HTML = """
                     const pct = r.total ? Math.round((r.sent + r.failed) * 100 / r.total) : 100;
                     const st = r.status === 'running' ? '<span class="pill a">Sending...</span>' : '<span class="pill g">Done</span>';
                     return '<div class="bc-hist"><div class="d-flex justify-content-between flex-wrap gap-1"><b>' + esc(r.time_txt) + '</b>' + st + '</div>'
-                        + '<div class="set-note">' + esc(r.audience) + (r.media ? ' · ' + esc(r.media) : '') + '</div>'
+                        + '<div class="set-note">' + esc(r.audience) + (r.media ? ' · ' + esc(r.media) : '') + (r.dur ? ' · ⏱ ' + fmtDur(r.dur) : '') + '</div>'
                         + '<div style="margin-top:4px;">' + esc(r.preview) + '</div>'
                         + '<div class="set-note">✅ ' + r.sent + ' sent · ❌ ' + r.failed + ' failed · ' + r.total + ' total</div>'
                         + '<div class="bar"><i style="width:' + pct + '%"></i></div></div>';
@@ -2083,6 +2345,7 @@ BC_AUDIENCES = {
     "non_buyers": ("Not bought yet", "SELECT user_id FROM users WHERE orders_count = 0"),
     "resellers": ("Resellers", "SELECT user_id FROM users WHERE account_type = 'Reseller'"),
 }
+_BC_TIMES = {}  # broadcast id -> {"start": ts, "end": ts or None}
 BC_METHODS = {"image": ("sendPhoto", "photo"), "video": ("sendVideo", "video"),
               "voice": ("sendVoice", "voice"), "audio": ("sendAudio", "audio")}
 
@@ -2197,6 +2460,7 @@ def api_bc():
         "INSERT INTO broadcast_history (audience, media_type, preview, total) VALUES (%s, %s, %s, %s) RETURNING id",
         (label, kind or None, (msg or '[media only]')[:140], len(uids)))
     hist_id = hist["id"]
+    _BC_TIMES[hist_id] = {"start": time.time(), "end": None}
 
     def _run():
         sent = failed = 0
@@ -2216,15 +2480,20 @@ def api_bc():
             time.sleep(0.05)  # stay under Telegram's broadcast rate limit
         try: db.execute("UPDATE broadcast_history SET sent = %s, failed = %s, status = 'done' WHERE id = %s", (sent, failed, hist_id))
         except Exception: pass
+        _BC_TIMES.setdefault(hist_id, {})["end"] = time.time()
     Thread(target=_run, daemon=True).start()
-    return jsonify({"message": f"Broadcast started to {len(uids)} users!"})
+    return jsonify({"message": f"Broadcast started to {len(uids)} users!", "hist_id": hist_id, "total": len(uids)})
 
 @app.route('/api/broadcast/history')
 def api_bc_history():
     if not admin_required(): return unauthorized()
     rows = db.fetchall("SELECT * FROM broadcast_history ORDER BY id DESC LIMIT 15")
     names = {"image": "🖼️ Image", "video": "🎬 Video", "voice": "🎙️ Voice", "audio": "🎵 Audio"}
+    def _dur(i):
+        t = _BC_TIMES.get(i) or {}
+        return round(t["end"] - t["start"], 1) if t.get("end") and t.get("start") else None
     return jsonify({"rows": [{
+        "id": r["id"], "dur": _dur(r["id"]),
         "time_txt": _fmt_ist(r["created_ts"]), "audience": r["audience"], "media": names.get(r["media_type"] or "", ""),
         "preview": r["preview"] or "", "total": r["total"], "sent": r["sent"], "failed": r["failed"], "status": r["status"],
     } for r in rows]})
@@ -2289,5 +2558,6 @@ def run_web():
 if __name__ == "__main__":
     init_db()
     run_web()
+
 
 
