@@ -182,8 +182,10 @@ def get_product_by_key(prod_key):
 # (everything the bot needs to confirm UPI payments by itself lives below)
 # ==========================================
 import hashlib
+import threading
 import imaplib
 import email
+import email.policy
 import urllib.request
 import html as htmllib
 from datetime import timezone
@@ -503,6 +505,8 @@ def process_bank_message(text, settle=True):
 #   Render Environment: GMAIL_USER, GMAIL_APP_PASSWORD, BANK_EMAIL_FROM
 # ==========================================
 GMAIL_POLL_SECONDS = 5               # the bot looks at Gmail every 5 seconds
+GMAIL_STATUS = {"state": "off", "detail": "Gmail is not set up yet.", "last_check": "", "last_mail": ""}
+_GMAIL_WAKE = threading.Event()      # set when a customer taps "I have paid": check Gmail immediately
 MAX_EMAIL_AGE = timedelta(minutes=90)   # never act on old e-mails
 MAX_PER_POLL = 30                    # newest e-mails looked at per poll
 BODY_CHARS = 800                     # the transaction is at the top; ignore long disclaimers
@@ -521,8 +525,8 @@ def _suggest_domain(address):
     return ".".join(labels[-2:])
 
 
-def _gmail_suggest_senders(imap):
-    """Find the senders of recent 'money received' e-mails and tell the admin what to put in BANK_EMAIL_FROM."""
+def _gmail_find_senders(imap):
+    """Senders of the 'money received' e-mails of the last 3 days -> {address: count}."""
     imap.select("INBOX")
     since = (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%d-%b-%Y")
     typ, data = imap.uid("search", None, "SINCE", since)
@@ -539,14 +543,20 @@ def _gmail_suggest_senders(imap):
         if addr and p["is_credit"] and p["amount"] is not None:
             found[addr] = found.get(addr, 0) + 1
 
+    return found
+
+
+def _gmail_suggest_senders(imap):
+    """Tell the admin on Telegram which sender domain to use."""
+    found = _gmail_find_senders(imap)
     if found:
         top = sorted(found, key=found.get, reverse=True)[:3]
         word = _suggest_domain(top[0])
         text = (
             "📧 <b>Gmail is connected!</b>\nI found bank 'money received' e-mails from:\n"
             + "\n".join(f"• <code>{a}</code>" for a in top)
-            + "\n\nTo switch on automatic payments add this in Render → Environment, then save:\n"
-            + f"<code>BANK_EMAIL_FROM</code> = <code>{word}</code>"
+            + "\n\nTo switch on automatic payments set this:\n"
+            + f"Admin panel → UPI Payment Setup → Sender domain = <code>{word}</code>"
         )
     else:
         text = (
@@ -592,28 +602,50 @@ def _domain_ok(domain, allowed):
     return any(domain == a or domain.endswith("." + a) for a in allowed)
 
 
-def sender_is_trusted(msg, allowed):
-    """True only if the sender is the bank's domain AND Gmail verified a DKIM signature of that domain.
+_alert_times = {}
 
-    `allowed` holds real domains such as hdfcbank.net. A look-alike such as hdfcbank.net.evil.com or
-    hdfcbank-secure.com is NOT accepted, even if it carries a valid signature of its own.
+
+def _alert_once(key, text, hours=1):
+    """Tell the admin about a problem, but not more than once per hour for the same problem."""
+    now = time.time()
+    if now - _alert_times.get(key, 0) > hours * 3600:
+        _alert_times[key] = now
+        tg_call("sendMessage", {"chat_id": ADMIN_ID, "text": text, "parse_mode": "HTML"})
+
+
+def sender_is_trusted(msg, allowed):
+    """True only if the sender is the bank's domain AND Gmail verified that it really came from there.
+
+    `allowed` holds real domains such as famapp.in. Gmail's own check (the top Authentication-Results
+    header) must show either a valid DKIM signature or a passed SPF check for that same domain.
+    A look-alike such as famapp.in.evil.com or famapp-secure.com is NOT accepted.
     """
     from_addr = parseaddr(msg.get("From", ""))[1].lower()
     if not from_addr or not _domain_ok(from_addr.split("@")[-1], allowed):
-        return False, f"sender {from_addr or '?'} is not from the bank domain in BANK_EMAIL_FROM"
+        return False, f"sender {from_addr or '?'} is not from the bank domain in Gmail settings"
 
     # The top-most Authentication-Results header is the one Gmail added itself.
     results = msg.get_all("Authentication-Results") or []
-    if not results:
-        return False, "no Authentication-Results header"
-    header = " ".join(str(results[0]).split())
-    if header.split(";")[0].strip().lower() != "mx.google.com":
-        return False, "top Authentication-Results is not from Gmail"
+    header = " ".join(str(results[0]).split()) if results else ""
+    if not results or header.split(";")[0].strip().lower() != "mx.google.com":
+        if os.getenv("BANK_EMAIL_ALLOW_UNVERIFIED", "").strip().lower() in ("1", "yes", "true", "on"):
+            return True, "ok (unverified sender allowed by BANK_EMAIL_ALLOW_UNVERIFIED)"
+        return False, "DKIM/SPF not verified for the bank domain (no Gmail authentication result)"
     for clause in re.findall(r"dkim=pass[^;]*", header, re.I):
         for d in re.findall(r"header\.(?:d|i)=@?([A-Za-z0-9.\-]+)", clause, re.I):
             if _domain_ok(d, allowed):
                 return True, "ok"
-    return False, "DKIM not verified for the bank domain"
+    for clause in re.findall(r"spf=pass[^;]*", header, re.I):
+        for d in re.findall(r"smtp\.mailfrom=(?:[^@\s;]*@)?([A-Za-z0-9.\-]+)", clause, re.I):
+            if _domain_ok(d, allowed):
+                return True, "ok"
+    for clause in re.findall(r"dmarc=pass[^;]*", header, re.I):
+        for d in re.findall(r"header\.from=@?([A-Za-z0-9.\-]+)", clause, re.I):
+            if _domain_ok(d, allowed):
+                return True, "ok"
+    if os.getenv("BANK_EMAIL_ALLOW_UNVERIFIED", "").strip().lower() in ("1", "yes", "true", "on"):
+        return True, "ok (unverified sender allowed by BANK_EMAIL_ALLOW_UNVERIFIED)"
+    return False, "DKIM/SPF not verified for the bank domain"
 
 
 def _mark_processed(key):
@@ -644,6 +676,14 @@ def handle_email(raw, allowed):
 
     ok, reason = sender_is_trusted(msg, allowed)
     if not ok:
+        from_addr = parseaddr(msg.get("From", ""))[1].lower()
+        if reason.startswith("DKIM/SPF") and from_addr:   # looks like the bank but could not be verified
+            GMAIL_STATUS["last_mail"] = f"{datetime.now(IST).strftime('%d %b %I:%M:%S %p')} · ignored: sender not verified by Gmail"
+            _alert_once("auth:" + from_addr,
+                        f"⚠️ An e-mail from <code>{from_addr}</code> was ignored because Gmail could not verify "
+                        "the sender (no valid DKIM/SPF/DMARC).\n\nIf this is really your FamPay alert, add the Render "
+                        "variable <code>BANK_EMAIL_ALLOW_UNVERIFIED</code> = <code>yes</code> and redeploy. "
+                        "(Slightly less secure: someone who knows your Gmail address could then fake an alert e-mail.)")
         return "rejected: " + reason
 
     message_id = (msg.get("Message-ID") or "").strip() or hashlib.sha1(raw).hexdigest()
@@ -651,13 +691,24 @@ def handle_email(raw, allowed):
     if not _mark_processed(key):
         return "already processed"
 
-    text = _header_text(msg.get("Subject")) + " " + _body_text(msg)[:BODY_CHARS]
+    try:   # the modern policy decodes both RFC2047 and raw UTF-8 headers (e.g. a raw ₹ sign) correctly
+        subject = str(email.message_from_bytes(raw, policy=email.policy.default).get("Subject") or "")
+    except Exception:
+        subject = _header_text(msg.get("Subject"))
+    body = _body_text(msg)[:BODY_CHARS]
+    head = parse_sms(subject)
+    if head["is_credit"] and head["amount"] is not None:
+        # The subject itself says money was received ("You received ₹10.01 in your FamX account"),
+        # so stray words like "sent to" in the template body must not cancel it.
+        body = _DEBIT_RE.sub(" ", body)
+    text = subject + " " + body
     try:
         settle = bool(db.get_payment_settings().get("auto_verify"))
         result = process_bank_message(text, settle=settle)
     except Exception:
         _unmark(key)   # try again on the next poll
         raise
+    GMAIL_STATUS["last_mail"] = f"{datetime.now(IST).strftime('%d %b %I:%M:%S %p')} · {result['status']}"
     return "processed: " + result["status"]
 
 
@@ -686,9 +737,11 @@ def _gmail_close(imap):
         pass
 
 
-def _gmail_run(user, password, allowed):
+def _gmail_run(user, password, allowed, stop=None):
+    stop = stop or threading.Event()
     if not allowed:
-        # No BANK_EMAIL_FROM yet: never accept any e-mail, just tell the admin what to set.
+        # No sender domain yet: never accept any e-mail, just tell the admin what to set.
+        GMAIL_STATUS.update(state="setup", detail="Connected. Press 'Connect & detect sender' in the admin panel.")
         try:
             imap = imaplib.IMAP4_SSL("imap.gmail.com", 993, timeout=30)
             imap.login(user, password)
@@ -696,10 +749,11 @@ def _gmail_run(user, password, allowed):
             _gmail_close(imap)
         except imaplib.IMAP4.error as e:
             logger.error("Gmail login/IMAP error: %s", e)
+            GMAIL_STATUS.update(state="error", detail="Gmail login failed: wrong address or App Password.")
             tg_call("sendMessage", {
                 "chat_id": ADMIN_ID,
-                "text": "⚠️ Gmail payment reader could not log in. Check GMAIL_USER and GMAIL_APP_PASSWORD "
-                        "in Render (it must be a Google App Password, 2-Step Verification must be on).",
+                "text": "⚠️ Gmail payment reader could not log in. Check the Gmail address and App Password "
+                        "(2-Step Verification must be on).",
             })
         except Exception:
             logger.exception("Gmail suggestion failed")
@@ -710,7 +764,7 @@ def _gmail_run(user, password, allowed):
     )
     imap, last_uid, alerted = None, 0, False
     logger.info("Gmail payment reader started for %s (trusted senders: %s)", user, ", ".join(allowed))
-    while True:
+    while not stop.is_set():
         try:
             if imap is None:
                 imap = imaplib.IMAP4_SSL("imap.gmail.com", 993, timeout=30)
@@ -718,46 +772,102 @@ def _gmail_run(user, password, allowed):
                 alerted = False
                 logger.info("Gmail login OK")
             last_uid = _gmail_poll_once(imap, allowed, last_uid)
-            time.sleep(GMAIL_POLL_SECONDS)
+            GMAIL_STATUS.update(state="ok", detail="Connected. Checking every 5 seconds.",
+                                last_check=datetime.now(IST).strftime("%d %b %I:%M:%S %p"))
+            _GMAIL_WAKE.wait(GMAIL_POLL_SECONDS)
+            _GMAIL_WAKE.clear()
         except imaplib.IMAP4.error as e:
             logger.error("Gmail login/IMAP error: %s", e)
+            GMAIL_STATUS.update(state="error", detail="Gmail login failed: wrong address or App Password.")
             if not alerted:
                 alerted = True
                 tg_call("sendMessage", {
                     "chat_id": ADMIN_ID,
-                    "text": "⚠️ Gmail payment reader could not log in. Check GMAIL_USER and GMAIL_APP_PASSWORD "
-                            "in Render (it must be a Google App Password, 2-Step Verification must be on).",
+                    "text": "⚠️ Gmail payment reader could not log in. Check the Gmail address and App Password "
+                            "(2-Step Verification must be on).",
                 })
             _gmail_close(imap)
             imap = None
-            time.sleep(120)
+            stop.wait(120)
         except Exception:
             logger.exception("Gmail reader error")
+            GMAIL_STATUS.update(state="error", detail="Temporary Gmail error, retrying.")
             _gmail_close(imap)
             imap = None
-            time.sleep(30)
+            stop.wait(30)
+    _gmail_close(imap)
+
+
+def _gmail_settings():
+    """Gmail address, App Password and sender domain. The admin panel wins; Render variables are a fallback."""
+    try:
+        cfg = db.get_gmail_config()
+    except Exception:
+        cfg = {}
+    user = (cfg.get("gmail_user") or os.getenv("GMAIL_USER", "")).strip()
+    password = "".join((cfg.get("gmail_app_password") or os.getenv("GMAIL_APP_PASSWORD", "")).split())
+    raw = cfg.get("bank_domain") or os.getenv("BANK_EMAIL_FROM", "")
+    allowed = [a.strip().lower().lstrip("@*. ") for a in raw.split(",") if a.strip()]
+    if any("." not in a for a in allowed):
+        logger.error("The bank sender domain must be a full domain like famapp.in (not a single word): %s", allowed)
+    allowed = [a for a in allowed if "." in a]   # a bare word could be matched by look-alike domains
+    return user, password, allowed
+
+
+def gmail_detect_sender():
+    """Admin panel button: log in, find the bank's 'money received' e-mails and return their sender domain."""
+    user, password, _ = _gmail_settings()
+    if not user or not password:
+        return {"ok": False, "message": "Save the Gmail address and App Password first."}
+    try:
+        imap = imaplib.IMAP4_SSL("imap.gmail.com", 993, timeout=30)
+        imap.login(user, password)
+        found = _gmail_find_senders(imap)
+        _gmail_close(imap)
+    except imaplib.IMAP4.error:
+        return {"ok": False, "message": "Gmail login failed. Check the address and the App Password (2-Step Verification must be on)."}
+    except Exception as e:
+        return {"ok": False, "message": f"Could not reach Gmail: {e}"}
+    if not found:
+        return {"ok": False, "message": "Login OK, but no 'money received' e-mail from the last 3 days was found. "
+                                        "Receive a small UPI payment (₹1-₹2) and press the button again."}
+    top = sorted(found, key=found.get, reverse=True)
+    return {"ok": True, "domain": _suggest_domain(top[0]), "senders": top[:3],
+            "message": "Login OK. Found money-received e-mails from " + ", ".join(top[:3])}
+
+
+def _gmail_supervisor():
+    """Starts / restarts the Gmail reader whenever the settings in the admin panel change."""
+    current, stop = None, None
+    while True:
+        try:
+            cfg = _gmail_settings()
+            if cfg != current:
+                if stop is not None:
+                    stop.set()
+                    _GMAIL_WAKE.set()
+                current, stop = cfg, threading.Event()
+                user, password, allowed = cfg
+                if user and password:
+                    Thread(target=_gmail_run, args=(user, password, allowed, stop), daemon=True).start()
+                else:
+                    GMAIL_STATUS.update(state="off", detail="Gmail is not set up yet.")
+        except Exception:
+            logger.exception("Gmail supervisor error")
+        time.sleep(10)
 
 
 def start_gmail_reader():
-    """Start the Gmail reader in the background if GMAIL_USER and GMAIL_APP_PASSWORD are set."""
-    user = os.getenv("GMAIL_USER", "").strip()
-    password = "".join(os.getenv("GMAIL_APP_PASSWORD", "").split())
-    allowed = [a.strip().lower().lstrip("@*. ") for a in os.getenv("BANK_EMAIL_FROM", "").split(",") if a.strip()]
-    if any("." not in a for a in allowed):
-        logger.error("BANK_EMAIL_FROM must be a full domain like hdfcbank.net (not a single word): %s", allowed)
-    allowed = [a for a in allowed if "." in a]   # a bare word could be matched by look-alike domains
-
-    if not user or not password:
-        logger.info("Gmail payment reader is off (GMAIL_USER / GMAIL_APP_PASSWORD not set).")
-        return None
-
-    t = Thread(target=_gmail_run, args=(user, password, allowed), daemon=True)
+    """Start watching Gmail in the background (settings come from the admin panel)."""
+    t = Thread(target=_gmail_supervisor, daemon=True)
     t.start()
     return t
 
+
 # The web admin (imported at the top) uses these two for its optional SMS webhook / "test parser" box.
 web_admin.parse_sms = parse_sms
-web_admin.process_bank_message = process_bank_message
+web_admin.gmail_status = lambda: dict(GMAIL_STATUS)
+web_admin.gmail_detect = gmail_detect_sender
 
 def key_card_keyboard(prod):
     keyboard = []
@@ -1155,9 +1265,9 @@ async def generate_deposit_qr(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if auto_on:
         how_to = (
-            "✅ <b>Detected automatically</b> — it is confirmed within a minute of paying. "
-            "No need to press anything.\n"
-            f"⚠️ Pay the <b>exact amount ₹{pay_amount:,.2f}</b> (with the paise) so it can be matched."
+            f"⚠️ Pay the <b>exact amount ₹{pay_amount:,.2f}</b> (with the paise) so it can be matched.\n"
+            "✅ Your payment is <b>confirmed automatically</b>. Tap <b>I have paid</b> once after paying and "
+            "I will check every 5 seconds — or just wait, it is detected without the button too."
         )
     else:
         how_to = (
@@ -1185,10 +1295,10 @@ async def generate_deposit_qr(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"⏰ <b>This QR expires in 5 minutes if payment isn't completed.</b>"
         )
 
-    keyboard = []
-    if not auto_on:
-        keyboard.append([InlineKeyboardButton("✅ I have paid", callback_data=f"paid_{order_id}")])
-    keyboard.append([InlineKeyboardButton("❌ Cancel Payment", callback_data=f"canceldep_{order_id}")])
+    keyboard = [
+        [InlineKeyboardButton("✅ I have paid", callback_data=f"paid_{order_id}")],
+        [InlineKeyboardButton("❌ Cancel Payment", callback_data=f"canceldep_{order_id}")],
+    ]
 
     try:
         await query.message.delete()
@@ -1258,8 +1368,64 @@ async def generate_deposit_qr(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     spawn(expiry_watchdog())
 
+async def notify_admin_to_verify(bot, pay, user_id, full_name, note=""):
+    """Ask the admin to approve / reject a payment (manual mode, or when automatic checking found nothing)."""
+    order_id = pay["order_id"]
+    amount = float(pay.get("pay_amount") or pay["amount"])
+    lines = [
+        "💳 <b>PAYMENT VERIFICATION NEEDED</b>",
+        "_________________________",
+        "",
+        f"👤 User: <a href=\"tg://user?id={user_id}\">{html.escape(full_name or 'User')}</a> (<code>{user_id}</code>)",
+        f"💰 Amount: <b>₹{amount:,.2f}</b>",
+        f"💳 Method: {html.escape(str(pay['method'] or '').upper())} → <code>{html.escape(str(pay['upi_id'] or ''))}</code>",
+        f"🆔 Order: <code>{order_id}</code>",
+    ]
+    if pay.get("is_deficit") and pay.get("prod_key"):
+        prod = get_product_by_key(pay["prod_key"])
+        lines.append(f"🛒 For: <b>{html.escape((prod or {}).get('name', pay['prod_key']))} — {html.escape((pay.get('plan') or '').replace('_', ' '))}</b>")
+    if note:
+        lines += ["", note]
+    lines += ["", "Check your FamPay / bank app for this amount, then choose:"]
+    markup = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Approve", callback_data=f"adm_ok_{order_id}"),
+        InlineKeyboardButton("❌ Reject", callback_data=f"adm_no_{order_id}"),
+    ]])
+    try:
+        await bot.send_message(chat_id=ADMIN_ID, text="\n".join(lines), parse_mode="HTML", reply_markup=markup)
+    except Exception:
+        logger.exception("Could not notify the admin about payment %s", order_id)
+
+
+async def watch_unconfirmed(bot, order_id, user_id, full_name):
+    """After the customer pressed 'I have paid': look every 5 seconds. If the payment is still not
+    confirmed after 10 minutes, hand it to the admin so no customer is left waiting."""
+    try:
+        for _ in range(120):                      # 120 x 5 s = 10 minutes
+            await asyncio.sleep(5)
+            row = await asyncio.to_thread(db.get_payment, order_id)
+            if not row or row["status"] != "awaiting_approval":
+                return                            # confirmed (or rejected / cancelled) in the meantime
+        row = await asyncio.to_thread(db.get_payment, order_id)
+        if row and row["status"] == "awaiting_approval":
+            await bot.send_message(
+                chat_id=user_id,
+                text=("⏳ <b>Payment not received yet</b>\n\n"
+                      f"🆔 <code>{order_id}</code>\n"
+                      "If you already paid, the admin has been told and will confirm it shortly. "
+                      "It is also still detected automatically."),
+                parse_mode="HTML", reply_markup=back_to_menu_markup()
+            )
+            await notify_admin_to_verify(bot, row, user_id, full_name,
+                                         "⚠️ The bot could not find this payment in the e-mails for 10 minutes.")
+    except Exception:
+        logger.exception("Payment watcher failed for %s", order_id)
+
+
 async def payment_paid_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """User says 'I have paid'. Nothing is credited here: the admin must approve first."""
+    """'I have paid' (press once).
+    Automatic mode: the bot checks every 5 seconds and confirms by itself, then delivers the key.
+    Manual mode: the admin approves in Telegram."""
     query = update.callback_query
     user = update.effective_user
     order_id = query.data[len("paid_"):]
@@ -1269,11 +1435,12 @@ async def payment_paid_click(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await query.answer("⚠️ Payment not found.", show_alert=True)
         return
 
+    auto_on = get_payment_config()["auto_verify"]
     claimed = db.claim_payment(order_id, ("pending", "expired"), "awaiting_approval")
     if not claimed:
         status = pay["status"]
         if status == "awaiting_approval":
-            msg = "⏳ Already submitted. Waiting for admin approval."
+            msg = "⏳ Already checking your payment. You will get a message here the moment it arrives."
         elif status == "verified":
             msg = "✅ This payment was already confirmed."
         else:
@@ -1281,13 +1448,39 @@ async def payment_paid_click(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await query.answer(msg, show_alert=True)
         return
 
+    amount = float(pay.get("pay_amount") or pay["amount"])
+
+    if auto_on:
+        await query.answer("Checking your payment…")
+        text = (
+            "⏳ <b>Checking your payment…</b>\n"
+            "_________________________\n\n"
+            f"🆔 Order: <code>{order_id}</code>\n"
+            f"💰 Amount: <b>₹{amount:,.2f}</b>\n\n"
+            "I am checking every 5 seconds. Your key / balance arrives here as soon as the payment is found. "
+            "You do not need to press anything again."
+        )
+        try:
+            await query.edit_message_caption(caption=text, parse_mode="HTML", reply_markup=None)
+        except Exception:
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
+            sent = await context.bot.send_message(chat_id=user.id, text=text, parse_mode="HTML")
+            try:
+                db.set_payment_message(order_id, sent.chat_id, sent.message_id)
+            except Exception:
+                pass
+        _GMAIL_WAKE.set()                          # look at Gmail right now, not in 5 seconds
+        spawn(watch_unconfirmed(context.bot, order_id, user.id, user.full_name))
+        return
+
     await query.answer("Submitted for verification ✅")
     try:
         await query.message.delete()
     except Exception:
         pass
-
-    amount = float(pay.get("pay_amount") or pay["amount"])
     await context.bot.send_message(
         chat_id=user.id,
         text=(
@@ -1300,30 +1493,7 @@ async def payment_paid_click(update: Update, context: ContextTypes.DEFAULT_TYPE)
         parse_mode="HTML",
         reply_markup=back_to_menu_markup()
     )
-
-    # Ask the admin to verify and approve / reject.
-    lines = [
-        "💳 <b>PAYMENT VERIFICATION NEEDED</b>",
-        "_________________________",
-        "",
-        f"👤 User: <a href=\"tg://user?id={user.id}\">{html.escape(user.full_name or 'User')}</a> (<code>{user.id}</code>)",
-        f"💰 Amount: <b>₹{amount:,.2f}</b>",
-        f"💳 Method: {html.escape(str(pay['method'] or '').upper())} → <code>{html.escape(str(pay['upi_id'] or ''))}</code>",
-        f"🆔 Order: <code>{order_id}</code>",
-    ]
-    if pay.get("is_deficit") and pay.get("prod_key"):
-        prod = get_product_by_key(pay["prod_key"])
-        lines.append(f"🛒 For: <b>{html.escape((prod or {}).get('name', pay['prod_key']))} — {html.escape((pay.get('plan') or '').replace('_', ' '))}</b>")
-    lines += ["", "Check your GPay / bank app for this amount and order ID, then choose:"]
-
-    admin_markup = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Approve", callback_data=f"adm_ok_{order_id}"),
-        InlineKeyboardButton("❌ Reject", callback_data=f"adm_no_{order_id}"),
-    ]])
-    try:
-        await context.bot.send_message(chat_id=ADMIN_ID, text="\n".join(lines), parse_mode="HTML", reply_markup=admin_markup)
-    except Exception:
-        logger.exception("Could not notify the admin about payment %s", order_id)
+    await notify_admin_to_verify(context.bot, pay, user.id, user.full_name)
 
 async def admin_payment_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin taps Approve / Reject on a payment notification."""
