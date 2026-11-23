@@ -12,7 +12,8 @@ from flask import Flask, render_template_string, request, jsonify, redirect, ses
 from database import db, init_db, parse_prices
 # Filled in by main.py at start-up (the payment logic lives in main.py).
 parse_sms = None
-process_bank_message = None
+gmail_status = None
+gmail_detect = None
 
 # Secrets come from Render Environment Variables (never hard-code them in GitHub).
 BOT_TOKEN = "".join(os.environ.get("BOT_TOKEN", "").split())
@@ -465,11 +466,11 @@ ADMIN_HTML = """
         <div class="tab-pane-content" id="tab-upi" style="display:none;">
             <div class="cyan-box">
                 <h5 class="text-info fw-bold mb-3"><i class="fas fa-qrcode me-2"></i>UPI Payment Setup</h5>
-                <p class="small text-muted">Customers scan a QR made from the UPI ID below (GPay, PhonePe, Paytm... any UPI ID works). Changes apply to the bot <b>instantly</b>. No redeploy needed.</p>
+                <p class="small text-muted">Customers scan a QR made from your UPI ID (FamPay, GPay, PhonePe... any UPI ID). Changes apply to the bot <b>instantly</b>.</p>
                 <div class="row g-3">
                     <div class="col-md-6">
                         <label class="small text-muted">UPI ID (where you receive the money)</label>
-                        <input type="text" id="upi_id" class="form-control" value="{{ pay_cfg.upi_id }}" placeholder="yourname@okhdfcbank" oninput="updateUpiPreview()">
+                        <input type="text" id="upi_id" class="form-control" value="{{ pay_cfg.upi_id }}" placeholder="yourname@fam" oninput="updateUpiPreview()">
                     </div>
                     <div class="col-md-6">
                         <label class="small text-muted">Payee / Shop Name</label>
@@ -478,15 +479,15 @@ ADMIN_HTML = """
                     <div class="col-12">
                         <div class="form-check form-switch">
                             <input class="form-check-input" type="checkbox" id="auto_verify" {% if pay_cfg.auto_verify %}checked{% endif %}>
-                            <label class="form-check-label fw-bold" for="auto_verify">Fully automatic payment verification</label>
+                            <label class="form-check-label fw-bold" for="auto_verify">Automatic payment confirmation</label>
                         </div>
-                        <div class="small text-muted mt-1">ON: each customer pays an exact amount (for example ₹100.07) and the bot confirms it by itself when the bank alert arrives. No buttons, no approval. OFF: you approve every payment in Telegram. Turn it ON only after the test below works.</div>
+                        <div class="small text-muted mt-1">ON: every customer pays an exact amount (for example &#8377;100.07). The bot reads your FamPay "You received..." e-mail in Gmail every 5 seconds, checks amount, UTR and time, and confirms the payment by itself. The customer can tap "I have paid" once, but does not have to. OFF: you approve each payment in Telegram.</div>
                     </div>
                     <div class="col-12">
                         <button class="btn btn-custom w-100" onclick="saveUpiSettings()"><i class="fas fa-save me-1"></i> Save UPI Settings</button>
                     </div>
                     <div class="col-12 text-center">
-                        <div class="small text-muted mb-2">Live QR preview (₹1 test amount)</div>
+                        <div class="small text-muted mb-2">Live QR preview (&#8377;1 test amount)</div>
                         <img id="upi_qr_preview" alt="QR preview" style="width:220px;height:220px;background:#fff;padding:8px;border-radius:12px;display:none;">
                         <div id="upi_qr_empty" class="small text-warning">Enter your UPI ID to see the QR.</div>
                     </div>
@@ -494,29 +495,34 @@ ADMIN_HTML = """
             </div>
 
             <div class="gold-box">
-                <h5 class="text-warning fw-bold mb-3"><i class="fas fa-bolt me-2"></i>Automatic Verification Setup</h5>
-                <label class="small text-muted">Webhook URL (keep it secret. Anyone with it can send fake alerts)</label>
-                <input type="text" id="webhook_url" class="form-control mb-2" value="{{ pay_cfg.webhook_url }}" readonly>
-                <div class="d-flex gap-2 mb-3">
-                    <button class="btn btn-custom flex-fill" onclick="copyWebhook()"><i class="fas fa-copy me-1"></i> Copy URL</button>
-                    <button class="btn btn-outline-warning flex-fill" onclick="rotateSecret()"><i class="fas fa-rotate me-1"></i> New secret</button>
-                </div>
+                <h5 class="text-warning fw-bold mb-3"><i class="fas fa-envelope me-2"></i>FamPay e-mail connection (Gmail)</h5>
                 <ol class="small text-muted ps-3 mb-3">
-                    <li>Use an Android phone that stays on with internet, with the SIM linked to the bank account that receives your UPI money.</li>
-                    <li>Install an app that forwards SMS or notifications to a URL (for example MacroDroid or Tasker: trigger "SMS received", action "HTTP request").</li>
-                    <li>Make the app send a <b>POST</b> to the webhook URL above with JSON body: <code>{"message": "(the SMS text)"}</code></li>
-                    <li>Paste a real "money received" SMS below and press Test. It must say <b>Credit detected</b>.</li>
-                    <li>Switch on <b>Fully automatic payment verification</b> above and save.</li>
+                    <li>Use the Gmail that receives your FamPay "You received &#8377;..." e-mails.</li>
+                    <li>Google Account &rarr; Security &rarr; turn on <b>2-Step Verification</b> &rarr; <b>App passwords</b> &rarr; create one (16 letters).</li>
+                    <li>Fill the Gmail address and the App Password below and press <b>Save</b>.</li>
+                    <li>Press <b>Connect &amp; detect sender</b>. It finds FamPay's sender domain by itself.</li>
+                    <li>Switch on <b>Automatic payment confirmation</b> above, Save, and test with &#8377;10.</li>
                 </ol>
-                <div class="small text-info mb-3"><i class="fas fa-envelope me-1"></i> <b>Gmail (no phone app):</b> add <code>GMAIL_USER</code> and <code>GMAIL_APP_PASSWORD</code> (a Google App Password) in Render &rarr; Environment. The bot reads your bank's "money received" e-mails every 5 seconds and confirms payments by itself. It then messages you on Telegram which <code>BANK_EMAIL_FROM</code> value to add. Fake e-mails are ignored.</div>
-                <label class="small text-muted">Test parser (nothing is credited)</label>
-                <textarea id="test_sms" class="form-control mb-2" rows="3" placeholder="Paste a bank SMS, for example: Rs 100.07 credited to A/c XX1234 by UPI Ref No 432112345678"></textarea>
+                <label class="small text-muted">Gmail address</label>
+                <input type="email" id="gm_user" class="form-control mb-2" value="{{ gmail.user }}" placeholder="you@gmail.com" autocomplete="off">
+                <label class="small text-muted">App Password {% if gmail.has_password %}(saved, leave empty to keep it){% endif %}</label>
+                <input type="password" id="gm_pass" class="form-control mb-2" placeholder="{% if gmail.has_password %}saved{% else %}16-letter App Password{% endif %}" autocomplete="new-password">
+                <label class="small text-muted">FamPay sender domain (filled by the detect button)</label>
+                <input type="text" id="gm_domain" class="form-control mb-3" value="{{ gmail.domain }}" placeholder="for example famapp.in" autocomplete="off">
+                <div class="d-flex gap-2">
+                    <button class="btn btn-custom flex-fill" onclick="saveGmail()"><i class="fas fa-save me-1"></i> Save</button>
+                    <button class="btn btn-outline-warning flex-fill" onclick="detectGmail()"><i class="fas fa-magnifying-glass me-1"></i> Connect &amp; detect sender</button>
+                </div>
+                <div class="small mt-3" id="gm_status"><b>Status:</b> {{ gmail.status }}</div>
+                <hr>
+                <label class="small text-muted">Test an e-mail (nothing is credited)</label>
+                <textarea id="test_sms" class="form-control mb-2" rows="3" placeholder="Paste the text of a FamPay e-mail, for example: You received 10.01 in your FamX account ... UTR 632512726024"></textarea>
                 <button class="btn btn-custom w-100" onclick="testParse()"><i class="fas fa-vial me-1"></i> Test this message</button>
                 <div id="test_result" class="small mt-2 text-info"></div>
             </div>
 
             <div class="card p-4 mb-4">
-                <h5 class="fw-bold mb-3"><i class="fas fa-list me-2"></i>Recent bank alerts (last 20)</h5>
+                <h5 class="fw-bold mb-3"><i class="fas fa-list me-2"></i>Recent payment e-mails (last 20)</h5>
                 <div class="table-responsive">
                     <table class="table table-dark align-middle">
                         <thead><tr><th>Time (IST)</th><th>Amount</th><th>UTR</th><th>Result</th><th>Message</th></tr></thead>
@@ -524,18 +530,18 @@ ADMIN_HTML = """
                             {% for a in alerts %}
                             <tr>
                                 <td>{{ a.time_txt }}</td>
-                                <td>{% if a.amount is not none %}₹{{ '%.2f'|format(a.amount) }}{% else %}-{% endif %}</td>
+                                <td>{% if a.amount is not none %}&#8377;{{ '%.2f'|format(a.amount) }}{% else %}-{% endif %}</td>
                                 <td><code>{{ a.utr or '-' }}</code></td>
                                 <td>{{ a.status }}{% if a.order_id %}<br><small><code>{{ a.order_id }}</code></small>{% endif %}</td>
                                 <td class="small text-muted">{{ a.snippet }}</td>
                             </tr>
                             {% else %}
-                            <tr><td colspan="5" class="text-center text-muted">No alerts received yet.</td></tr>
+                            <tr><td colspan="5" class="text-center text-muted">No payment e-mails read yet.</td></tr>
                             {% endfor %}
                         </tbody>
                     </table>
                 </div>
-                <div class="small text-muted">matched = credited automatically · unmatched = money arrived but no order has that exact amount (check manually) · ignored = not a "money received" message · logged = received while auto mode was OFF</div>
+                <div class="small text-muted">matched = credited automatically &middot; unmatched = money arrived but no order has that exact amount (check manually) &middot; ignored = not a "money received" e-mail &middot; logged = read while automatic mode was OFF</div>
             </div>
         </div>
 
@@ -683,16 +689,31 @@ ADMIN_HTML = """
             fetch('/api/payment/save', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({upi_id: upi, payee_name: name, auto_verify: auto}) })
             .then(r => r.json()).then(d => alert(d.message));
         }
-        function copyWebhook() {
-            let el = document.getElementById('webhook_url');
-            el.select();
-            document.execCommand('copy');
-            alert('Webhook URL copied!');
+        function saveGmail() {
+            let body = {gmail_user: document.getElementById('gm_user').value.trim(),
+                        app_password: document.getElementById('gm_pass').value,
+                        bank_domain: document.getElementById('gm_domain').value.trim()};
+            return fetch('/api/gmail/save', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) })
+            .then(r => r.json()).then(d => { alert(d.message); document.getElementById('gm_pass').value = ''; return d; });
         }
-        function rotateSecret() {
-            if (!confirm('Create a new webhook URL? The old one stops working and you must update your SMS forwarder app.')) return;
-            fetch('/api/payment/rotate_secret', { method: 'POST' })
-            .then(r => r.json()).then(d => { alert(d.message); location.reload(); });
+        function detectGmail() {
+            let st = document.getElementById('gm_status');
+            st.innerText = 'Connecting to Gmail...';
+            let body = {gmail_user: document.getElementById('gm_user').value.trim(),
+                        app_password: document.getElementById('gm_pass').value,
+                        bank_domain: document.getElementById('gm_domain').value.trim()};
+            fetch('/api/gmail/save', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) })
+            .then(r => r.json()).then(d => {
+                if (d.error) { st.innerText = d.message; return; }
+                return fetch('/api/gmail/detect', { method: 'POST' }).then(r => r.json()).then(x => {
+                    st.innerText = x.message;
+                    if (x.ok && x.domain) {
+                        document.getElementById('gm_domain').value = x.domain;
+                        fetch('/api/gmail/save', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({gmail_user: body.gmail_user, app_password: '', bank_domain: x.domain}) })
+                        .then(r => r.json()).then(y => { st.innerText = x.message + '. Sender domain saved: ' + x.domain; });
+                    }
+                });
+            });
         }
         function testParse() {
             let t = document.getElementById('test_sms').value;
@@ -797,7 +818,15 @@ def dashboard():
         base = "https://" + base[len("http://"):]
     pay_cfg = {
         "upi_id": pay["upi_id"], "payee_name": pay["payee_name"], "auto_verify": bool(pay["auto_verify"]),
-        "webhook_url": f"{base}/api/payment/webhook?token={pay['webhook_secret']}",
+    }
+    gm = db.get_gmail_config()
+    gm_state = (gmail_status() if gmail_status else None) or {}
+    gmail_cfg = {
+        "user": gm.get("gmail_user") or "", "has_password": bool(gm.get("gmail_app_password")),
+        "domain": gm.get("bank_domain") or "",
+        "status": (gm_state.get("detail") or "Not connected.")
+                  + (f" Last check: {gm_state['last_check']}." if gm_state.get("last_check") else "")
+                  + (f" Last e-mail: {gm_state['last_mail']}." if gm_state.get("last_mail") else ""),
     }
     ist = timezone(timedelta(hours=5, minutes=30))
     alerts = [
@@ -813,7 +842,7 @@ def dashboard():
         ADMIN_HTML, bot_info=BOT_INFO,
         stats={"users": tot_users, "total_wallet": f"{tot_wallet:,.2f}", "products_count": tot_prods, "orders": tot_orders, "revenue": f"{tot_rev:,.2f}", "keys": tot_keys},
         products=prods, all_orders=all_orders, pending_orders=pending, users_list=users_list,
-        pay_cfg=pay_cfg, alerts=alerts, store={"support_username": st_r[0], "how_to_use_link": st_r[1]}
+        pay_cfg=pay_cfg, gmail=gmail_cfg, alerts=alerts, store={"support_username": st_r[0], "how_to_use_link": st_r[1]}
     )
 
 UPI_RE = re.compile(r'^[a-zA-Z0-9.\-_]{2,64}@[a-zA-Z0-9]{2,32}$')
@@ -831,12 +860,6 @@ def api_payment_save():
     mode = "AUTOMATIC verification is ON." if auto else "Manual approval mode (you approve in Telegram)."
     return jsonify({"message": f"UPI settings saved! New payments use this QR immediately. {mode}"})
 
-@app.route('/api/payment/rotate_secret', methods=['POST'])
-def api_rotate_secret():
-    if not admin_required(): return unauthorized()
-    db.rotate_webhook_secret()
-    return jsonify({"message": "New webhook URL created. Update it in your SMS forwarder app."})
-
 @app.route('/api/payment/test_parse', methods=['POST'])
 def api_test_parse():
     if not admin_required(): return unauthorized()
@@ -852,45 +875,29 @@ def api_test_parse():
         msg += " · matches an open order" if match else " · no open order has this exact amount (normal for a test)"
     return jsonify({"message": msg})
 
-_MSG_KEYS = ("title", "message", "text", "body", "sms", "content", "msg", "notification")
+GMAIL_RE = re.compile(r'^[A-Za-z0-9._%+\-]+@(gmail\.com|googlemail\.com)$', re.I)
+DOMAIN_RE = re.compile(r'^[a-z0-9\-]+(\.[a-z0-9\-]+)+$')
 
-def _extract_message():
-    """Pull the alert text out of whatever the forwarder app sends (JSON, form, query or raw text)."""
-    sources = []
-    data = request.get_json(silent=True)
-    if isinstance(data, dict):
-        sources.append(data)
-    sources.append(request.form)
-    sources.append(request.args)
-    parts = []
-    for src in sources:
-        for k in _MSG_KEYS:
-            v = src.get(k)
-            if isinstance(v, str) and v.strip() and v.strip() not in parts:
-                parts.append(v.strip())
-    if not parts and not isinstance(data, dict):
-        raw = request.get_data(as_text=True).strip()
-        if raw:
-            parts.append(raw)
-    return " ".join(parts)
+@app.route('/api/gmail/save', methods=['POST'])
+def api_gmail_save():
+    if not admin_required(): return unauthorized()
+    d = request.json or {}
+    user = (d.get('gmail_user') or '').strip()
+    password = "".join((d.get('app_password') or '').split()) or None
+    domain = (d.get('bank_domain') or '').strip().lower().lstrip('@*. ')
+    if user and not GMAIL_RE.match(user):
+        return jsonify({"message": "Enter a Gmail address like you@gmail.com", "error": True}), 400
+    if domain and not DOMAIN_RE.match(domain):
+        return jsonify({"message": "The sender domain must look like famapp.in (a full domain).", "error": True}), 400
+    db.set_gmail_config(user, password, domain)
+    return jsonify({"message": "Saved! The bot reconnects to Gmail within a few seconds."})
 
-@app.route('/api/payment/webhook', methods=['POST', 'GET'])
-def payment_webhook():
-    settings = db.get_payment_settings()
-    secret = settings.get('webhook_secret') or ''
-    supplied = request.args.get('token') or request.headers.get('X-Webhook-Secret', '')
-    if not secret or not hmac.compare_digest(supplied.encode(), secret.encode()):
-        return jsonify({"status": "forbidden"}), 403
-
-    text = _extract_message()
-    if not text:
-        return jsonify({"status": "empty"}), 200
-    try:
-        result = process_bank_message(text, settle=bool(settings.get('auto_verify')))
-    except Exception:
-        app.logger.exception("Webhook processing failed")
-        return jsonify({"status": "error"}), 500
-    return jsonify({"status": result["status"]}), 200
+@app.route('/api/gmail/detect', methods=['POST'])
+def api_gmail_detect():
+    if not admin_required(): return unauthorized()
+    if not gmail_detect:
+        return jsonify({"ok": False, "message": "The payment reader is still starting. Try again in a moment."})
+    return jsonify(gmail_detect())
 
 @app.route('/api/product/save', methods=['POST'])
 def api_save_p():
@@ -1082,14 +1089,3 @@ if __name__ == "__main__":
     init_db()
     run_web()
 
-
-
-
-
-
-    
-
-    
-    
-    
-    
