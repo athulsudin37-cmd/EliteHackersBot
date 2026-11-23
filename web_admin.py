@@ -9,7 +9,7 @@ from datetime import timedelta, timezone
 from threading import Thread
 from flask import Flask, render_template_string, request, jsonify, redirect, session
 
-from database import db, init_db, parse_prices
+from database import db, init_db, parse_prices, MENU_BUTTONS, BUTTON_COLORS
 # Filled in by main.py at start-up (the payment logic lives in main.py).
 parse_sms = None
 gmail_status = None
@@ -189,6 +189,7 @@ ADMIN_HTML = """
             <a class="sidebar-link" onclick="showTab('links', this)"><i class="fas fa-link"></i> Product Links</a>
             <a class="sidebar-link" onclick="showTab('security', this)"><i class="fas fa-shield-halved"></i> Security & Sessions</a>
             <a class="sidebar-link" onclick="showTab('store', this)"><i class="fas fa-sliders"></i> Store Settings</a>
+            <a class="sidebar-link" onclick="showTab('btncolors', this)"><i class="fas fa-palette"></i> Button Colors</a>
             <a href="/logout" class="sidebar-link text-danger mt-4"><i class="fas fa-lock"></i> Logout</a>
         </div>
     </div>
@@ -603,6 +604,35 @@ ADMIN_HTML = """
                 </div>
             </div>
         </div>
+
+        <!-- 1️⃣5️⃣ 🎨 TAB: BUTTON COLORS -->
+        <div class="tab-pane-content" id="tab-btncolors" style="display:none;">
+            <div class="card p-4">
+                <h5>🎨 Main Menu Button Colors</h5>
+                <p class="small text-muted">Choose a color for each button of the bot's main menu. Changes show up in the bot within a few seconds (customers see them the next time the menu opens).</p>
+                <div class="table-responsive">
+                    <table class="table table-dark align-middle">
+                        <thead><tr><th>Button</th><th style="width:200px;">Color</th></tr></thead>
+                        <tbody>
+                            {% for b in menu_buttons %}
+                            <tr>
+                                <td>{{ b.label }}</td>
+                                <td>
+                                    <select class="form-select btn-color-select" data-key="{{ b.key }}">
+                                        <option value="none" {% if b.style == 'none' %}selected{% endif %}>⚪ Default (grey)</option>
+                                        <option value="primary" {% if b.style == 'primary' %}selected{% endif %}>🔵 Blue</option>
+                                        <option value="success" {% if b.style == 'success' %}selected{% endif %}>🟢 Green</option>
+                                        <option value="danger" {% if b.style == 'danger' %}selected{% endif %}>🔴 Red</option>
+                                    </select>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                <button class="btn btn-custom" onclick="saveButtonColors()"><i class="fas fa-save me-1"></i> Save Colors</button>
+            </div>
+        </div>
     </div>
     {% endif %}
 
@@ -751,6 +781,12 @@ ADMIN_HTML = """
             fetch('/api/store/save', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({support_username: document.getElementById('st_supp').value, how_to_use_link: document.getElementById('st_how').value}) })
             .then(r => r.json()).then(d => alert(d.message));
         }
+        function saveButtonColors() {
+            let styles = {};
+            document.querySelectorAll('.btn-color-select').forEach(s => { styles[s.dataset.key] = s.value; });
+            fetch('/api/buttons/save', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({styles: styles}) })
+            .then(r => r.json()).then(d => alert(d.message));
+        }
         function changePwd() {
             let p = document.getElementById('sec_pwd').value;
             if(!p) return alert('Enter new password!');
@@ -838,8 +874,14 @@ def dashboard():
         for r in db.recent_bank_credits(20)
     ]
 
+    saved_styles = db.get_button_styles()
+    menu_buttons = [
+        {"key": k, "label": label, "style": saved_styles.get(k, default) or "none"}
+        for k, (label, default) in MENU_BUTTONS.items()
+    ]
+
     return render_template_string(
-        ADMIN_HTML, bot_info=BOT_INFO,
+        ADMIN_HTML, bot_info=BOT_INFO, menu_buttons=menu_buttons,
         stats={"users": tot_users, "total_wallet": f"{tot_wallet:,.2f}", "products_count": tot_prods, "orders": tot_orders, "revenue": f"{tot_rev:,.2f}", "keys": tot_keys},
         products=prods, all_orders=all_orders, pending_orders=pending, users_list=users_list,
         pay_cfg=pay_cfg, gmail=gmail_cfg, alerts=alerts, store={"support_username": st_r[0], "how_to_use_link": st_r[1]}
@@ -1070,6 +1112,18 @@ def api_save_st():
     )
     return jsonify({"message": "Store settings saved!"})
 
+@app.route('/api/buttons/save', methods=['POST'])
+def api_buttons_save():
+    if not admin_required(): return unauthorized()
+    styles = (request.json or {}).get('styles') or {}
+    if not isinstance(styles, dict):
+        return jsonify({"message": "Invalid data!"}), 400
+    allowed = set(BUTTON_COLORS) | {"none"}
+    for key, style in styles.items():
+        if key in MENU_BUTTONS and style in allowed:
+            db.set_button_style(key, style)
+    return jsonify({"message": "Button colors saved! The bot shows them within a few seconds."})
+
 @app.route('/api/security/change_pwd', methods=['POST'])
 def api_pwd():
     if not admin_required(): return unauthorized()
@@ -1088,4 +1142,5 @@ def run_web():
 if __name__ == "__main__":
     init_db()
     run_web()
+
 
