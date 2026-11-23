@@ -1380,4 +1380,913 @@ ADMIN_HTML = """
         /* ---- Broadcast ---- */
         let bcAudience = 'all', bcKind = '', bcFile = null;
         function bcAud(btn) {
-            document.querySelectorAll('#bc_aud .chip-btn').forEach(b => b.classList.toggle('on', b ==
+            document.querySelectorAll('#bc_aud .chip-btn').forEach(b => b.classList.toggle('on', b === btn));
+            bcAudience = btn.dataset.aud;
+            const names = {all: 'All', customers: 'Buyers', non_buyers: 'Non-buyers', resellers: 'Resellers'};
+            document.getElementById('bc_send').textContent = '🚀 Send to ' + names[bcAudience] + ' ' + btn.dataset.n + ' Users';
+        }
+        function bcWrap(tag) {
+            const ta = document.getElementById('bc_msg');
+            const a = ta.selectionStart, b = ta.selectionEnd;
+            ta.value = ta.value.slice(0, a) + '<' + tag + '>' + ta.value.slice(a, b) + '</' + tag + '>' + ta.value.slice(b);
+            ta.focus(); bcPreview();
+        }
+        function bcLink() {
+            const url = prompt('Link URL (https://...)');
+            if (!url) return;
+            const ta = document.getElementById('bc_msg');
+            const a = ta.selectionStart, b = ta.selectionEnd;
+            const label = ta.value.slice(a, b) || 'Click here';
+            ta.value = ta.value.slice(0, a) + '<a href="' + url + '">' + label + '</a>' + ta.value.slice(b);
+            bcPreview();
+        }
+        function bcEmoji(e) {
+            const ta = document.getElementById('bc_msg');
+            const a = ta.selectionStart;
+            ta.value = ta.value.slice(0, a) + e + ta.value.slice(a);
+            ta.focus(); bcPreview();
+        }
+        function bcPreview() {
+            const v = document.getElementById('bc_msg').value;
+            document.getElementById('bc_count').textContent = v.length;
+            let html = esc(v)
+                .replace(/&lt;(b|i|u|s|code|pre)&gt;/g, '<$1>').replace(/&lt;[/](b|i|u|s|code|pre)&gt;/g, '</$1>');
+            const names = {image: '🖼️ Image', video: '🎬 Video', voice: '🎙️ Voice'};
+            const media = bcKind ? '<div class="tg-media">' + names[bcKind] + ' attached: ' + esc(bcFile ? bcFile.name : '') + '</div>' : '';
+            document.getElementById('bc_prev').innerHTML = (media + html) || '<span style="color:#8d96b5;">Your message preview appears here...</span>';
+        }
+        function bcPick(kind, input) {
+            if (!input.files || !input.files[0]) return;
+            const f = input.files[0];
+            if (f.size > 50 * 1024 * 1024) { input.value = ''; return toast('File is larger than 50 MB.', false); }
+            ['image', 'video', 'voice'].forEach(k => { if (k !== kind) document.getElementById('bc_' + k).value = ''; });
+            bcKind = kind; bcFile = f;
+            ['image', 'video', 'voice'].forEach(k => document.getElementById('mt_' + k).classList.toggle('on', k === kind));
+            document.getElementById('bc_file').style.display = 'flex';
+            document.getElementById('bc_file_name').textContent = f.name + ' (' + (f.size / 1048576).toFixed(1) + ' MB)';
+            bcPreview();
+        }
+        function bcClearMedia() {
+            ['image', 'video', 'voice'].forEach(k => { document.getElementById('bc_' + k).value = ''; document.getElementById('mt_' + k).classList.remove('on'); });
+            bcKind = ''; bcFile = null;
+            document.getElementById('bc_file').style.display = 'none';
+            bcPreview();
+        }
+        function sendBroadcast(testOnly) {
+            const msg = document.getElementById('bc_msg').value;
+            if (!msg.trim() && !bcFile) return toast('Write a message or attach media.', false);
+            if (!testOnly && !confirm('Send this broadcast now?')) return;
+            const fd = new FormData();
+            fd.append('message', msg);
+            fd.append('audience', bcAudience);
+            fd.append('test', testOnly ? '1' : '0');
+            if (bcFile) { fd.append('media_type', bcKind); fd.append('media', bcFile); }
+            const btn = document.getElementById('bc_send');
+            btn.disabled = true;
+            fetch('/api/broadcast/send', { method: 'POST', body: fd })
+                .then(r => r.json().then(d => { d._ok = r.ok; return d; }))
+                .then(d => { toast(d.message, d._ok); btn.disabled = false; if (d._ok && !testOnly) { bcHistLoad(); } })
+                .catch(() => { btn.disabled = false; toast('Upload failed. Check your connection.', false); });
+        }
+        let bcHistTimer = null;
+        function bcHistLoad() {
+            fetch('/api/broadcast/history').then(r => r.json()).then(d => {
+                const box = document.getElementById('bc_hist');
+                if (!d.rows || !d.rows.length) { box.innerHTML = '<div class="empty-note">No broadcasts yet.</div>'; return; }
+                box.innerHTML = d.rows.map(r => {
+                    const pct = r.total ? Math.round((r.sent + r.failed) * 100 / r.total) : 100;
+                    const st = r.status === 'running' ? '<span class="pill a">Sending...</span>' : '<span class="pill g">Done</span>';
+                    return '<div class="bc-hist"><div class="d-flex justify-content-between flex-wrap gap-1"><b>' + esc(r.time_txt) + '</b>' + st + '</div>'
+                        + '<div class="set-note">' + esc(r.audience) + (r.media ? ' · ' + esc(r.media) : '') + '</div>'
+                        + '<div style="margin-top:4px;">' + esc(r.preview) + '</div>'
+                        + '<div class="set-note">✅ ' + r.sent + ' sent · ❌ ' + r.failed + ' failed · ' + r.total + ' total</div>'
+                        + '<div class="bar"><i style="width:' + pct + '%"></i></div></div>';
+                }).join('');
+                clearTimeout(bcHistTimer);
+                if (d.rows.some(r => r.status === 'running')) bcHistTimer = setTimeout(bcHistLoad, 3000);
+            }).catch(() => {});
+        }
+
+        /* ---- My Profile ---- */
+        function pwdMeter() {
+            const p = document.getElementById('pf_new').value;
+            let score = 0;
+            if (p.length >= 6) score++;
+            if (p.length >= 10) score++;
+            if (/[0-9]/.test(p) && /[a-zA-Z]/.test(p)) score++;
+            if (/[^a-zA-Z0-9]/.test(p)) score++;
+            const bar = document.getElementById('pf_bar');
+            bar.style.width = (p ? score * 25 : 0) + '%';
+            bar.style.background = ['#ef4444', '#ef4444', '#f59e0b', '#84cc16', '#22c55e'][p ? score : 0];
+            document.getElementById('pf_hint').textContent = p ? ['Too weak', 'Weak', 'Okay', 'Good', 'Strong'][score] : 'Use at least 6 characters; longer with numbers and symbols is stronger.';
+        }
+        function changePwd() {
+            const cur = document.getElementById('pf_cur').value, nw = document.getElementById('pf_new').value, cf = document.getElementById('pf_conf').value;
+            if (!cur || !nw || !cf) return toast('Fill all three password fields.', false);
+            if (nw !== cf) return toast('New passwords do not match.', false);
+            postJSON('/api/security/change_pwd', {current: cur, password: nw, confirm: cf}).then(d => {
+                toast(d.message, d._ok);
+                if (d._ok) ['pf_cur', 'pf_new', 'pf_conf'].forEach(i => document.getElementById(i).value = '');
+                pwdMeter();
+            });
+        }
+        function logoutAll() {
+            if (!confirm('Log out of the panel on ALL devices?')) return;
+            postJSON('/api/security/logout_all', {}).then(d => { toast(d.message, d._ok); setTimeout(() => location.href = '/', 900); });
+        }
+    </script>
+</body>
+</html>
+"""
+
+
+# ==========================================
+# 🌐 BACKEND API ENDPOINTS
+# ==========================================
+def admin_required():
+    """Logged in AND the session is from the current session generation ("Logout all devices" bumps it)."""
+    if not session.get('admin_logged'):
+        return False
+    try:
+        return int(session.get('sv', 1)) == db.get_session_version()
+    except Exception:
+        return True
+
+def unauthorized():
+    return jsonify({"message": "Unauthorized"}), 401
+
+@app.route('/health')
+def health():
+    # Lightweight endpoint for uptime monitors (keeps the free Render instance awake).
+    return "ok", 200
+
+@app.route('/login', methods=['POST'])
+def login():
+    if db.check_admin_password(request.form.get('password', '').strip()):
+        session.permanent = True
+        session['admin_logged'] = True
+        session['sv'] = db.get_session_version()
+        return redirect('/')
+    time.sleep(1)  # slow down password guessing
+    return render_template_string(ADMIN_HTML, bot_info=BOT_INFO, error="Invalid Admin Password!")
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect('/')
+
+@app.route('/')
+def dashboard():
+    if not admin_required():
+        session.clear()  # drops stale sessions (e.g. after "Logout all devices")
+        return render_template_string(ADMIN_HTML, bot_info=BOT_INFO)
+
+    r_u = q_one('SELECT COUNT(*), COALESCE(SUM(wallet_balance), 0) FROM users')
+    tot_users, tot_wallet = r_u[0] or 0, float(r_u[1] or 0)
+    r_o = q_one("SELECT COUNT(*), COALESCE(SUM(amount), 0) FROM order_history WHERE LEFT(COALESCE(key_delivered, ''), 7) <> 'PENDING'")
+    tot_orders, tot_rev = r_o[0] or 0, float(r_o[1] or 0)
+    tot_prods = q_one('SELECT COUNT(*) FROM products')[0]
+    tot_keys = q_one('SELECT COUNT(*) FROM keys_inventory WHERE is_used = 0')[0]
+    today_dep = float(q_one(
+        """
+        SELECT COALESCE(SUM(COALESCE(pay_amount, amount)), 0) FROM payment_records
+        WHERE status = 'verified'
+          AND (created_ts AT TIME ZONE 'Asia/Kolkata')::date = (now() AT TIME ZONE 'Asia/Kolkata')::date
+        """
+    )[0] or 0)
+    awaiting = q_one("SELECT COUNT(*) FROM payment_records WHERE status = 'awaiting_approval'")[0] or 0
+
+    stock = {}
+    for pk, plan, cnt in q_all('SELECT prod_key, plan, COUNT(*) FROM keys_inventory WHERE is_used = 0 GROUP BY prod_key, plan'):
+        stock.setdefault(pk, {})[plan] = cnt
+    prods = [
+        {"prod_key": p[0], "name": p[1], "category": p[2], "prices": parse_prices(p[3]),
+         "icon": p[4] or "⚡", "download_link": p[5] or "", "maintenance": int(p[6] or 0),
+         "stock_out": int(p[7] or 0), "stock": stock.get(p[0], {})}
+        for p in q_all('SELECT prod_key, name, category, prices, icon, download_link, maintenance, stock_out FROM products ORDER BY name')
+    ]
+    all_orders = q_all('SELECT id, user_id, prod_name, plan, key_delivered, amount, utr, timestamp FROM order_history ORDER BY id DESC LIMIT 50')
+    pending = q_all("SELECT id, user_id, prod_name, plan, key_delivered, amount, timestamp FROM order_history WHERE LEFT(key_delivered, 7) = 'PENDING' ORDER BY id DESC")
+    users_list = q_all('SELECT user_id, full_name, username, joined_date, orders_count, wallet_balance, total_spent, total_referrals, referral_earnings, account_type FROM users ORDER BY user_id DESC LIMIT 50')
+    topups = q_all('SELECT created_at, user_id, COALESCE(pay_amount, amount), status, order_id FROM payment_records ORDER BY id DESC LIMIT 30')
+    st_r = q_one('SELECT support_username, how_to_use_link FROM store_settings WHERE id = 1') or ("@Athulsudin", "")
+    pay = db.get_payment_settings()
+    pay_cfg = {
+        "upi_id": pay["upi_id"], "payee_name": pay["payee_name"], "auto_verify": bool(pay["auto_verify"]),
+    }
+    gm = db.get_gmail_config()
+    gm_state = (gmail_status() if gmail_status else None) or {}
+    gmail_cfg = {
+        "user": gm.get("gmail_user") or "", "has_password": bool(gm.get("gmail_app_password")),
+        "domain": gm.get("bank_domain") or "",
+        "status": (gm_state.get("detail") or "Not connected.")
+                  + (f" Last check: {gm_state['last_check']}." if gm_state.get("last_check") else "")
+                  + (f" Last e-mail: {gm_state['last_mail']}." if gm_state.get("last_mail") else ""),
+    }
+    ist = IST
+    alerts = [
+        {
+            "time_txt": r["received_at"].astimezone(ist).strftime("%d %b, %I:%M %p") if r["received_at"] else "",
+            "amount": r["amount"], "utr": r["utr"], "status": r["status"], "order_id": r["order_id"],
+            "snippet": (r["raw_text"] or "")[:90],
+        }
+        for r in db.recent_bank_credits(20)
+    ]
+
+    saved_styles = db.get_button_styles()
+    button_groups = [
+        {"title": title, "items": [
+            {"key": k, "label": label, "default": default or "none",
+             "style": (saved_styles.get(k) if saved_styles.get(k) is not None else default) or "none"}
+            for k, label, default in items
+        ]}
+        for title, items in BUTTON_GROUPS
+    ]
+
+    # ---- Manage Keys analytics ----
+    today_prefix = datetime.now(IST).strftime("%d %b %Y") + "%"
+    delivered_sql = "LEFT(COALESCE(o.key_delivered, ''), 7) <> 'PENDING'"
+    r_k = q_one(f"SELECT COUNT(*), COALESCE(SUM(o.amount), 0) FROM order_history o WHERE {delivered_sql}")
+    r_t = q_one(f"SELECT COUNT(*), COALESCE(SUM(o.amount), 0) FROM order_history o WHERE {delivered_sql} AND {TODAY_SQL}", (today_prefix,))
+    pending_n = q_one("SELECT COUNT(*) FROM order_history WHERE LEFT(COALESCE(key_delivered, ''), 7) = 'PENDING'")[0] or 0
+    key_stats = {
+        "total": r_k[0] or 0, "today": r_t[0] or 0, "today_rev": f"{float(r_t[1] or 0):,.2f}",
+        "live_products": sum(1 for p in prods if not p["maintenance"] and not p["stock_out"]),
+        "pending": pending_n,
+    }
+    today_by_product = [
+        (r[0], r[1], float(r[2] or 0)) for r in q_all(
+            f"SELECT o.prod_name, COUNT(*), SUM(o.amount) FROM order_history o WHERE {delivered_sql} AND {TODAY_SQL} "
+            "GROUP BY o.prod_name ORDER BY SUM(o.amount) DESC", (today_prefix,))
+    ]
+    lifetime = {
+        r[0]: [r[1], float(r[2] or 0)] for r in q_all(
+            f"SELECT o.prod_name, COUNT(*), SUM(o.amount) FROM order_history o WHERE {delivered_sql} GROUP BY o.prod_name")
+    }
+    bc_row = q_one(
+        "SELECT COUNT(*), COUNT(*) FILTER (WHERE orders_count > 0), COUNT(*) FILTER (WHERE orders_count = 0), "
+        "COUNT(*) FILTER (WHERE account_type = 'Reseller') FROM users"
+    )
+    bc_counts = {"all": bc_row[0] or 0, "customers": bc_row[1] or 0, "non_buyers": bc_row[2] or 0, "resellers": bc_row[3] or 0}
+    st = db.get_settings()
+
+    return render_template_string(
+        ADMIN_HTML, bot_info=BOT_INFO, button_groups=button_groups, topups=topups,
+        key_stats=key_stats, today_by_product=today_by_product, lifetime=lifetime,
+        bc_counts=bc_counts, admin_id=ADMIN_ID,
+        stats={"users": tot_users, "total_wallet": f"{tot_wallet:,.2f}", "products_count": tot_prods,
+               "orders": tot_orders, "revenue": f"{tot_rev:,.2f}", "key_stock": tot_keys,
+               "today_deposit": f"{today_dep:,.2f}", "awaiting": awaiting},
+        products=prods, all_orders=all_orders, pending_orders=pending, users_list=users_list,
+        pay_cfg=pay_cfg, gmail=gmail_cfg, alerts=alerts, store=st
+    )
+
+UPI_RE = re.compile(r'^[a-zA-Z0-9.\-_]{2,64}@[a-zA-Z0-9]{2,32}$')
+
+@app.route('/api/payment/save', methods=['POST'])
+def api_payment_save():
+    if not admin_required(): return unauthorized()
+    d = request.json or {}
+    upi_id = (d.get('upi_id') or '').strip()
+    payee = re.sub(r'[^A-Za-z0-9 .&\-]', '', (d.get('payee_name') or '').strip())[:40].strip() or 'Elite Hackers Store'
+    if not UPI_RE.match(upi_id):
+        return jsonify({"message": "Invalid UPI ID! Example: yourname@okhdfcbank"}), 400
+    auto = bool(d.get('auto_verify'))
+    db.set_payment_settings(upi_id, payee, auto)
+    mode = "AUTOMATIC verification is ON." if auto else "Manual approval mode (you approve in Telegram)."
+    return jsonify({"message": f"UPI settings saved! New payments use this QR immediately. {mode}"})
+
+@app.route('/api/payment/test_parse', methods=['POST'])
+def api_test_parse():
+    if not admin_required(): return unauthorized()
+    parsed = parse_sms((request.json or {}).get('text', ''))
+    if not parsed['is_credit']:
+        msg = "❌ Not detected as a 'money received' message."
+    elif parsed['amount'] is None:
+        msg = "⚠️ Looks like a credit, but no amount was found."
+    else:
+        match = db.find_open_payment_by_amount(parsed['amount'])
+        msg = f"✅ Credit detected: ₹{parsed['amount']:,.2f}"
+        msg += f" · UTR {parsed['utr']}" if parsed['utr'] else " · no UTR found (fine for UPI app notifications)"
+        msg += " · matches an open order" if match else " · no open order has this exact amount (normal for a test)"
+    return jsonify({"message": msg})
+
+GMAIL_RE = re.compile(r'^[A-Za-z0-9._%+\-]+@(gmail\.com|googlemail\.com)$', re.I)
+DOMAIN_RE = re.compile(r'^[a-z0-9\-]+(\.[a-z0-9\-]+)+$')
+
+@app.route('/api/gmail/save', methods=['POST'])
+def api_gmail_save():
+    if not admin_required(): return unauthorized()
+    d = request.json or {}
+    user = (d.get('gmail_user') or '').strip()
+    password = "".join((d.get('app_password') or '').split()) or None
+    domain = (d.get('bank_domain') or '').strip().lower().lstrip('@*. ')
+    if user and not GMAIL_RE.match(user):
+        return jsonify({"message": "Enter a Gmail address like you@gmail.com", "error": True}), 400
+    if domain and not DOMAIN_RE.match(domain):
+        return jsonify({"message": "The sender domain must look like famapp.in (a full domain).", "error": True}), 400
+    db.set_gmail_config(user, password, domain)
+    return jsonify({"message": "Saved! The bot reconnects to Gmail within a few seconds."})
+
+@app.route('/api/gmail/detect', methods=['POST'])
+def api_gmail_detect():
+    if not admin_required(): return unauthorized()
+    if not gmail_detect:
+        return jsonify({"ok": False, "message": "The payment reader is still starting. Try again in a moment."})
+    return jsonify(gmail_detect())
+
+PLAN_RE = re.compile(r'^[A-Za-z0-9 _.\-+]{1,22}$')   # short enough for Telegram's 64-byte callback data
+CATEGORIES = ("non_root", "root", "ios", "pc", "likes")
+
+def _clean_plans(raw):
+    """Validate the plans sent by the admin form. Returns (plans, error)."""
+    plans, seen = [], set()
+    for item in raw or []:
+        name = (item.get('name') or '').strip()
+        try:
+            price = round(float(item.get('price')), 2)
+        except (TypeError, ValueError):
+            return None, f"Invalid price for plan '{name}'!"
+        if not PLAN_RE.match(name):
+            return None, f"Plan name '{name}' is invalid (max 22 letters/numbers, no special symbols)."
+        if price < 0:
+            return None, "Price cannot be negative!"
+        if name in seen:
+            return None, f"Plan '{name}' is added twice!"
+        seen.add(name)
+        keys = [x.strip() for x in (item.get('keys') or '').split('\n') if x.strip()]
+        plans.append({"old": (item.get('old') or '').strip(), "name": name, "price": price, "keys": keys})
+    if not plans:
+        return None, "Add at least one plan!"
+    return plans, None
+
+def _save_product(d, is_update):
+    name = (d.get('name') or '').strip()
+    category = d.get('category') if d.get('category') in CATEGORIES else 'non_root'
+    icon = (d.get('icon') or '').strip()[:8] or '⚡'
+    link = (d.get('download_link') or '').strip()
+    plans, err = _clean_plans(d.get('plans'))
+    if not name:
+        return jsonify({"message": "Enter the product name!", "error": True}), 400
+    if err:
+        return jsonify({"message": err, "error": True}), 400
+    prices = [[p["name"], p["price"]] for p in plans]
+
+    if is_update:
+        k = (d.get('prod_key') or '').strip()
+    else:
+        k = re.sub(r'[^a-zA-Z0-9]', '_', name).strip('_').lower()[:32]
+    if not k:
+        return jsonify({"message": "Invalid product name!", "error": True}), 400
+
+    with db.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute('SELECT 1 FROM products WHERE prod_key = %s', (k,))
+            exists = cur.fetchone() is not None
+            if is_update and not exists:
+                return jsonify({"message": "Product not found!", "error": True}), 404
+            if not is_update and exists:
+                return jsonify({"message": "A product with this name already exists. Edit it instead.", "error": True}), 400
+            if is_update:
+                cur.execute(
+                    'UPDATE products SET name=%s, category=%s, prices=%s, download_link=%s, icon=%s WHERE prod_key=%s',
+                    (name, category, json.dumps(prices), link, icon, k),
+                )
+                for p in plans:   # a renamed plan keeps its unused keys
+                    if p["old"] and p["old"] != p["name"]:
+                        cur.execute('UPDATE keys_inventory SET plan=%s WHERE prod_key=%s AND plan=%s AND is_used=0',
+                                    (p["name"], k, p["old"]))
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO products (prod_key, name, category, prices, download_link, icon, maintenance, stock_out)
+                    VALUES (%s, %s, %s, %s, %s, %s, 0, 0)
+                    """,
+                    (k, name, category, json.dumps(prices), link, icon),
+                )
+            rows = [(k, p["name"], item) for p in plans for item in p["keys"]]
+            if rows:
+                cur.executemany('INSERT INTO keys_inventory (prod_key, plan, item_key, is_used) VALUES (%s, %s, %s, 0)', rows)
+    return jsonify({"message": "Product updated!" if is_update else "Product added!"})
+
+@app.route('/api/product/save', methods=['POST'])
+def api_save_p():
+    if not admin_required(): return unauthorized()
+    return _save_product(request.json or {}, is_update=False)
+
+@app.route('/api/product/update', methods=['POST'])
+def api_update_p():
+    if not admin_required(): return unauthorized()
+    return _save_product(request.json or {}, is_update=True)
+
+@app.route('/api/product/toggle', methods=['POST'])
+def api_toggle_p():
+    if not admin_required(): return unauthorized()
+    d = request.json or {}
+    field = d.get('field')
+    if field not in ('maintenance', 'stock_out'):
+        return jsonify({"message": "Invalid option!"}), 400
+    row = db.fetchone(
+        f"UPDATE products SET {field} = CASE WHEN {field} = 0 THEN 1 ELSE 0 END WHERE prod_key = %s RETURNING maintenance, stock_out",
+        (d.get('prod_key'),),
+    )
+    if not row:
+        return jsonify({"message": "Product not found!"}), 404
+    if row["maintenance"]:
+        msg = "Product is now under MAINTENANCE (hidden from the shop)."
+    elif row["stock_out"]:
+        msg = "Product is now DISABLED (hidden from the shop)."
+    else:
+        msg = "Product is ACTIVE again."
+    return jsonify({"message": msg})
+
+@app.route('/api/product/delete', methods=['POST'])
+def api_del_p():
+    if not admin_required(): return unauthorized()
+    db.execute('DELETE FROM products WHERE prod_key = %s', ((request.json or {}).get('prod_key'),))
+    return jsonify({"message": "Product deleted!"})
+
+@app.route('/api/keys/add', methods=['POST'])
+def api_keys_add():
+    if not admin_required(): return unauthorized()
+    d = request.json or {}
+    prod = db.get_product_by_key(d.get('prod_key') or '')
+    plan = (d.get('plan') or '').strip()
+    if not prod or not any(n == plan for n, _ in prod["prices"]):
+        return jsonify({"message": "Choose a valid product and plan!", "error": True}), 400
+    keys = [x.strip() for x in (d.get('keys') or '').split('\n') if x.strip()]
+    if not keys:
+        return jsonify({"message": "Paste at least one key!", "error": True}), 400
+    with db.connection() as conn:
+        with conn.cursor() as cur:
+            cur.executemany('INSERT INTO keys_inventory (prod_key, plan, item_key, is_used) VALUES (%s, %s, %s, 0)',
+                            [(d['prod_key'], plan, x) for x in keys])
+    return jsonify({"message": f"{len(keys)} key(s) added to {prod['name']} — {plan}."})
+
+@app.route('/api/pending/dispatch', methods=['POST'])
+def api_dispatch():
+    if not admin_required(): return unauthorized()
+    d = request.json or {}
+    key = (d.get('key') or '').strip()
+    if not key:
+        return jsonify({"message": "Enter a key!"}), 400
+    try:
+        order_id = int(d['order_id'])
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"message": "Invalid order!"}), 400
+
+    # Only orders that are still pending can be dispatched; the customer is taken from the order itself.
+    row = db.fetchone(
+        """
+        UPDATE order_history SET key_delivered = %s
+        WHERE id = %s AND LEFT(key_delivered, 7) = 'PENDING'
+        RETURNING user_id, prod_name, plan
+        """,
+        (key, order_id)
+    )
+    if not row:
+        return jsonify({"message": "This order is not pending (already delivered?)."}), 400
+
+    sent = True
+    try:
+        safe_key = key.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        tg_send(
+            row["user_id"],
+            "✅ <b>Payment verified — here's your key!</b>\n⏩ ~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n"
+            f"🗝️ Your Key:\n<code>{safe_key}</code>\n\nThank you for shopping with us!"
+        )
+    except Exception:
+        sent = False
+    msg = "Key dispatched directly to customer!" if sent else "Key saved, but Telegram message failed (user may have blocked the bot)."
+    return jsonify({"message": msg})
+
+@app.route('/api/user/adjust_balance', methods=['POST'])
+def api_adj_bal():
+    if not admin_required(): return unauthorized()
+    d = request.json or {}
+    try:
+        user_id, delta = int(d['user_id']), float(d['delta'])
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"message": "Invalid values!"}), 400
+    db.execute('UPDATE users SET wallet_balance = GREATEST(0, wallet_balance + %s) WHERE user_id = %s', (delta, user_id))
+    return jsonify({"message": "Wallet balance updated!"})
+
+@app.route('/api/user/set_role', methods=['POST'])
+def api_set_role():
+    if not admin_required(): return unauthorized()
+    d = request.json or {}
+    try:
+        db.set_account_type(int(d['user_id']), d['role'])
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"message": "Invalid role or user!"}), 400
+    return jsonify({"message": f"Role updated to {d['role']}!"})
+
+@app.route('/api/id_stock/add', methods=['POST'])
+def api_id_stock():
+    if not admin_required(): return unauthorized()
+    d = request.json or {}
+    try:
+        price = float(d['price'])
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"message": "Invalid price!"}), 400
+    db.execute(
+        'INSERT INTO id_accounts (category_name, account_data, price, is_sold) VALUES (%s, %s, %s, 0)',
+        (d.get('category', ''), d.get('credentials', ''), price)
+    )
+    return jsonify({"message": "Account added to ID Stock!"})
+
+@app.route('/api/coupon/save', methods=['POST'])
+def api_coupon():
+    if not admin_required(): return unauthorized()
+    d = request.json or {}
+    code = (d.get('code') or '').strip().upper()
+    try:
+        val, limit = float(d['val']), int(d.get('limit') or 100)
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"message": "Invalid values!"}), 400
+    if not code:
+        return jsonify({"message": "Enter a promo code!"}), 400
+    db.execute(
+        """
+        INSERT INTO coupons (code, discount_type, discount_val, usage_limit, used_count, is_active)
+        VALUES (%s, 'flat', %s, %s, 0, 1)
+        ON CONFLICT (code) DO UPDATE SET
+            discount_type = 'flat',
+            discount_val = EXCLUDED.discount_val,
+            usage_limit = EXCLUDED.usage_limit,
+            used_count = 0,
+            is_active = 1
+        """,
+        (code, val, limit)
+    )
+    return jsonify({"message": "Promo code activated!"})
+
+
+
+@app.route('/api/buttons/save', methods=['POST'])
+def api_buttons_save():
+    if not admin_required(): return unauthorized()
+    styles = (request.json or {}).get('styles') or {}
+    if not isinstance(styles, dict):
+        return jsonify({"message": "Invalid data!"}), 400
+    allowed = set(BUTTON_COLORS) | {"none"}
+    for key, style in styles.items():
+        if key in MENU_BUTTONS and style in allowed:
+            db.set_button_style(key, style)
+    return jsonify({"message": "Button colors saved! The bot shows them within a few seconds."})
+
+
+# ==========================================
+# 🔑 LIVE KEY STATUS (Manage Keys)
+# ==========================================
+def _fmt_ist(ts):
+    return ts.astimezone(IST).strftime("%d %b %Y, %I:%M:%S %p") if ts else ""
+
+@app.route('/api/keys/live')
+def api_keys_live():
+    if not admin_required(): return unauthorized()
+    q = (request.args.get('q') or '').strip()
+    product = (request.args.get('product') or '').strip()
+    status = (request.args.get('status') or '').strip()
+    today_only = request.args.get('today') == '1'
+    try:
+        page = max(1, int(request.args.get('page', 1)))
+    except ValueError:
+        page = 1
+    per = 10
+
+    where, params = [], []
+    if q:
+        like = f"%{q.lstrip('@')}%"
+        where.append(
+            "(o.prod_name ILIKE %s OR o.key_delivered ILIKE %s OR COALESCE(u.username, '') ILIKE %s "
+            "OR COALESCE(u.full_name, '') ILIKE %s OR COALESCE(o.utr, '') ILIKE %s OR CAST(o.user_id AS TEXT) LIKE %s)"
+        )
+        params += [like] * 6
+    if product:
+        where.append("o.prod_name = %s"); params.append(product)
+    if status == 'pending':
+        where.append("LEFT(COALESCE(o.key_delivered, ''), 7) = 'PENDING'")
+    elif status == 'delivered':
+        where.append("LEFT(COALESCE(o.key_delivered, ''), 7) <> 'PENDING'")
+    if today_only:
+        where.append(TODAY_SQL); params.append(datetime.now(IST).strftime("%d %b %Y") + "%")
+    wsql = ("WHERE " + " AND ".join(where)) if where else ""
+    base = f"FROM order_history o LEFT JOIN users u ON u.user_id = o.user_id {wsql}"
+
+    summ = db.fetchone(
+        "SELECT COUNT(*) AS n, "
+        "COUNT(*) FILTER (WHERE LEFT(COALESCE(o.key_delivered, ''), 7) <> 'PENDING') AS delivered, "
+        "COUNT(*) FILTER (WHERE LEFT(COALESCE(o.key_delivered, ''), 7) = 'PENDING') AS pending, "
+        "COALESCE(SUM(o.amount), 0) AS amount, MIN(o.created_ts) AS first_ts, MAX(o.created_ts) AS last_ts "
+        + base, params)
+    total = int(summ["n"] or 0)
+    pages = max(1, (total + per - 1) // per)
+    page = min(page, pages)
+
+    rows = db.fetchall(
+        "SELECT o.id, o.user_id, o.prod_name, o.plan, o.key_delivered, o.amount, o.utr, o.timestamp, o.created_ts, "
+        "u.full_name, u.username " + base + " ORDER BY o.id DESC LIMIT %s OFFSET %s",
+        params + [per, (page - 1) * per])
+    out = []
+    for r in rows:
+        key = r["key_delivered"] or ""
+        utr = (r["utr"] or "").strip()
+        if utr == "WALLET_PAY":
+            paid_via = "Wallet balance"
+        elif utr:
+            paid_via = f"UPI · UTR {utr}"
+        else:
+            paid_via = "—"
+        out.append({
+            "id": r["id"], "user_id": r["user_id"],
+            "name": r["full_name"] or r["username"] or "Unknown",
+            "product": r["prod_name"] or "", "plan": (r["plan"] or "").replace("_", " "),
+            "key": key, "pending": key[:7] == "PENDING",
+            "amount": f"{float(r['amount'] or 0):,.2f}", "paid_via": paid_via,
+            "time_txt": _fmt_ist(r["created_ts"]) or (r["timestamp"] or ""),
+            "iso": r["created_ts"].isoformat() if r["created_ts"] else "",
+        })
+
+    # Customer card: when the result belongs to exactly one customer (or a Telegram ID with no orders yet)
+    user = None
+    owners = db.fetchall("SELECT DISTINCT o.user_id " + base + " LIMIT 2", params)
+    uid = owners[0]["user_id"] if len(owners) == 1 else (int(q) if q.isdigit() and len(q) <= 18 and not owners else None)
+    if uid is not None:
+        u = db.get_user(uid)
+        if u:
+            user = {
+                "id": u["user_id"], "name": u["full_name"] or "Unknown", "username": u["username"] or "N/A",
+                "role": u["account_type"] or "Regular", "joined": u["joined_date"] or "",
+                "balance": f"{float(u['wallet_balance'] or 0):,.2f}", "spent": f"{float(u['total_spent'] or 0):,.2f}",
+                "orders": u["orders_count"] or 0,
+            }
+    return jsonify({
+        "rows": out, "total": total, "page": page, "pages": pages, "per_page": per, "user": user,
+        "summary": {
+            "delivered": int(summ["delivered"] or 0), "pending": int(summ["pending"] or 0),
+            "amount": f"{float(summ['amount'] or 0):,.2f}",
+            "first": _fmt_ist(summ["first_ts"]), "last": _fmt_ist(summ["last_ts"]),
+        },
+    })
+
+# ==========================================
+# ⚙️ STORE SETTINGS
+# ==========================================
+@app.route('/api/store/save', methods=['POST'])
+def api_save_st():
+    if not admin_required(): return unauthorized()
+    d = request.json or {}
+    def clean(key, limit=200):
+        return str(d.get(key, '') or '').strip()[:limit]
+    shop_name = clean('shop_name', 60)
+    if not shop_name:
+        return jsonify({"message": "Shop name cannot be empty!"}), 400
+    for key in ('update_link', 'how_to_use_link'):
+        link = clean(key)
+        if link and not link.lower().startswith(('http://', 'https://', 'tg://')):
+            return jsonify({"message": "Links must start with https:// (or tg://)."}), 400
+    db.save_branding(shop_name, clean('tagline', 120), clean('support_username', 64),
+                     clean('update_link'), clean('how_to_use_link'))
+    return jsonify({"message": "Branding saved! The bot uses it right away."})
+
+@app.route('/api/store/limits', methods=['POST'])
+def api_save_limits():
+    if not admin_required(): return unauthorized()
+    d = request.json or {}
+    try:
+        vals = {
+            "min_deposit": float(d['min_deposit']), "max_deposit": float(d['max_deposit']),
+            "qr_expiry_minutes": int(float(d['qr_expiry_minutes'])), "referral_bonus": float(d['referral_bonus']),
+            "spin_min": float(d['spin_min']), "spin_max": float(d['spin_max']),
+            "spin_cooldown_hours": float(d['spin_cooldown_hours']), "spin_expiry_hours": float(d['spin_expiry_hours']),
+        }
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"message": "Please fill every field with a valid number!"}), 400
+    if any(v < 0 for v in vals.values()):
+        return jsonify({"message": "Values cannot be negative!"}), 400
+    if vals["min_deposit"] < 1 or vals["max_deposit"] < vals["min_deposit"]:
+        return jsonify({"message": "Max deposit must be at least the min deposit (min ≥ ₹1)."}), 400
+    if vals["qr_expiry_minutes"] < 1:
+        return jsonify({"message": "QR expiry must be at least 1 minute."}), 400
+    if vals["spin_max"] < vals["spin_min"]:
+        return jsonify({"message": "Spin max must be at least the spin min."}), 400
+    db.save_limits(**vals)
+    return jsonify({"message": "Settings saved! The bot applies them immediately."})
+
+# ==========================================
+# 📢 BROADCAST (text + image / video / voice)
+# ==========================================
+BC_AUDIENCES = {
+    "all": ("All users", "SELECT user_id FROM users"),
+    "customers": ("Buyers", "SELECT user_id FROM users WHERE orders_count > 0"),
+    "non_buyers": ("Not bought yet", "SELECT user_id FROM users WHERE orders_count = 0"),
+    "resellers": ("Resellers", "SELECT user_id FROM users WHERE account_type = 'Reseller'"),
+}
+BC_METHODS = {"image": ("sendPhoto", "photo"), "video": ("sendVideo", "video"),
+              "voice": ("sendVoice", "voice"), "audio": ("sendAudio", "audio")}
+
+def tg_call(method, payload=None, multipart=None):
+    """Call the Telegram Bot API. Returns (ok, result_or_description)."""
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
+    if multipart:
+        boundary = "----bc" + hashlib.md5(os.urandom(8)).hexdigest()
+        body = b""
+        for name, value in multipart["fields"].items():
+            body += f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode()
+        fname = multipart["filename"].replace('"', '')
+        body += (f'--{boundary}\r\nContent-Disposition: form-data; name="{multipart["field"]}"; filename="{fname}"\r\n'
+                 f'Content-Type: {multipart["ctype"]}\r\n\r\n').encode() + multipart["data"] + f'\r\n--{boundary}--\r\n'.encode()
+        req = urllib.request.Request(url, data=body, headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+        timeout = 180
+    else:
+        req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"})
+        timeout = 15
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+            return bool(data.get("ok")), data.get("result")
+    except urllib.error.HTTPError as e:
+        try:
+            return False, json.loads(e.read().decode()).get("description", str(e))
+        except Exception:
+            return False, str(e)
+    except Exception as e:
+        return False, str(e)
+
+def _extract_file_id(kind, result):
+    if not isinstance(result, dict):
+        return None
+    if kind == "image":
+        photos = result.get("photo") or []
+        return photos[-1]["file_id"] if photos else None
+    return (result.get(BC_METHODS[kind][1]) or {}).get("file_id")
+
+def _send_text(chat_id, text):
+    ok, res = tg_call("sendMessage", {"chat_id": chat_id, "text": text, "parse_mode": "HTML"})
+    if not ok and "parse" in str(res).lower():  # broken HTML tags: send as plain text instead
+        ok, res = tg_call("sendMessage", {"chat_id": chat_id, "text": text})
+    return ok, res
+
+def _send_one(chat_id, text, kind, media):
+    """Send one broadcast message. `media` is a dict holding either file bytes or a Telegram file_id."""
+    if not kind:
+        ok, _ = _send_text(chat_id, text)
+        return ok, None
+    method, field = BC_METHODS[kind]
+    caption_ok = bool(text) and len(text) <= 1024
+    if media.get("file_id"):
+        payload = {"chat_id": chat_id, field: media["file_id"]}
+        if caption_ok:
+            payload.update(caption=text, parse_mode="HTML")
+        ok, res = tg_call(method, payload)
+        if not ok and caption_ok and "parse" in str(res).lower():
+            payload.pop("parse_mode", None)
+            ok, res = tg_call(method, payload)
+        file_id = media["file_id"]
+    else:
+        fields = {"chat_id": str(chat_id)}
+        if caption_ok:
+            fields.update(caption=text, parse_mode="HTML")
+        ok, res = tg_call(method, multipart={"fields": fields, "field": field, "filename": media["filename"],
+                                             "ctype": media["ctype"], "data": media["data"]})
+        file_id = _extract_file_id(kind, res) if ok else None
+    if ok and text and not caption_ok:
+        _send_text(chat_id, text)
+    return ok, file_id
+
+@app.route('/api/broadcast/send', methods=['POST'])
+def api_bc():
+    if not admin_required(): return unauthorized()
+    msg = (request.form.get('message') or '').strip()
+    audience = request.form.get('audience') or 'all'
+    test_only = request.form.get('test') == '1'
+    kind = (request.form.get('media_type') or '').strip()
+    upload = request.files.get('media')
+    if audience not in BC_AUDIENCES:
+        return jsonify({"message": "Unknown audience!"}), 400
+
+    media = None
+    if upload and kind in ("image", "video", "voice"):
+        data = upload.read()
+        if not data:
+            return jsonify({"message": "The attached file is empty!"}), 400
+        if len(data) > 50 * 1024 * 1024:
+            return jsonify({"message": "File is larger than 50 MB!"}), 400
+        name = upload.filename or kind
+        ctype = upload.mimetype or "application/octet-stream"
+        if kind == "voice" and not name.lower().endswith((".ogg", ".oga", ".opus")):
+            kind = "audio"  # mp3 / m4a / wav cannot be a voice note: send as an audio file
+        media = {"data": data, "filename": name, "ctype": ctype}
+    else:
+        kind = ""
+    if not msg and not media:
+        return jsonify({"message": "Enter a message or attach media!"}), 400
+
+    if test_only:
+        ok, res = _send_one(ADMIN_ID, msg, kind, media or {})
+        if ok:
+            return jsonify({"message": "Test sent to your Telegram!"})
+        return jsonify({"message": f"Test failed: {res or 'Open the bot and press /start first.'}"}), 400
+
+    label, sql = BC_AUDIENCES[audience]
+    uids = [r[0] for r in q_all(sql)]
+    if not uids:
+        return jsonify({"message": "No users in this audience!"}), 400
+    hist = db.fetchone(
+        "INSERT INTO broadcast_history (audience, media_type, preview, total) VALUES (%s, %s, %s, %s) RETURNING id",
+        (label, kind or None, (msg or '[media only]')[:140], len(uids)))
+    hist_id = hist["id"]
+
+    def _run():
+        sent = failed = 0
+        shared = dict(media or {})
+        for u in uids:
+            try:
+                ok, file_id = _send_one(u, msg, kind, shared)
+                if ok and kind and file_id and not shared.get("file_id"):
+                    shared = {"file_id": file_id}  # upload once, reuse the Telegram file for everyone else
+                if ok: sent += 1
+                else: failed += 1
+            except Exception:
+                failed += 1
+            if (sent + failed) % 10 == 0:
+                try: db.execute("UPDATE broadcast_history SET sent = %s, failed = %s WHERE id = %s", (sent, failed, hist_id))
+                except Exception: pass
+            time.sleep(0.05)  # stay under Telegram's broadcast rate limit
+        try: db.execute("UPDATE broadcast_history SET sent = %s, failed = %s, status = 'done' WHERE id = %s", (sent, failed, hist_id))
+        except Exception: pass
+    Thread(target=_run, daemon=True).start()
+    return jsonify({"message": f"Broadcast started to {len(uids)} users!"})
+
+@app.route('/api/broadcast/history')
+def api_bc_history():
+    if not admin_required(): return unauthorized()
+    rows = db.fetchall("SELECT * FROM broadcast_history ORDER BY id DESC LIMIT 15")
+    names = {"image": "🖼️ Image", "video": "🎬 Video", "voice": "🎙️ Voice", "audio": "🎵 Audio"}
+    return jsonify({"rows": [{
+        "time_txt": _fmt_ist(r["created_ts"]), "audience": r["audience"], "media": names.get(r["media_type"] or "", ""),
+        "preview": r["preview"] or "", "total": r["total"], "sent": r["sent"], "failed": r["failed"], "status": r["status"],
+    } for r in rows]})
+
+# ==========================================
+# 👤 MY PROFILE (password, sessions, exports)
+# ==========================================
+@app.route('/api/security/change_pwd', methods=['POST'])
+def api_pwd():
+    if not admin_required(): return unauthorized()
+    if os.environ.get('ADMIN_PASSWORD', '').strip():
+        return jsonify({"message": "Password is managed by ADMIN_PASSWORD in Render Environment. Change it there and redeploy."}), 400
+    d = request.json or {}
+    current = (d.get('current') or '').strip()
+    new_pwd = (d.get('password') or '').strip()
+    if not db.check_admin_password(current):
+        time.sleep(1)
+        return jsonify({"message": "Current password is wrong!"}), 400
+    if new_pwd != (d.get('confirm') or '').strip():
+        return jsonify({"message": "New passwords do not match!"}), 400
+    if len(new_pwd) < 6:
+        return jsonify({"message": "Password must be at least 6 characters!"}), 400
+    db.set_admin_password(new_pwd)          # also logs out every other device
+    session['sv'] = db.get_session_version()  # keep THIS device signed in
+    return jsonify({"message": "Password updated! Other devices were logged out."})
+
+@app.route('/api/security/logout_all', methods=['POST'])
+def api_logout_all():
+    if not admin_required(): return unauthorized()
+    db.bump_session_version()
+    session.clear()
+    return jsonify({"message": "Logged out on all devices."})
+
+def _csv_response(name, header, rows):
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(header)
+    for r in rows:
+        w.writerow(["" if v is None else v for v in r])
+    return Response(buf.getvalue(), mimetype="text/csv",
+                    headers={"Content-Disposition": f"attachment; filename={name}"})
+
+@app.route('/export/orders.csv')
+def export_orders():
+    if not admin_required(): return unauthorized()
+    rows = db.fetchall("SELECT id, user_id, prod_name, plan, key_delivered, amount, utr, timestamp FROM order_history ORDER BY id DESC")
+    return _csv_response("orders.csv", ["id", "user_id", "product", "plan", "key", "amount", "utr", "time"],
+                         [tuple(r.values()) for r in rows])
+
+@app.route('/export/users.csv')
+def export_users():
+    if not admin_required(): return unauthorized()
+    rows = db.fetchall("SELECT user_id, full_name, username, joined_date, orders_count, wallet_balance, total_spent, account_type FROM users ORDER BY user_id")
+    return _csv_response("users.csv", ["user_id", "name", "username", "joined", "orders", "wallet", "spent", "role"],
+                         [tuple(r.values()) for r in rows])
+
+
+def run_web():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
+
+if __name__ == "__main__":
+    init_db()
+    run_web()
+
