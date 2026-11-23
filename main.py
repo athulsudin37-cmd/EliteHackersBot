@@ -73,18 +73,43 @@ def spawn(coro):
 def init_db():
     return init_persistent_db()
 
-def get_store_config():
-    """Support username / tutorial link: values saved in the web admin, with fallback to defaults."""
-    cfg = dict(STORE_CONFIG)
+def get_settings():
+    """Live store settings from the admin panel (branding, deposit limits, referral, spin).
+    Falls back to the built-in defaults if the database cannot be read."""
     try:
-        row = db.fetchone("SELECT support_username, how_to_use_link FROM store_settings WHERE id = 1")
-        if row:
-            if row.get("support_username"):
-                cfg["support_username"] = row["support_username"]
-            if row.get("how_to_use_link"):
-                cfg["how_to_use_link"] = row["how_to_use_link"]
+        return db.get_settings()
     except Exception:
         logger.exception("Could not load store settings")
+        return dict(db.SETTING_DEFAULTS, support_username="", how_to_use_link="")
+
+def _num(value, default):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+def fmt_amount(value):
+    value = float(value)
+    return f"{value:,.0f}" if value.is_integer() else f"{value:,.2f}"
+
+def fmt_hours(hours):
+    hours = float(hours)
+    if hours < 1:
+        return f"{int(round(hours * 60))} minutes"
+    whole = f"{hours:g}"
+    return f"{whole} hour" + ("" if hours == 1 else "s")
+
+def get_store_config():
+    """Support username / tutorial link / branding: values saved in the web admin, with fallback to defaults."""
+    cfg = dict(STORE_CONFIG)
+    st = get_settings()
+    if st.get("support_username"):
+        cfg["support_username"] = st["support_username"]
+    if st.get("how_to_use_link"):
+        cfg["how_to_use_link"] = st["how_to_use_link"]
+    cfg["shop_name"] = (st.get("shop_name") or "Elite Hackers Store").strip()
+    cfg["tagline"] = (st.get("tagline") or "").strip()
+    cfg["update_link"] = (st.get("update_link") or "").strip()
     return cfg
 
 def get_payment_config():
@@ -262,6 +287,10 @@ def purchase_with_wallet(user_id, prod_key, plan_name, allow_pending=False, utr=
             # Customer already paid by UPI: queue the order, admin dispatches it from the web panel.
             key, status = "PENDING", "pending"
         db.add_order(user_id, prod["name"], plan_name, key, price, utr, now_ist())
+        try:
+            db.mark_spin_rewards_used(user_id)  # bought in time -> spin cash is kept
+        except Exception:
+            logger.exception("Could not mark spin rewards as used")
     except Exception:
         db.update_balance(user_id, price)
         raise
@@ -952,12 +981,22 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             ref_by = int(args[0].replace("ref_", ""))
             if ref_by != user.id and not db_get_user(user.id):
-                db.execute(
-                    'UPDATE users SET total_referrals = total_referrals + 1 WHERE user_id = %s',
-                    (ref_by,)
-                )
+                ref_bonus = _num(get_settings().get("referral_bonus"), 0)
+                if ref_bonus > 0:
+                    db.execute(
+                        'UPDATE users SET total_referrals = total_referrals + 1, '
+                        'wallet_balance = wallet_balance + %s, referral_earnings = referral_earnings + %s '
+                        'WHERE user_id = %s',
+                        (ref_bonus, ref_bonus, ref_by)
+                    )
+                else:
+                    db.execute(
+                        'UPDATE users SET total_referrals = total_referrals + 1 WHERE user_id = %s',
+                        (ref_by,)
+                    )
                 try:
-                    await context.bot.send_message(chat_id=ref_by, text=f"🎉 <b>New Referral!</b> User <code>{user.id}</code> joined via your link.", parse_mode="HTML")
+                    bonus_line = f"\n💰 <b>₹{fmt_amount(ref_bonus)}</b> bonus added to your wallet!" if ref_bonus > 0 else ""
+                    await context.bot.send_message(chat_id=ref_by, text=f"🎉 <b>New Referral!</b> User <code>{user.id}</code> joined via your link.{bonus_line}", parse_mode="HTML")
                 except Exception:
                     pass
         except Exception:
@@ -976,7 +1015,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     balance = u_data[4] if u_data else 0.0
 
     text = (
-        f"🛒 ── <b>ELITE HACKERS STORE</b> ── 🛒\n\n"
+        f"🛒 ── <b>{html.escape(cfg['shop_name'].upper())}</b> ── 🛒\n"
+        f"{('<i>' + html.escape(cfg['tagline']) + '</i>' + chr(10)) if cfg['tagline'] else ''}\n"
         f"👏 Welcome, <b>{html.escape(user.first_name or 'there')}!</b> 🥷\n\n"
         f"📈 ── <b>STORE HIGHLIGHTS</b> ── 📈\n\n"
         f"🗝️ Premium Game Keys\n"
@@ -1003,6 +1043,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [styled_button("💼 Selling Proof ↗️", "selling_proof", url="https://t.me/+fJrFACSrntgwNjll"), styled_button("💬 Support", "support", callback_data="support_contact")],
         [styled_button("🎰 Lucky Spin", "lucky_spin", callback_data="lucky_spin"), styled_button("👥 Referral", "referral", callback_data="referral_menu")]
     ]
+
+    if valid_url(cfg.get("update_link")):
+        keyboard.append([styled_button("📢 Check All Updates", "check_updates", url=cfg["update_link"])])
 
     if user.id == ADMIN_ID:
         r_url = os.environ.get("RENDER_EXTERNAL_URL", "http://localhost:8080")
@@ -1192,14 +1235,16 @@ async def render_numpad(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     current_digits = context.user_data.get('numpad_val', '')
     amt_display = f"₹{int(current_digits):,}" if current_digits and int(current_digits) > 0 else "₹0"
+    st = get_settings()
+    min_dep, max_dep = _num(st.get("min_deposit"), 10), _num(st.get("max_deposit"), 50000)
 
     text = (
         "💰 <b>Enter Amount</b>\n\n"
         f"<b>{amt_display}</b>\n\n"
-        "Min: ₹10.00 · Max: ₹50,000.00"
+        f"Min: ₹{min_dep:,.2f} · Max: ₹{max_dep:,.2f}"
     )
 
-    confirm_text = f"✅ Confirm {amt_display}" if current_digits and int(current_digits) >= 10 else "✅ Confirm"
+    confirm_text = f"✅ Confirm {amt_display}" if current_digits and int(current_digits) >= min_dep else "✅ Confirm"
 
     keyboard = [
         [styled_button("1", "np_digit", callback_data="np_1"), styled_button("2", "np_digit", callback_data="np_2"), styled_button("3", "np_digit", callback_data="np_3")],
@@ -1241,11 +1286,13 @@ async def handle_numpad_input(update: Update, context: ContextTypes.DEFAULT_TYPE
         await render_numpad(update, context)
 
     elif action == "confirm":
-        if not val or int(val) < 10:
-            await query.answer("⚠️ Minimum deposit is ₹10.00!", show_alert=True)
+        st = get_settings()
+        min_dep, max_dep = _num(st.get("min_deposit"), 10), _num(st.get("max_deposit"), 50000)
+        if not val or int(val) < min_dep:
+            await query.answer(f"⚠️ Minimum deposit is ₹{min_dep:,.2f}!", show_alert=True)
             return
-        if int(val) > 50000:
-            await query.answer("⚠️ Maximum deposit is ₹50,000.00!", show_alert=True)
+        if int(val) > max_dep:
+            await query.answer(f"⚠️ Maximum deposit is ₹{max_dep:,.2f}!", show_alert=True)
             return
 
         await query.answer()
@@ -1258,13 +1305,15 @@ async def preset_dep_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     amt = float(update.callback_query.data.replace("preset_dep_", ""))
     await generate_deposit_qr(update, context, amt)
 
-# 📷 Dynamic QR Generator with 5-Min Auto Expiry
+# 📷 Dynamic QR Generator with auto expiry (minutes set in the admin panel)
 async def generate_deposit_qr(update: Update, context: ContextTypes.DEFAULT_TYPE, amount: float,
                               is_deficit=False, prod_name=None, plan_name=None, prod_key=None):
     query = update.callback_query
     user_id = query.from_user.id
     chat_id = query.message.chat_id
     method = "UPI"
+    qr_minutes = max(1, int(_num(get_settings().get("qr_expiry_minutes"), 5)))
+    qr_minutes_txt = f"{qr_minutes} minute" + ("" if qr_minutes == 1 else "s")
 
     cfg = get_payment_config()
     upi_id, payee_name, auto_on = cfg["upi_id"], cfg["payee_name"], cfg["auto_verify"]
@@ -1322,7 +1371,7 @@ async def generate_deposit_qr(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"💸 Scan & pay <b>₹{pay_amount:,.2f}</b> to complete this purchase.\n\n"
             f"{how_to}\n\n"
             f"🆔 Order:\n<code>{order_id}</code>\n\n"
-            f"⏰ <b>This QR expires in 5 minutes if payment isn't completed.</b>"
+            f"⏰ <b>This QR expires in {qr_minutes_txt} if payment isn't completed.</b>"
         )
     else:
         caption = (
@@ -1330,7 +1379,7 @@ async def generate_deposit_qr(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"💰 Amount: <b>₹{pay_amount:,.2f}</b>\n"
             f"🆔 Order:\n<code>{order_id}</code>\n\n"
             f"{how_to}\n\n"
-            f"⏰ <b>This QR expires in 5 minutes if payment isn't completed.</b>"
+            f"⏰ <b>This QR expires in {qr_minutes_txt} if payment isn't completed.</b>"
         )
 
     keyboard = [
@@ -1359,7 +1408,7 @@ async def generate_deposit_qr(update: Update, context: ContextTypes.DEFAULT_TYPE
     async def expiry_watchdog():
         try:
             start_t = time.time()
-            while time.time() - start_t < 300:
+            while time.time() - start_t < qr_minutes * 60:
                 await asyncio.sleep(5)
                 row = await asyncio.to_thread(db.get_payment, order_id)
                 if not row or row["status"] != "pending":
@@ -1381,7 +1430,7 @@ async def generate_deposit_qr(update: Update, context: ContextTypes.DEFAULT_TYPE
                     f"🕒 <b>PAYMENT EXPIRED</b>\n"
                     f"_________________________\n\n"
                     f"— 🔒 Order: <code>{order_id}</code>\n"
-                    f"— ❌ No payment detected within 5 minutes\n"
+                    f"— ❌ No payment detected within {qr_minutes_txt}\n"
                     f"— ℹ️ If you already paid the exact amount, it is still credited automatically (up to 1 hour).\n\n"
                     f"<i>Paid but nothing arrived? Tap the button below. Or tap /start for a new order.</i>"
                 )
@@ -1393,7 +1442,7 @@ async def generate_deposit_qr(update: Update, context: ContextTypes.DEFAULT_TYPE
                     f"🕒 <b>PAYMENT EXPIRED</b>\n"
                     f"_________________________\n\n"
                     f"— 🔒 Order: <code>{order_id}</code>\n"
-                    f"— ❌ Not paid within 5 minutes\n"
+                    f"— ❌ Not paid within {qr_minutes_txt}\n"
                     f"— 🔒 QR / payment details are no longer valid\n\n"
                     f"<i>Tap /start to begin a new order.</i>"
                 )
@@ -1638,7 +1687,19 @@ async def cancel_deposit_click(update: Update, context: ContextTypes.DEFAULT_TYP
 # ==========================================
 # 🎰 5. LUCKY CASH SPIN (2-SEC ANIMATION + 1-HR EXPIRY)
 # ==========================================
-SPIN_COOLDOWN_HOURS = 24
+def spin_settings():
+    """(cooldown_hours, min_prize, max_prize, expiry_hours) from the admin panel."""
+    st = get_settings()
+    cooldown = max(0.0, _num(st.get("spin_cooldown_hours"), 24))
+    lo = max(0.0, _num(st.get("spin_min"), 2))
+    hi = max(lo, _num(st.get("spin_max"), 10))
+    expiry = max(0.0, _num(st.get("spin_expiry_hours"), 1))
+    return cooldown, lo, hi, expiry
+
+def pick_spin_prize(lo, hi):
+    if float(lo).is_integer() and float(hi).is_integer():
+        return int(random.randint(int(lo), int(hi)))
+    return round(random.uniform(lo, hi), 2)
 
 def fmt_wait(seconds):
     hours, rem = divmod(int(seconds), 3600)
@@ -1647,7 +1708,8 @@ def fmt_wait(seconds):
 async def lucky_spin_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    remaining = db.spin_remaining_seconds(update.effective_user.id, SPIN_COOLDOWN_HOURS)
+    cooldown_h, _lo, _hi, expiry_h = spin_settings()
+    remaining = db.spin_remaining_seconds(update.effective_user.id, cooldown_h)
 
     if remaining <= 0:
         status_line = "🕒 Spin Status: ✅ <b>Available Now!</b>\n\n👇 Tap below to spin and try your luck!"
@@ -1658,10 +1720,17 @@ async def lucky_spin_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "── <b>CASH SPIN</b> ──\n\n"
         "🎁 <b>Daily Free Spin!</b>\n"
         "💰 Win real cash directly into your wallet!\n"
-        "Get 1 Free Spin every single day!\n"
-        "_________________________\n\n"
+        f"Get 1 Free Spin every {fmt_hours(cooldown_h)}!\n"
+        + (f"⏳ Use the cash for a purchase within <b>{fmt_hours(expiry_h)}</b> or it expires!\n" if expiry_h > 0 else "")
+        + "_________________________\n\n"
         f"{status_line}"
     )
+    active = db.active_spin_reward(update.effective_user.id) if expiry_h > 0 else None
+    if active:
+        text += (
+            f"\n\n🎁 Active spin cash: <b>₹{fmt_amount(active['amount'])}</b> — "
+            f"expires in <b>{fmt_wait(float(active['secs']))}</b>. Buy a key now to keep it!"
+        )
     keyboard = []
     if remaining <= 0:
         keyboard.append([styled_button("🍯 Spin Now! (FREE)", "spin_now", callback_data="spin_action_play")])
@@ -1673,7 +1742,8 @@ async def perform_lucky_spin(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user = update.effective_user
 
     # The cooldown is enforced in the database, so a spin can never be repeated early.
-    if not db.claim_spin(user.id, SPIN_COOLDOWN_HOURS):
+    cooldown_h, spin_lo, spin_hi, expiry_h = spin_settings()
+    if not db.claim_spin(user.id, cooldown_h):
         await query.answer("⏳ Your next free spin is not available yet. Try again later!", show_alert=True)
         return
     await query.answer()
@@ -1690,8 +1760,10 @@ async def perform_lucky_spin(update: Update, context: ContextTypes.DEFAULT_TYPE)
             pass
         await asyncio.sleep(0.6)
 
-    won_amount = random.choice([2, 4, 5, 10])
+    won_amount = pick_spin_prize(spin_lo, spin_hi)
     db.update_balance(user.id, won_amount)
+    if expiry_h > 0 and won_amount > 0:
+        db.add_spin_reward(user.id, won_amount, expiry_h)
     u_data = db_get_user(user.id)
     new_bal = u_data[4] if u_data else won_amount
 
@@ -1700,14 +1772,15 @@ async def perform_lucky_spin(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "👑 [ 💎 | 💎 | 💎 ]\n"
         "_________________________\n\n"
         "🎉 <b>Congratulations!</b>\n\n"
-        f"💰 You won <b>₹{won_amount} Cash Reward!</b>\n"
-        "It has been added to your wallet.\n\n"
-        f"💳 New balance: <b>₹{new_bal:,.2f}</b>\n"
+        f"💰 You won <b>₹{fmt_amount(won_amount)} Cash Reward!</b>\n"
+        "It has been added to your wallet.\n"
+        + (f"⏳ <b>Use it for a purchase within {fmt_hours(expiry_h)}</b> — otherwise this cash expires!\n" if expiry_h > 0 else "")
+        + f"\n💳 New balance: <b>₹{new_bal:,.2f}</b>\n"
         "_________________________\n\n"
-        f"🕒 Next free spin available in {SPIN_COOLDOWN_HOURS} Hours!"
+        f"🕒 Next free spin available in {fmt_hours(cooldown_h)}!"
     )
     keyboard = [
-        [styled_button(f"🛒 Shop Now — Use ₹{won_amount}", "spin_shop", callback_data="shop_key")],
+        [styled_button(f"🛒 Shop Now — Use ₹{fmt_amount(won_amount)}", "spin_shop", callback_data="shop_key")],
         [styled_button("🔜 Back", "back", callback_data="main_menu")]
     ]
     await query.message.edit_text(result_text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -1953,11 +2026,40 @@ async def def_pay_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==========================================
 # 🤖 BOT SETUP & CRASH-PROOF RUNNER
 # ==========================================
+async def spin_expiry_loop(app):
+    """Every 30 s: close spin rewards whose time ran out, take the unused cash back and tell the user."""
+    while True:
+        try:
+            expired = await asyncio.to_thread(db.claim_expired_spin_rewards)
+            for r in expired:
+                taken, new_bal = await asyncio.to_thread(db.take_back_spin_cash, r["user_id"], float(r["amount"]))
+                if taken <= 0:
+                    continue
+                text = (
+                    "⏰ <b>SPIN CASH EXPIRED</b>\n"
+                    "_________________________\n\n"
+                    f"Your free spin reward of <b>₹{fmt_amount(taken)}</b> was not used for a purchase in time, "
+                    "so it has been removed from your wallet.\n\n"
+                    f"💳 Wallet balance: <b>₹{new_bal:,.2f}</b>\n\n"
+                    "🎰 Spin again when your next free spin is ready — and buy a key before the timer ends!"
+                )
+                try:
+                    await app.bot.send_message(chat_id=r["user_id"], text=text, parse_mode="HTML",
+                                               reply_markup=back_to_menu_markup())
+                except Exception:
+                    logger.warning("Could not notify user %s about expired spin cash", r["user_id"])
+        except Exception:
+            logger.exception("Spin expiry loop error")
+        await asyncio.sleep(30)
+
+async def post_init(app):
+    spawn(spin_expiry_loop(app))
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.error("Unhandled error while processing an update", exc_info=context.error)
 
 def start_bot():
-    app = Application.builder().token(BOT_TOKEN).concurrent_updates(False).build()
+    app = Application.builder().token(BOT_TOKEN).concurrent_updates(False).post_init(post_init).build()
 
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CallbackQueryHandler(start_command, pattern="^main_menu$"))
@@ -2005,3 +2107,4 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"Bot crash prevented: {e}. Auto-restarting in 1s...")
         time.sleep(1)
+
