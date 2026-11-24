@@ -337,7 +337,7 @@ def _buy_from_supplier(user_id, prod_key, plan_name):
         _alert_once(
             f"supplier:{prod_key}:{plan_name}",
             f"⚠️ <b>Supplier purchase failed</b>\n📦 {_esc(prod_key)} · {_esc(plan_name)} (PID {pid})\n"
-            f"Reason: {_esc(str(e)[:300])}{warn}\nThe customer was refunded automatically.",
+            f"Reason: {_esc(str(e)[:300])}{warn}\nThe customer's money stays safe in their bot wallet (no bank refund).",
             hours=0.1 if warn else 1,
         )
         return None, None
@@ -2067,14 +2067,28 @@ async def shop_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    text = "🛒 <b>PRODUCT STORE — SHOP</b> 🛒\n\n📱 Select your device type:"
+    text = "🛒 <b>PRODUCT STORE — SHOP</b> 🛒\n\n🎮 Select your game:"
+    keyboard = [
+        [styled_button("🔥 FREE FIRE", "game_ff", callback_data="shop_ff")],
+        [styled_button("🎱 CARROM POOL", "game_carrom", callback_data="pcat_carrom")],
+        [styled_button("🎱 8BALL POOL", "game_pool8", callback_data="pcat_pool8")],
+        [styled_button("👆 Back", "back", callback_data="main_menu")]
+    ]
+    await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
+
+async def shop_ff_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """FREE FIRE -> the device-type list (Non-Root, Root, iOS, PC, 8 Level ID)."""
+    query = update.callback_query
+    await query.answer()
+
+    text = "🔥 <b>FREE FIRE — SHOP</b> 🔥\n\n📱 Select your device type:"
     keyboard = [
         [styled_button("☎️ Non-Root Mobile", "cat_non_root", callback_data="pcat_non_root")],
         [styled_button("🔓 Root Mobile", "cat_root", callback_data="pcat_root")],
         [styled_button("🍏 iOS Panels", "cat_ios", callback_data="pcat_ios")],
         [styled_button("💻 PC Panels", "cat_pc", callback_data="pcat_pc")],
         [styled_button("🆔 8 Level ID", "cat_likes", callback_data="pcat_likes")],
-        [styled_button("👆 Back", "back", callback_data="main_menu")]
+        [styled_button("👆 Back", "back", callback_data="shop_key")]
     ]
     await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
 
@@ -2085,16 +2099,17 @@ async def list_category_products(update: Update, context: ContextTypes.DEFAULT_T
     context.user_data['selected_cat'] = cat_key
 
     prods = get_products_by_category(cat_key)
+    back_cb = "shop_key" if cat_key in ("carrom", "pool8") else "shop_ff"
 
     if not prods:
         text = "🛒 <b>PRODUCT STORE — SHOP</b> 🛒\n\n⚠️ No products available in this category yet. Admin will restock soon!"
-        keyboard = [[styled_button("👆 Back", "back", callback_data="shop_key")]]
+        keyboard = [[styled_button("👆 Back", "back", callback_data=back_cb)]]
         await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
         return
 
     text = "🛒 <b>PRODUCT STORE — SHOP</b> 🛒\n\n🔥 Choose a product:"
     keyboard = [[styled_button(f"{p['icon']} {p['name']}", "product_item", callback_data=f"selprod_{k}")] for k, p in prods.items()]
-    keyboard.append([styled_button("👆 Back", "back", callback_data="shop_key")])
+    keyboard.append([styled_button("👆 Back", "back", callback_data=back_cb)])
     await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
 
 def build_plans_view(user_id, prod_key):
@@ -2107,17 +2122,28 @@ def build_plans_view(user_id, prod_key):
     is_reseller = bool(u_data and u_data[8] == "Reseller")
     role_badge = "👑 Reseller Price" if is_reseller else "👤 Regular Price"
 
-    text = (
-        f"🖼️ <b>{html.escape(prod['name'] or '')}</b>\n"
-        f"Available | 🔴 {html.escape((prod.get('category') or '').upper())} Only\n"
-        f"_________________________\n\n"
-        f"🔘 Silent Aim &amp; Headshot\n"
-        f"🔘 AimFov 360° Location\n"
-        f"🔘 CS / BR Rank Working Safe\n"
-        f"🔘 100% Anti-Ban Protection\n\n"
-        f"Current Tier: <b>{role_badge}</b>\n\n"
-        f"Select Duration:"
-    )
+    cat = prod.get("category") or ""
+    if cat in ("carrom", "pool8"):
+        game = "CARROM POOL" if cat == "carrom" else "8BALL POOL"
+        text = (
+            f"🖼️ <b>{html.escape(prod['name'] or '')}</b>\n"
+            f"Available | 🎱 {game}\n"
+            f"_________________________\n\n"
+            f"Current Tier: <b>{role_badge}</b>\n\n"
+            f"Select Duration:"
+        )
+    else:
+        text = (
+            f"🖼️ <b>{html.escape(prod['name'] or '')}</b>\n"
+            f"Available | 🔴 {html.escape(cat.upper())} Only\n"
+            f"_________________________\n\n"
+            f"🔘 Silent Aim &amp; Headshot\n"
+            f"🔘 AimFov 360° Location\n"
+            f"🔘 CS / BR Rank Working Safe\n"
+            f"🔘 100% Anti-Ban Protection\n\n"
+            f"Current Tier: <b>{role_badge}</b>\n\n"
+            f"Select Duration:"
+        )
 
     keyboard = []
     for pl_name, reg_price in prod.get("prices", []):
@@ -2388,6 +2414,7 @@ def start_bot():
     app.add_handler(CallbackQueryHandler(history_handler, pattern="^all_history$"))
     app.add_handler(CallbackQueryHandler(top_sellers_handler, pattern="^top_sellers$"))
     app.add_handler(CallbackQueryHandler(shop_categories, pattern="^shop_key$"))
+    app.add_handler(CallbackQueryHandler(shop_ff_categories, pattern="^shop_ff$"))
     app.add_handler(CallbackQueryHandler(list_category_products, pattern="^pcat_"))
     app.add_handler(CallbackQueryHandler(show_product_plans, pattern="^selprod_"))
     app.add_handler(CallbackQueryHandler(process_plan_purchase, pattern="^buyplan_"))
