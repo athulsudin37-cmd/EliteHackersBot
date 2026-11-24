@@ -312,6 +312,8 @@ class Database:
             "ALTER TABLE gateway_config ADD COLUMN IF NOT EXISTS payee_name TEXT NOT NULL DEFAULT 'Elite Hackers Store'",
             "ALTER TABLE gateway_config ADD COLUMN IF NOT EXISTS auto_verify INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE gateway_config ADD COLUMN IF NOT EXISTS webhook_secret TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE gateway_config ADD COLUMN IF NOT EXISTS supplier_url TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE gateway_config ADD COLUMN IF NOT EXISTS supplier_key TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE payment_records ADD COLUMN IF NOT EXISTS pay_amount DOUBLE PRECISION",
             "ALTER TABLE payment_records ADD COLUMN IF NOT EXISTS created_ts TIMESTAMPTZ NOT NULL DEFAULT now()",
             "ALTER TABLE payment_records ADD COLUMN IF NOT EXISTS chat_id BIGINT",
@@ -431,6 +433,14 @@ class Database:
             ON CONFLICT (id) DO NOTHING
             """,
             "INSERT INTO gateway_config (id) VALUES (1) ON CONFLICT (id) DO NOTHING",
+            """
+            CREATE TABLE IF NOT EXISTS supplier_map (
+                prod_key TEXT NOT NULL,
+                plan TEXT NOT NULL,
+                pid INTEGER NOT NULL,
+                PRIMARY KEY (prod_key, plan)
+            )
+            """,
         ]
 
         with self.connection() as conn:
@@ -797,6 +807,36 @@ class Database:
     # ------------------------------------------------------------------
     # Button colors (set from the admin panel)
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Supplier (other reseller panel) PID mapping: our product+plan -> their PID
+    # ------------------------------------------------------------------
+    def get_supplier_config(self):
+        return self.fetchone("SELECT supplier_url, supplier_key FROM gateway_config WHERE id = 1") or {}
+
+    def set_supplier_config(self, url, key=None):
+        """key=None keeps the saved key."""
+        if key is None:
+            self.execute("UPDATE gateway_config SET supplier_url = %s WHERE id = 1", (url,))
+        else:
+            self.execute("UPDATE gateway_config SET supplier_url = %s, supplier_key = %s WHERE id = 1", (url, key))
+
+    def get_supplier_pid(self, prod_key, plan):
+        row = self.fetchone("SELECT pid FROM supplier_map WHERE prod_key = %s AND plan = %s", (prod_key, plan))
+        return int(row["pid"]) if row else None
+
+    def set_supplier_pid(self, prod_key, plan, pid):
+        self.execute(
+            "INSERT INTO supplier_map (prod_key, plan, pid) VALUES (%s, %s, %s) "
+            "ON CONFLICT (prod_key, plan) DO UPDATE SET pid = EXCLUDED.pid",
+            (prod_key, plan, int(pid)),
+        )
+
+    def delete_supplier_pid(self, prod_key, plan):
+        self.execute("DELETE FROM supplier_map WHERE prod_key = %s AND plan = %s", (prod_key, plan))
+
+    def list_supplier_map(self):
+        return self.fetchall("SELECT prod_key, plan, pid FROM supplier_map ORDER BY prod_key, plan")
+
     def get_button_styles(self):
         """{btn_key: style} where style is 'primary' | 'success' | 'danger' | 'none'."""
         rows = self.fetchall("SELECT btn_key, style FROM button_styles")
@@ -1293,6 +1333,7 @@ def init_db():
         )
     db.init_db()
     return db
+
 
 
 
