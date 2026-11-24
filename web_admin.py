@@ -1124,7 +1124,21 @@ ADMIN_HTML = """
             </div>
 
             <div class="gcard blue">
-                <div class="sec-head"><span class="sec-no">2</span><div><h5>Link your plans to their products</h5><p>For every plan you want to auto-buy, pick their product. Type a name to search (for example "drip"). Plans with no link only use your own stock.</p></div></div>
+                <div class="sec-head"><span class="sec-no">2</span><div><h5>Add their products to my shop (one tap)</h5><p>Their products are listed below. Tick the plans you want, set YOUR selling price and press <b>Add to my shop</b>. The product, its plans, your price and the automatic purchase link are all created for you.</p></div></div>
+                <div class="d-flex gap-2 flex-wrap mb-2">
+                    <button class="btn btn-outline-warning flex-fill" onclick="supLoadServices(true)"><i class="fas fa-rotate me-1"></i> Load / refresh their products</button>
+                </div>
+                <div class="row g-2 mb-2">
+                    <div class="col-7"><input type="text" id="sup_q" class="form-control" placeholder="Search (drip, silent, ios...)" oninput="supRenderImport()"></div>
+                    <div class="col-5"><div class="input-group"><span class="input-group-text">x</span><input type="number" id="sup_mult" class="form-control" value="2" step="0.1" min="1"><button class="btn btn-outline-warning" onclick="supApplyMult()">Set</button></div></div>
+                </div>
+                <div class="small mb-2">Default price = their cost x <b>multiplier</b> (now 2 means you charge double). Resellers in your bot pay 60% of your price, so keep the multiplier at <b>1.7 or more</b> to stay in profit. You can change every price by hand.</div>
+                <div class="small mb-2" id="sup_imp_info"></div>
+                <div id="sup_import"></div>
+            </div>
+
+            <div class="gcard blue">
+                <div class="sec-head"><span class="sec-no">3</span><div><h5>Link a plan you already have (manual)</h5><p>For every plan you want to auto-buy, pick their product. Type a name to search (for example "drip"). Plans with no link only use your own stock.</p></div></div>
                 <div class="d-flex gap-2 flex-wrap mb-2">
                     <button class="btn btn-outline-warning flex-fill" onclick="supLoadServices(true)"><i class="fas fa-rotate me-1"></i> Load / refresh their products</button>
                 </div>
@@ -1134,7 +1148,7 @@ ADMIN_HTML = """
             </div>
 
             <div class="gcard blue">
-                <div class="sec-head"><span class="sec-no">3</span><div><h5>Test order (spends real money)</h5><p>Buys ONE real key from their panel. Use their cheapest product (testwithapi, 1 Hour, &#8377;0.50).</p></div></div>
+                <div class="sec-head"><span class="sec-no">4</span><div><h5>Test order (spends real money)</h5><p>Buys ONE real key from their panel. Use their cheapest product (testwithapi, 1 Hour, &#8377;0.50).</p></div></div>
                 <div class="row g-3">
                     <div class="col-6"><label class="small mb-1">Their PID</label><input type="number" id="sup_t_pid" class="form-control" placeholder="107"></div>
                     <div class="col-6 d-flex align-items-end"><button class="btn-grad w-100" onclick="supTestOrder()"><i class="fas fa-rocket me-1"></i> Buy 1 test key</button></div>
@@ -1745,6 +1759,8 @@ ADMIN_HTML = """
         }
         /* ===== Supplier API tab ===== */
         let SUP_SVC = {};
+        let SUP_LINKED = new Set();
+        let SUP_EDIT = {};
         function supJson(url, body) {
             return fetch(url, body === undefined ? {} : { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) })
                 .then(r => r.json()).catch(() => ({ok: false, message: 'Network error'}));
@@ -1779,8 +1795,104 @@ ADMIN_HTML = """
                 const dl = document.getElementById('sup_dl');
                 dl.innerHTML = '';
                 d.services.forEach(s => { SUP_SVC[s.pid] = s; const o = document.createElement('option'); o.value = supLabel(s); dl.appendChild(o); });
+                SUP_LINKED = new Set((d.linked || []).map(Number));
                 info.innerText = d.services.length + ' products loaded.';
                 document.querySelectorAll('.sup-pid').forEach(supCheck);
+                supRenderImport();
+            });
+        }
+        function supPlanName(dur) {
+            const n = String(dur || '').replace(/[^A-Za-z0-9 .+-]/g, '').trim().replace(/ +/g, '_').slice(0, 22);
+            return n || 'Key';
+        }
+        function supGuessCat(dev) {
+            const d = String(dev || '').toUpperCase();
+            if (d.includes('IOS') || d.includes('IPHONE')) return 'ios';
+            if ((' ' + d + ' ').includes(' PC ') || d.includes('WINDOWS')) return 'pc';
+            if (d.includes('NON')) return 'non_root';
+            if (d.includes('ROOT')) return 'root';
+            return 'non_root';
+        }
+        function supMult() { const m = parseFloat(document.getElementById('sup_mult').value); return m >= 1 ? m : 2; }
+        function supApplyMult() { SUP_EDIT = {}; supRenderImport(); }
+        function supCalcText(cost, my) {
+            const res = Math.round(my * 0.6 * 100) / 100;
+            const pr = my - cost, rp = res - cost;
+            return 'You earn <b class="' + (pr < 0 ? 'text-danger' : 'text-success') + '">&#8377;' + pr.toFixed(2) + '</b> per regular sale &middot; reseller pays &#8377;' + res.toFixed(2)
+                 + ' &rarr; <b class="' + (rp < 0 ? 'text-danger' : 'text-success') + '">' + (rp < 0 ? 'LOSS ' : 'earn ') + '&#8377;' + Math.abs(rp).toFixed(2) + '</b>';
+        }
+        function supRowCalc(inp) {
+            const row = inp.closest('.sup-row');
+            const cost = parseFloat(row.dataset.cost), my = parseFloat(inp.value);
+            SUP_EDIT[row.dataset.pid] = inp.value;
+            row.querySelector('.sup-calc').innerHTML = isNaN(my) ? '' : supCalcText(cost, my);
+        }
+        function supRenderImport() {
+            const box = document.getElementById('sup_import');
+            const all = Object.values(SUP_SVC);
+            if (!all.length) { box.innerHTML = ''; return; }
+            const q = document.getElementById('sup_q').value.trim().toLowerCase();
+            const mult = supMult();
+            const groups = {};
+            all.forEach(sv => {
+                const parts = String(sv.name).split(' ' + String.fromCharCode(8212) + ' ');
+                const panel = parts.length > 1 ? parts[0] : String(sv.name);
+                const dur = parts.length > 1 ? parts.slice(1).join(' ') : String(sv.duration || 'Key');
+                const gk = panel + '|' + (sv.device || '');
+                (groups[gk] = groups[gk] || {panel: panel, device: sv.device || '', cat: sv.category || '', items: []}).items.push({sv: sv, dur: dur});
+            });
+            const panelDevices = {};
+            Object.values(groups).forEach(g => { (panelDevices[g.panel] = panelDevices[g.panel] || []).push(g.device); });
+            let h = '', shown = 0;
+            Object.values(groups).sort((a, b) => a.panel.localeCompare(b.panel)).forEach(g => {
+                const hay = (g.panel + ' ' + g.device + ' ' + g.cat).toLowerCase();
+                if (q && !hay.includes(q)) return;
+                shown++;
+                const dispName = panelDevices[g.panel].length > 1 ? (g.panel + ' ' + g.device) : g.panel;
+                const used = {};
+                g.items.sort((a, b) => parseFloat(a.sv.price) - parseFloat(b.sv.price));
+                let rows = '', free = 0;
+                g.items.forEach(it => {
+                    const sv = it.sv, pid = Number(sv.pid), cost = parseFloat(sv.price);
+                    let plan = supPlanName(it.dur);
+                    if (used[plan]) plan = (plan.slice(0, 16) + '_' + pid).slice(0, 22);
+                    used[plan] = 1;
+                    if (SUP_LINKED.has(pid)) {
+                        rows += '<div class="small mt-2 pt-2" style="border-top:1px solid rgba(255,255,255,.08)">&#9989; ' + esc(it.dur) + ' &middot; PID ' + pid + ' - already in your shop</div>';
+                        return;
+                    }
+                    free++;
+                    const my = SUP_EDIT[pid] !== undefined ? parseFloat(SUP_EDIT[pid]) : Math.ceil(cost * mult);
+                    rows += '<div class="sup-row mt-2 pt-2" style="border-top:1px solid rgba(255,255,255,.08)" data-pid="' + pid + '" data-plan="' + esc(plan) + '" data-cost="' + cost + '">'
+                          + '<div class="d-flex align-items-center gap-2"><input type="checkbox" class="sup-chk" checked>'
+                          + '<span class="small flex-grow-1">' + esc(it.dur) + ' &middot; their cost <b>&#8377;' + cost.toFixed(2) + '</b> &middot; stock ' + esc(sv.stock) + '</span>'
+                          + '<input type="number" class="form-control sup-price" style="width:96px" value="' + my + '" min="0" step="1" oninput="supRowCalc(this)"></div>'
+                          + '<div class="small mt-1 sup-calc">' + supCalcText(cost, my) + '</div></div>';
+                });
+                const cat = supGuessCat(g.device);
+                const opts = [['non_root', 'Non-Root Mobile'], ['root', 'Root Mobile'], ['ios', 'iOS'], ['pc', 'PC'], ['likes', '8 Level ID']]
+                    .map(o => '<option value="' + o[0] + '"' + (o[0] === cat ? ' selected' : '') + '>' + o[1] + '</option>').join('');
+                h += '<details class="ins-box sup-grp" data-name="' + esc(dispName) + '"><summary><b>' + esc(dispName) + '</b> <span class="small">&middot; ' + esc(g.device) + ' &middot; ' + g.items.length + ' plan(s)</span></summary>'
+                   + rows
+                   + (free ? '<div class="d-flex gap-2 mt-3"><select class="form-control sup-cat">' + opts + '</select><button class="btn-grad" style="white-space:nowrap" onclick="supImportGroup(this)">Add to my shop</button></div>' : '')
+                   + '</details>';
+            });
+            box.innerHTML = h || '<div class="small">No product matches your search.</div>';
+            document.getElementById('sup_imp_info').innerText = shown + ' product(s) shown. Tap one to open it.';
+        }
+        function supImportGroup(btn) {
+            const grp = btn.closest('.sup-grp');
+            const plans = [];
+            grp.querySelectorAll('.sup-row').forEach(r => {
+                if (!r.querySelector('.sup-chk').checked) return;
+                plans.push({plan: r.dataset.plan, pid: parseInt(r.dataset.pid, 10), price: r.querySelector('.sup-price').value});
+            });
+            if (!plans.length) { toast('Tick at least one plan.', false); return; }
+            btn.disabled = true;
+            supJson('/api/supplier/import', {name: grp.dataset.name, category: grp.querySelector('.sup-cat').value, plans: plans}).then(d => {
+                btn.disabled = false;
+                toast(d.message, d.ok);
+                if (d.ok) { plans.forEach(p => { SUP_LINKED.add(p.pid); delete SUP_EDIT[p.pid]; }); supRenderImport(); supLoadMaps(); }
             });
         }
         function supPidOf(v) { const m = String(v || '').trim().match(/^([0-9]+)/); return m ? parseInt(m[1], 10) : null; }
@@ -2662,7 +2774,8 @@ def api_supplier_services():
         _SUP_CACHE["data"], _SUP_CACHE["t"] = [
             {k: v for k, v in it.items() if k != "raw"} for it in items if it.get("pid") != ""
         ], now
-    return jsonify({"ok": True, "services": _SUP_CACHE["data"]})
+    linked = sorted({m["pid"] for m in db.list_supplier_map()})
+    return jsonify({"ok": True, "services": _SUP_CACHE["data"], "linked": linked})
 
 @app.route('/api/supplier/maps')
 def api_supplier_maps():
@@ -2711,6 +2824,58 @@ def api_supplier_test_order():
         return jsonify({"ok": False, "message": f"❌ {e}"})
     rem = f"₹{r['remaining_balance']:,.2f}" if r["remaining_balance"] is not None else "?"
     return jsonify({"ok": True, "message": f"✅ Key: {r['license_key']}\nOrder: #{r['order_code']}\nSupplier balance left: {rem}"})
+
+@app.route('/api/supplier/import', methods=['POST'])
+def api_supplier_import():
+    """Create (or extend) a product in our shop from a supplier product and link every plan to its PID."""
+    if not admin_required(): return unauthorized()
+    d = request.json or {}
+    name = re.sub(r'\s+', ' ', (d.get('name') or '').strip())[:60]
+    category = d.get('category') if d.get('category') in CATEGORIES else 'non_root'
+    if not name:
+        return jsonify({"ok": False, "message": "Product name is missing."}), 400
+    plans, seen = [], set()
+    for it in d.get('plans') or []:
+        pn = (it.get('plan') or '').strip()
+        try:
+            price, pid = round(float(it.get('price')), 2), int(it.get('pid'))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "message": f"Invalid price or PID for '{pn}'."}), 400
+        if not PLAN_RE.match(pn) or price < 0 or pn in seen:
+            return jsonify({"ok": False, "message": f"Plan name/price not valid: '{pn}'."}), 400
+        seen.add(pn)
+        plans.append((pn, price, pid))
+    if not plans:
+        return jsonify({"ok": False, "message": "Tick at least one plan."}), 400
+    k = re.sub(r'[^a-zA-Z0-9]', '_', name).strip('_').lower()[:32]
+    if not k:
+        return jsonify({"ok": False, "message": "Invalid product name."}), 400
+
+    with db.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute('SELECT prices FROM products WHERE prod_key = %s', (k,))
+            row = cur.fetchone()
+            if row:
+                existing = parse_prices(row["prices"])
+                have = {n for n, _ in existing}
+                plans = [p for p in plans if p[0] not in have]
+                if not plans:
+                    return jsonify({"ok": False, "message": "All these plans already exist in your product."}), 400
+                cur.execute('UPDATE products SET prices = %s WHERE prod_key = %s',
+                            (json.dumps(existing + [[n, pr] for n, pr, _ in plans]), k))
+                created = False
+            else:
+                cur.execute(
+                    "INSERT INTO products (prod_key, name, category, prices, download_link, icon, maintenance, stock_out) "
+                    "VALUES (%s, %s, %s, %s, '', '⚡', 0, 0)",
+                    (k, name, category, json.dumps([[n, pr] for n, pr, _ in plans])),
+                )
+                created = True
+    for pn, _price, pid in plans:
+        db.set_supplier_pid(k, pn, pid)
+    msg = (f"✅ Product '{name}' created with {len(plans)} plan(s)." if created
+           else f"✅ Added {len(plans)} new plan(s) to the existing product '{name}'.")
+    return jsonify({"ok": True, "message": msg + " Customers can buy it now; keys come from the supplier automatically."})
 
 PLAN_RE = re.compile(r'^[A-Za-z0-9 _.\-+]{1,22}$')   # short enough for Telegram's 64-byte callback data
 CATEGORIES = ("non_root", "root", "ios", "pc", "likes")
@@ -3475,6 +3640,7 @@ def run_web():
 if __name__ == "__main__":
     init_db()
     run_web()
+
 
 
 
