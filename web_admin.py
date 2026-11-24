@@ -1146,7 +1146,7 @@ ADMIN_HTML = """
             </div>
 
             <div class="gcard blue">
-                <div class="sec-head"><span class="sec-no">3</span><div><h5>Link a plan you ALREADY have in your shop</h5><p>Only for products that already exist in your shop. Under each of your plans, choose THEIR matching product (type a name to search, e.g. "drip") and press Save. Plans with no link use only your own stock.</p></div></div>
+                <div class="sec-head"><span class="sec-no">3</span><div><h5>My shop products (remove / link)</h5><p>All products in your shop. Tap a product to open it. Press &#128465; to remove a plan. (Optional: pick THEIR product and press Save to link a plan.)</p></div></div>
                 <div class="d-flex gap-2 flex-wrap mb-2">
                     <button class="btn btn-outline-warning flex-fill" onclick="supLoadServices(true)"><i class="fas fa-rotate me-1"></i> Load / refresh their products</button>
                 </div>
@@ -1868,7 +1868,8 @@ ADMIN_HTML = """
                     if (used[plan]) plan = (plan.slice(0, 16) + '_' + pid).slice(0, 22);
                     used[plan] = 1;
                     if (SUP_LINKED.has(pid)) {
-                        rows += '<div class="small mt-2 pt-2" style="border-top:1px solid rgba(255,255,255,.08)">&#9989; ' + esc(it.dur) + ' &middot; PID ' + pid + ' - already in your shop</div>';
+                        rows += '<div class="small mt-2 pt-2 d-flex align-items-center gap-2" style="border-top:1px solid rgba(255,255,255,.08)"><span class="flex-grow-1">&#9989; ' + esc(it.dur) + ' - already in your shop</span>'
+                          + '<button class="btn btn-sm btn-outline-danger" data-pid="' + pid + '" onclick="supRemovePid(this)">&#128465; Remove</button></div>';
                         return;
                     }
                     free++;
@@ -1928,10 +1929,11 @@ ADMIN_HTML = """
         function supLoadMaps() {
             supJson('/api/supplier/maps').then(d => {
                 const box = document.getElementById('sup_maps');
-                if (!d.products || !d.products.length) { box.innerHTML = '<div class="small">No products yet.</div>'; return; }
+                if (!d.products || !d.products.length) { box.innerHTML = '<div class="small">No products in your shop yet.</div>'; return; }
                 let h = '';
                 d.products.forEach(p => {
-                    h += '<div class="ins-box"><b>' + esc(p.name) + '</b>';
+                    h += '<details class="ins-box"><summary><b>' + esc(p.name) + '</b> <span class="small">&middot; ' + p.plans.length + ' plan(s)</span></summary>'
+                       + '<div class="mt-2"><button class="btn btn-sm btn-outline-danger" data-prod="' + esc(p.prod_key) + '" data-name="' + esc(p.name) + '" onclick="supRemoveProduct(this)">&#128465; Remove whole product</button></div>';
                     p.plans.forEach(pl => {
                         const id = 'sp_' + btoa(unescape(encodeURIComponent(p.prod_key + '|' + pl.plan))).replace(/[^A-Za-z0-9]/g, '');
                         h += '<div class="mt-2 pt-2" style="border-top:1px solid rgba(255,255,255,.08)">'
@@ -1940,14 +1942,31 @@ ADMIN_HTML = """
                           + ' value="' + (pl.pid ? esc(SUP_SVC[pl.pid] ? supLabel(SUP_SVC[pl.pid]) : String(pl.pid)) : '') + '"'
                           + ' data-prod="' + esc(p.prod_key) + '" data-plan="' + esc(pl.plan) + '" data-price="' + pl.price + '" data-reseller="' + pl.reseller_price + '"'
                           + ' oninput="supCheck(this)">'
-                          + '<button class="btn btn-outline-warning" onclick="supSaveMap(this.previousElementSibling)">Save</button></div>'
+                          + '<button class="btn btn-outline-warning" onclick="supSaveMap(this.previousElementSibling)">Save</button>'
+                          + '<button class="btn btn-outline-danger" data-prod="' + esc(p.prod_key) + '" data-plan="' + esc(pl.plan) + '" onclick="supRemovePlan(this)">&#128465;</button></div>'
                           + '<div class="small mt-1 sup-note"></div></div>';
                     });
-                    h += '</div>';
+                    h += '</details>';
                 });
                 box.innerHTML = h;
                 document.querySelectorAll('.sup-pid').forEach(supCheck);
             });
+        }
+        function supAfterRemove(d) {
+            toast(d.message, d.ok !== false);
+            if (d.ok !== false) { supLoadServices(false).then(supLoadMaps); }
+        }
+        function supRemovePid(btn) {
+            if (!confirm('Remove this plan from your shop?')) return;
+            supJson('/api/supplier/remove', {pid: parseInt(btn.dataset.pid, 10)}).then(supAfterRemove);
+        }
+        function supRemovePlan(btn) {
+            if (!confirm('Remove plan "' + btn.dataset.plan.replace(/_/g, ' ') + '" from your shop?')) return;
+            supJson('/api/supplier/remove', {prod_key: btn.dataset.prod, plan: btn.dataset.plan}).then(supAfterRemove);
+        }
+        function supRemoveProduct(btn) {
+            if (!confirm('Remove the WHOLE product "' + btn.dataset.name + '" with all its plans from your shop?')) return;
+            supJson('/api/supplier/remove', {prod_key: btn.dataset.prod}).then(supAfterRemove);
         }
         function supSaveMap(inp) {
             const raw = inp.value.trim();
@@ -2842,6 +2861,39 @@ def api_supplier_test_order():
     rem = f"₹{r['remaining_balance']:,.2f}" if r["remaining_balance"] is not None else "?"
     return jsonify({"ok": True, "message": f"✅ Key: {r['license_key']}\nOrder: #{r['order_code']}\nSupplier balance left: {rem}"})
 
+@app.route('/api/supplier/remove', methods=['POST'])
+def api_supplier_remove():
+    """Remove a plan (by supplier PID, or by product+plan) or a whole product from the shop."""
+    if not admin_required(): return unauthorized()
+    d = request.json or {}
+    targets = []
+    if d.get('pid') not in (None, ''):
+        try:
+            pid = int(d.get('pid'))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "message": "Invalid PID."}), 400
+        targets = [(m["prod_key"], m["plan"]) for m in db.list_supplier_map() if int(m["pid"]) == pid]
+    elif d.get('prod_key'):
+        targets = [(d.get('prod_key'), d.get('plan') or None)]
+    if not targets:
+        return jsonify({"ok": False, "message": "Nothing found to remove."}), 400
+    removed = 0
+    for prod_key, plan in targets:
+        prod = db.get_product_by_key(prod_key)
+        if plan is None or not prod:
+            db.execute('DELETE FROM products WHERE prod_key = %s', (prod_key,))
+            db.execute('DELETE FROM supplier_map WHERE prod_key = %s', (prod_key,))
+            removed += 1
+            continue
+        left = [[n, pr] for n, pr in parse_prices(prod["prices"]) if n != plan]
+        db.delete_supplier_pid(prod_key, plan)
+        if left:
+            db.execute('UPDATE products SET prices = %s WHERE prod_key = %s', (json.dumps(left), prod_key))
+        else:   # no plan left -> remove the empty product too
+            db.execute('DELETE FROM products WHERE prod_key = %s', (prod_key,))
+        removed += 1
+    return jsonify({"ok": True, "message": f"Removed {removed} item(s) from your shop."})
+
 @app.route('/api/supplier/import', methods=['POST'])
 def api_supplier_import():
     """Create (or extend) a product in our shop from a supplier product and link every plan to its PID."""
@@ -3657,6 +3709,7 @@ def run_web():
 if __name__ == "__main__":
     init_db()
     run_web()
+
 
 
 
