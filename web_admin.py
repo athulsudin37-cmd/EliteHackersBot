@@ -636,6 +636,7 @@ ADMIN_HTML = """
                 <h5 class="sec-title">📦 Manage Products</h5>
                 <button class="btn-grad" onclick="openProductModal()">＋ Add Product</button>
             </div>
+            <div data-live>
             {% for p in products %}
             <div class="prod-wrap">
                 <div class="prod-card">
@@ -662,6 +663,7 @@ ADMIN_HTML = """
             {% else %}
             <div class="card p-4 text-center text-muted">No products yet. Tap “Add Product” to create the first one.</div>
             {% endfor %}
+            </div>
         </div>
 
         <!-- ➕ ADD / EDIT PRODUCT MODAL -->
@@ -1172,6 +1174,9 @@ ADMIN_HTML = """
                 .sup-bl .bar.cost{background:#ef6c4a}
                 .sup-bl .bar.mine{background:#3fb67a}
                 .sup-bl .v{width:62px;flex:none;text-align:right;font-weight:700}
+                @keyframes supLive{0%{box-shadow:0 0 0 0 rgba(63,182,122,.7)}100%{box-shadow:0 0 0 9px rgba(63,182,122,0)}}
+                .sup-live{display:inline-block;width:9px;height:9px;border-radius:50%;background:#3fb67a;margin-right:4px;animation:supLive 1.4s ease-out infinite}
+                .sup-bal{font-size:20px;font-weight:800}
                 .sup-badge{display:inline-block;margin-top:5px;padding:3px 10px;border-radius:20px;font-weight:700;font-size:13px}
                 .sup-badge.good{background:#1f8f5a;color:#fff}
                 .sup-badge.bad{background:#d63a2f;color:#fff}
@@ -1920,7 +1925,50 @@ ADMIN_HTML = """
                 document.getElementById('sup_key').placeholder = d.has_key ? ('saved (' + d.key_hint + ') - leave empty to keep it') : 'usr_...';
             });
             supLoadMaps();
+            supLiveTick(true);
         }
+        let SUP_DIRTY = false, SUP_TICK = 0;
+        document.addEventListener('input', e => { if (e.target.classList && e.target.classList.contains('sup-pid')) SUP_DIRTY = true; });
+        function supLiveTick(first) {
+            const tab = document.getElementById('tab-supplier');
+            if (!tab || tab.offsetParent === null || document.hidden) return;
+            SUP_TICK++;
+            // 1) their wallet balance, live
+            supJson('/api/supplier/test', {}).then(d => {
+                const st = document.getElementById('sup_status');
+                if (!st) return;
+                st.innerHTML = '<span class="sup-live"></span><b>LIVE</b> &middot; ' + esc(d.message) + ' <span class="small text-secondary">&middot; updated ' + new Date().toLocaleTimeString() + '</span>';
+            }).catch(() => {});
+            // 2) their products: stock + prices (fresh from the supplier every 30 s), updated in place so nothing you typed is lost
+            supJson('/api/supplier/services' + ((first || SUP_TICK % 2 === 0) ? '?refresh=1' : '')).then(d => {
+                if (!d.ok || !d.services) return;
+                const fresh = {};
+                d.services.forEach(x => { fresh[x.pid] = x; });
+                SUP_LINKED = new Set((d.linked || []).map(Number));
+                if (Object.keys(SUP_SVC).length) {
+                    SUP_SVC = fresh;
+                    document.querySelectorAll('#sup_import .sup-row').forEach(row => {
+                        const sv = fresh[row.dataset.pid];
+                        if (!sv) return;
+                        const stk = row.querySelector('.sup-stk');
+                        if (stk) stk.innerText = 'stock ' + sv.stock;
+                        const cost = parseFloat(sv.price);
+                        if (!isNaN(cost) && cost !== parseFloat(row.dataset.cost)) {
+                            row.dataset.cost = cost;
+                            const amt = row.querySelector('.sup-box.theirs .amt');
+                            if (amt) amt.innerHTML = supMoney(cost);
+                            const inp = row.querySelector('.sup-price');
+                            if (inp) supRowCalc(inp);
+                        }
+                    });
+                    if (!SUP_DIRTY) document.querySelectorAll('.sup-pid').forEach(supCheck);
+                }
+            }).catch(() => {});
+            // 3) my shop list (skipped while you are typing a link)
+            const ae = document.activeElement;
+            if (!first && !SUP_DIRTY && !(ae && ae.classList && ae.classList.contains('sup-pid'))) supLoadMaps();
+        }
+        setInterval(() => supLiveTick(false), 15000);
         function supSave() {
             supJson('/api/supplier/save', {url: document.getElementById('sup_url').value.trim(), key: document.getElementById('sup_key').value.trim()})
                 .then(d => { toast(d.message, d.ok !== false); document.getElementById('sup_key').value = ''; supLoad(); });
@@ -2028,7 +2076,7 @@ ADMIN_HTML = """
                     const my = SUP_EDIT[pid] !== undefined ? parseFloat(SUP_EDIT[pid]) : Math.ceil(cost * mult);
                     rows += '<div class="sup-row" data-pid="' + pid + '" data-plan="' + esc(plan) + '" data-cost="' + cost + '">'
                           + '<div class="d-flex align-items-center gap-2"><input type="checkbox" class="sup-chk" checked>'
-                          + '<b class="flex-grow-1">&#128338; ' + esc(it.dur) + '</b><span class="small">stock ' + esc(sv.stock) + '</span></div>'
+                          + '<b class="flex-grow-1">&#128338; ' + esc(it.dur) + '</b><span class="small sup-stk">stock ' + esc(sv.stock) + '</span></div>'
                           + '<div class="sup-money">'
                           + '<div class="sup-box theirs"><span class="lbl">&#127981; I pay THEM</span><span class="amt">' + supMoney(cost) + '</span></div>'
                           + '<div class="sup-arr">&#10145;&#65039;</div>'
@@ -2102,6 +2150,7 @@ ADMIN_HTML = """
                     h += '</details>';
                 });
                 box.innerHTML = h;
+                SUP_DIRTY = false;
                 document.querySelectorAll('.sup-pid').forEach(supCheck);
             });
         }
@@ -2122,6 +2171,7 @@ ADMIN_HTML = """
             supJson('/api/supplier/remove', {prod_key: btn.dataset.prod}).then(supAfterRemove);
         }
         function supSaveMap(inp) {
+            SUP_DIRTY = false;
             const raw = inp.value.trim();
             const pid = raw === '' ? null : supPidOf(raw);
             if (raw !== '' && !pid) { toast('Pick a product from the list (it starts with the PID number).', false); return; }
@@ -3947,6 +3997,7 @@ def run_web():
 if __name__ == "__main__":
     init_db()
     run_web()
+
 
 
 
