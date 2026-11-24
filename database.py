@@ -318,6 +318,12 @@ class Database:
             "ALTER TABLE gateway_config ADD COLUMN IF NOT EXISTS supplier_url TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE gateway_config ADD COLUMN IF NOT EXISTS supplier_key TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE payment_records ADD COLUMN IF NOT EXISTS pay_amount DOUBLE PRECISION",
+            "ALTER TABLE payment_records ADD COLUMN IF NOT EXISTS coupon_code TEXT",
+            "ALTER TABLE payment_records ADD COLUMN IF NOT EXISTS discount DOUBLE PRECISION NOT NULL DEFAULT 0",
+            "ALTER TABLE gateway_config ADD COLUMN IF NOT EXISTS binance_enabled INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE gateway_config ADD COLUMN IF NOT EXISTS binance_pay_id TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE gateway_config ADD COLUMN IF NOT EXISTS binance_rate DOUBLE PRECISION NOT NULL DEFAULT 90",
+            "ALTER TABLE gateway_config ADD COLUMN IF NOT EXISTS binance_note TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE payment_records ADD COLUMN IF NOT EXISTS created_ts TIMESTAMPTZ NOT NULL DEFAULT now()",
             "ALTER TABLE payment_records ADD COLUMN IF NOT EXISTS chat_id BIGINT",
             "ALTER TABLE payment_records ADD COLUMN IF NOT EXISTS qr_msg_id BIGINT",
@@ -988,6 +994,35 @@ class Database:
             (upi_id, payee_name, 1 if auto_verify else 0),
         )
 
+    def get_binance_settings(self):
+        row = self.fetchone(
+            "SELECT binance_enabled, binance_pay_id, binance_rate, binance_note FROM gateway_config WHERE id = 1"
+        ) or {}
+        return {
+            "enabled": bool(row.get("binance_enabled")),
+            "pay_id": (row.get("binance_pay_id") or "").strip(),
+            "rate": float(row.get("binance_rate") or 90),
+            "note": (row.get("binance_note") or "").strip(),
+        }
+
+    def set_binance_settings(self, enabled, pay_id, rate, note):
+        self.execute(
+            "UPDATE gateway_config SET binance_enabled = %s, binance_pay_id = %s, binance_rate = %s, binance_note = %s WHERE id = 1",
+            (1 if enabled else 0, pay_id, rate, note),
+        )
+
+    def get_coupon(self, code):
+        return self.fetchone(
+            "SELECT * FROM coupons WHERE UPPER(code) = UPPER(%s) AND is_active = 1 "
+            "AND (usage_limit IS NULL OR used_count < usage_limit)", (code,))
+
+    def use_coupon(self, code):
+        self.execute("UPDATE coupons SET used_count = used_count + 1 WHERE UPPER(code) = UPPER(%s)", (code,))
+
+    def set_payment_coupon(self, order_id, code, discount):
+        self.execute("UPDATE payment_records SET coupon_code = %s, discount = %s WHERE order_id = %s",
+                     (code, discount, order_id))
+
     def rotate_webhook_secret(self):
         new_secret = secrets.token_urlsafe(24)
         self.execute("UPDATE gateway_config SET webhook_secret = %s WHERE id = 1", (new_secret,))
@@ -1252,6 +1287,7 @@ class Database:
             SELECT * FROM payment_records
             WHERE ROUND(pay_amount::numeric, 2) = ROUND(%s::numeric, 2)
               AND status IN ('pending', 'awaiting_approval', 'expired', 'cancelled')
+              AND COALESCE(method, '') <> 'binance'
               AND created_ts > now() - INTERVAL '60 minutes'
             ORDER BY created_ts DESC
             LIMIT 1
@@ -1336,6 +1372,7 @@ def init_db():
         )
     db.init_db()
     return db
+
 
 
 
