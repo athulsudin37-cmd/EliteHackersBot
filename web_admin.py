@@ -724,6 +724,47 @@ ADMIN_HTML = """
 
         <!-- 4️⃣ ⏳ TAB: PENDING KEYS QUEUE -->
         <div class="tab-pane-content" id="tab-pending_keys" style="display:none;">
+            <style>
+                @keyframes dmIn{from{opacity:0;transform:translateY(18px) scale(.97)}to{opacity:1;transform:none}}
+                @keyframes dmGrow{from{width:0}to{width:var(--w)}}
+                @keyframes dmFire{0%,100%{transform:scale(1) rotate(-4deg)}50%{transform:scale(1.25) rotate(5deg)}}
+                @keyframes dmFloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-10px)}}
+                @keyframes dmPulse{0%{box-shadow:0 0 0 0 rgba(239,108,74,.6)}100%{box-shadow:0 0 0 14px rgba(239,108,74,0)}}
+                @keyframes dmShine{from{background-position:-200% 0}to{background-position:200% 0}}
+                .dm-fire{display:inline-block;animation:dmFire 1.2s ease-in-out infinite}
+                .dm-chips{display:flex;gap:10px;flex-wrap:wrap;margin:6px 0 12px}
+                .dm-chip{flex:1;min-width:110px;border-radius:14px;padding:10px 12px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);animation:dmIn .5s both}
+                .dm-chip b{display:block;font-size:22px}
+                .dm-chip small{opacity:.8}
+                .dm-item{display:flex;align-items:center;gap:12px;flex-wrap:wrap;border-radius:16px;padding:12px;margin-top:10px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);animation:dmIn .55s both}
+                .dm-item.top{border-color:#ef6c4a;background:linear-gradient(120deg,rgba(239,108,74,.18),rgba(250,204,21,.12));animation:dmIn .55s both,dmPulse 1.8s ease-out infinite}
+                .dm-rank{font-size:30px;width:44px;text-align:center;flex:none}
+                .dm-main{flex:1;min-width:170px}
+                .dm-name{font-weight:700;font-size:15px}
+                .dm-meta{font-size:12px;opacity:.85;margin:2px 0 6px}
+                .dm-track{height:12px;border-radius:7px;background:rgba(255,255,255,.08);overflow:hidden}
+                .dm-bar{height:100%;border-radius:7px;width:var(--w);animation:dmGrow 1.1s cubic-bezier(.2,.8,.2,1) both;background:linear-gradient(90deg,#f59e0b,#ef6c4a,#f59e0b);background-size:200% 100%}
+                .dm-item.top .dm-bar{animation:dmGrow 1.1s cubic-bezier(.2,.8,.2,1) both,dmShine 2.2s linear infinite}
+                .dm-num{text-align:center;flex:none;min-width:64px}
+                .dm-num .dm-n{font-size:26px;font-weight:800;display:block;line-height:1}
+                .dm-num small{font-size:11px;opacity:.8}
+                .dm-tag{display:inline-block;font-size:11px;font-weight:700;padding:2px 8px;border-radius:12px;margin-left:6px;background:#d63a2f;color:#fff}
+                .dm-tag.warm{background:#d98a14}.dm-tag.new{background:#4b5563}
+                .dm-empty{text-align:center;padding:26px 10px}
+                .dm-float{font-size:46px;animation:dmFloat 2.2s ease-in-out infinite}
+            </style>
+            <div class="card p-4 mb-3">
+                <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
+                    <h5 class="mb-0"><span class="dm-fire">&#128293;</span> Out-of-Stock Demand &mdash; what customers wanted</h5>
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-sm btn-outline-light" onclick="loadDemand(true)">&#128260; Refresh</button>
+                        <button class="btn btn-sm btn-outline-danger" onclick="clearDemand()">&#128465; Clear all</button>
+                    </div>
+                </div>
+                <p class="text-muted small mb-1">Every time a customer tries to buy something with no key in stock, it appears here (product, plan and price). Their money stays safe in their bot wallet. <b>Add keys for the top ones first</b>, then press &#9989; Stock added.</p>
+                <div id="dm_chips" class="dm-chips"></div>
+                <div id="dm_list"><div class="dm-empty text-muted small">Loading...</div></div>
+            </div>
             <div class="card p-4">
                 <h5>⏳ Pending Keys Queue (Out-of-Stock Manual Dispatch)</h5>
                 <p class="text-muted small">Orders waiting for stock. Enter fresh key and click send to dispatch directly to customer Telegram!</p>
@@ -1752,6 +1793,61 @@ ADMIN_HTML = """
             fetch('/api/keys/add', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({prod_key: prod, plan: plan, keys: keys}) })
             .then(r => r.json()).then(d => { alert(d.message); if (!d.error) location.reload(); });
         }
+        /* ===== Out-of-stock demand board ===== */
+        let DM_LAST = '';
+        function dmCount(el) {
+            const to = parseInt(el.dataset.to, 10) || 0, t0 = performance.now();
+            (function tick(t) {
+                const k = Math.min(1, (t - t0) / 900);
+                el.textContent = Math.round(to * (1 - Math.pow(1 - k, 3)));
+                if (k < 1) requestAnimationFrame(tick);
+            })(t0);
+        }
+        function loadDemand(manual) {
+            const box = document.getElementById('dm_list');
+            if (!box) return;
+            fetch('/api/demand').then(r => r.json()).then(d => {
+                const sig = JSON.stringify(d);
+                if (sig === DM_LAST && !manual) return;
+                DM_LAST = sig;
+                const chips = document.getElementById('dm_chips');
+                if (!d.items || !d.items.length) {
+                    chips.innerHTML = '';
+                    box.innerHTML = '<div class="dm-empty"><div class="dm-float">&#127881;</div><b>No demand right now</b><div class="small text-muted">Every product customers wanted was in stock.</div></div>';
+                    return;
+                }
+                chips.innerHTML =
+                    '<div class="dm-chip"><b class="dm-n" data-to="' + d.total_requests + '">0</b><small>&#128722; total requests</small></div>' +
+                    '<div class="dm-chip" style="animation-delay:.1s"><b class="dm-n" data-to="' + d.items.length + '">0</b><small>&#128230; products wanted</small></div>' +
+                    '<div class="dm-chip" style="animation-delay:.2s"><b>&#8377;' + Math.round(d.total_value) + '</b><small>&#128176; waiting in wallets</small></div>';
+                const max = Math.max.apply(null, d.items.map(i => i.attempts));
+                const medals = ['&#129351;', '&#129352;', '&#129353;'];
+                box.innerHTML = d.items.map((i, n) => {
+                    const pct = Math.max(6, Math.round(i.attempts / max * 100));
+                    const heat = i.attempts >= 5 ? '<span class="dm-tag">&#128293;&#128293;&#128293; HOT</span>'
+                               : i.attempts >= 2 ? '<span class="dm-tag warm">&#128293; WARM</span>' : '<span class="dm-tag new">&#128064; NEW</span>';
+                    return '<div class="dm-item' + (n === 0 ? ' top' : '') + '" style="animation-delay:' + (n * 0.08) + 's">'
+                        + '<div class="dm-rank">' + (medals[n] || '#' + (n + 1)) + '</div>'
+                        + '<div class="dm-main"><div class="dm-name">' + esc(i.prod_name) + ' &middot; ' + esc(i.plan.replace(/_/g, ' ')) + (n === 0 ? ' <span class="dm-tag">MOST DEMAND</span>' : heat) + '</div>'
+                        + '<div class="dm-meta">&#128176; Price &#8377;' + i.price + ' &nbsp;&middot;&nbsp; &#128101; ' + i.buyers + ' customer(s) &nbsp;&middot;&nbsp; &#128338; last ' + esc(i.last_at) + '</div>'
+                        + '<div class="dm-track"><div class="dm-bar" style="--w:' + pct + '%"></div></div></div>'
+                        + '<div class="dm-num"><span class="dm-n" data-to="' + i.attempts + '">0</span><small>requests</small></div>'
+                        + '<button class="btn btn-sm btn-success" data-prod="' + esc(i.prod_name) + '" data-plan="' + esc(i.plan) + '" onclick="clearDemand(this)">&#9989; Stock added</button>'
+                        + '</div>';
+                }).join('');
+                document.querySelectorAll('#dm_chips .dm-n, #dm_list .dm-n').forEach(dmCount);
+            }).catch(() => {});
+        }
+        function clearDemand(btn) {
+            const body = btn ? {prod_name: btn.dataset.prod, plan: btn.dataset.plan} : {all: true};
+            if (!confirm(btn ? 'Mark this as restocked and remove it from the list?' : 'Clear the whole demand list?')) return;
+            fetch('/api/demand/clear', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})
+                .then(r => r.json()).then(d => { toast(d.message, true); loadDemand(true); });
+        }
+        document.querySelectorAll('[data-tab="pending_keys"]').forEach(a => a.addEventListener('click', () => setTimeout(() => loadDemand(true), 60)));
+        setInterval(() => { const b = document.getElementById('tab-pending_keys'); if (b && b.offsetParent !== null) loadDemand(false); }, 10000);
+        setTimeout(() => loadDemand(true), 400);
+
         function dispatchKey(oid, uid) {
             let key = document.getElementById('key_disp_' + oid).value;
             if(!key) return alert('Enter key!');
@@ -3131,6 +3227,91 @@ def api_keys_add():
                             [(d['prod_key'], plan, x) for x in keys])
     return jsonify({"message": f"{len(keys)} key(s) added to {prod['name']} — {plan}."})
 
+_DEMAND_READY = False
+def _demand_table():
+    global _DEMAND_READY
+    if not _DEMAND_READY:
+        db.execute("""CREATE TABLE IF NOT EXISTS out_of_stock_demand (
+            id SERIAL PRIMARY KEY, user_id BIGINT, prod_name TEXT, plan TEXT,
+            price NUMERIC DEFAULT 0, created_at TIMESTAMPTZ DEFAULT now())""")
+        _DEMAND_READY = True
+
+def record_demand(user_id, prod_name, plan, price):
+    """Remember that a customer wanted this product/plan but there was no key in stock."""
+    try:
+        _demand_table()
+        dup = db.fetchone("SELECT 1 AS x FROM out_of_stock_demand WHERE user_id = %s AND prod_name = %s AND plan = %s "
+                          "AND created_at > now() - interval '30 seconds'", (user_id, prod_name, plan))
+        if dup:
+            return
+        db.execute("INSERT INTO out_of_stock_demand (user_id, prod_name, plan, price) VALUES (%s, %s, %s, %s)",
+                   (user_id, prod_name, plan, price or 0))
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("Could not record out-of-stock demand")
+
+def _wrap_purchase(fn):
+    import functools
+    @functools.wraps(fn)
+    def wrapper(*a, **k):
+        res = fn(*a, **k)
+        try:
+            if isinstance(res, dict) and res.get("status") == "out_of_stock":
+                uid = a[0] if a else k.get("user_id")
+                plan = a[2] if len(a) > 2 else k.get("plan_name")
+                name = (res.get("prod") or {}).get("name") or (a[1] if len(a) > 1 else k.get("prod_key"))
+                record_demand(uid, name, plan, res.get("price"))
+        except Exception:
+            pass
+        return res
+    wrapper._demand_hooked = True
+    return wrapper
+
+def _install_demand_hook():
+    """The bot (main.py) runs in this same process: wrap its purchase function so every
+    out-of-stock attempt lands in the demand board. No change to main.py is needed."""
+    import sys, time
+    me = sys.modules.get(__name__)
+    for _ in range(240):
+        for name in ("__main__", "main"):
+            m = sys.modules.get(name)
+            fn = getattr(m, "purchase_with_wallet", None) if m is not None and m is not me else None
+            if callable(fn):
+                if not getattr(fn, "_demand_hooked", False):
+                    m.purchase_with_wallet = _wrap_purchase(fn)
+                return
+        time.sleep(0.5)
+
+import threading as _demand_threading
+_demand_threading.Thread(target=_install_demand_hook, daemon=True).start()
+
+@app.route('/api/demand')
+def api_demand():
+    if not admin_required(): return unauthorized()
+    _demand_table()
+    rows = db.fetchall("""
+        SELECT prod_name, plan, COUNT(*) AS attempts, COUNT(DISTINCT user_id) AS buyers, MAX(price) AS price,
+               to_char(MAX(created_at) AT TIME ZONE 'Asia/Kolkata', 'DD Mon, HH12:MI AM') AS last_at
+        FROM out_of_stock_demand GROUP BY prod_name, plan
+        ORDER BY attempts DESC, MAX(created_at) DESC LIMIT 100""")
+    tot = db.fetchone("SELECT COALESCE(SUM(price), 0) AS v, COUNT(*) AS n FROM out_of_stock_demand") or {"v": 0, "n": 0}
+    items = [{"prod_name": r["prod_name"] or "", "plan": r["plan"] or "", "attempts": int(r["attempts"]),
+              "buyers": int(r["buyers"]), "price": float(r["price"] or 0), "last_at": r["last_at"] or ""} for r in rows]
+    return jsonify({"items": items, "total_requests": int(tot["n"] or 0), "total_value": float(tot["v"] or 0)})
+
+@app.route('/api/demand/clear', methods=['POST'])
+def api_demand_clear():
+    if not admin_required(): return unauthorized()
+    d = request.json or {}
+    _demand_table()
+    if d.get('all'):
+        db.execute("DELETE FROM out_of_stock_demand")
+        return jsonify({"message": "Demand list cleared."})
+    if not d.get('prod_name') or not d.get('plan'):
+        return jsonify({"message": "Missing product/plan."}), 400
+    db.execute("DELETE FROM out_of_stock_demand WHERE prod_name = %s AND plan = %s", (d['prod_name'], d['plan']))
+    return jsonify({"message": "Marked as restocked."})
+
 @app.route('/api/pending/dispatch', methods=['POST'])
 def api_dispatch():
     if not admin_required(): return unauthorized()
@@ -3766,6 +3947,7 @@ def run_web():
 if __name__ == "__main__":
     init_db()
     run_web()
+
 
 
 
