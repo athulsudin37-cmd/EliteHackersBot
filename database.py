@@ -37,6 +37,7 @@ BUTTON_GROUPS = [
         ("selling_proof", "💼 Selling Proof", "primary"),
         ("lucky_spin", "🎰 Lucky Spin", "danger"),
         ("referral", "👥 Referral", "danger"),
+        ("top_sellers", "👑 Top 5 Sellers Monthly", "primary"),
         ("reseller", "👑 Reseller", "success"),
         ("support", "💬 Support", "success"),
         ("check_updates", "📢 Check All Updates", "primary"),
@@ -401,6 +402,23 @@ class Database:
                 status TEXT NOT NULL DEFAULT 'running'
             )
             """,
+            # --- Admin panel live wallpaper (video + song) ---
+            """
+            CREATE TABLE IF NOT EXISTS ui_settings (
+                skey TEXT PRIMARY KEY,
+                svalue TEXT NOT NULL DEFAULT ''
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS ui_media (
+                kind TEXT PRIMARY KEY,
+                filename TEXT,
+                mime TEXT,
+                data BYTEA NOT NULL,
+                updated_ts TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_order_history_created ON order_history(created_ts)",
             # --- Default rows ---
             """
             INSERT INTO store_settings (id, support_username, how_to_use_link, welcome_message)
@@ -793,6 +811,106 @@ class Database:
             (btn_key, style),
         )
 
+
+    # ------------------------------------------------------------------
+    # Top 5 sellers of the month (customers who bought the most keys, Indian time)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _month_where():
+        """SQL (+ params) selecting delivered orders of the current month in IST.
+        Old rows without created_ts are matched by their IST text timestamp."""
+        from datetime import datetime, timezone, timedelta
+        now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+        like = "% " + now_ist.strftime("%b %Y") + ",%"
+        sql = (
+            "LEFT(COALESCE(o.key_delivered, ''), 7) <> 'PENDING' AND o.amount > 0 AND ("
+            "(o.created_ts IS NOT NULL AND (o.created_ts AT TIME ZONE 'Asia/Kolkata') >= "
+            "date_trunc('month', now() AT TIME ZONE 'Asia/Kolkata')) "
+            "OR (o.created_ts IS NULL AND o.timestamp LIKE %s))"
+        )
+        return sql, [like]
+
+    def get_top_sellers_monthly(self, limit=5):
+        where, params = self._month_where()
+        return self.fetchall(
+            f"""
+            SELECT u.user_id, u.full_name, u.account_type,
+                   COUNT(*) AS keys_count, COALESCE(SUM(o.amount), 0) AS total
+            FROM order_history o JOIN users u ON u.user_id = o.user_id
+            WHERE {where}
+            GROUP BY u.user_id, u.full_name, u.account_type
+            ORDER BY total DESC, keys_count DESC, u.user_id
+            LIMIT %s
+            """,
+            params + [limit],
+        )
+
+    def get_user_monthly_rank(self, user_id):
+        """(rank, keys, total) of one customer this month, or None if they bought nothing yet."""
+        where, params = self._month_where()
+        return self.fetchone(
+            f"""
+            SELECT * FROM (
+                SELECT user_id, keys_count, total, RANK() OVER (ORDER BY total DESC) AS rnk FROM (
+                    SELECT o.user_id, COUNT(*) AS keys_count, COALESCE(SUM(o.amount), 0) AS total
+                    FROM order_history o WHERE {where} GROUP BY o.user_id
+                ) m
+            ) r WHERE user_id = %s
+            """,
+            params + [user_id],
+        )
+
+    # ------------------------------------------------------------------
+    # Admin panel live wallpaper (background video + looping song)
+    # ------------------------------------------------------------------
+    BG_DEFAULTS = {"video_url": "", "audio_url": "", "volume": "0.6", "dim": "0.45", "enabled": "1"}
+
+    def get_ui_settings(self):
+        rows = self.fetchall("SELECT skey, svalue FROM ui_settings")
+        cfg = dict(self.BG_DEFAULTS)
+        cfg.update({r["skey"]: r["svalue"] for r in rows})
+        return cfg
+
+    def set_ui_settings(self, values):
+        with self.connection() as conn:
+            with conn.cursor() as cur:
+                for k, v in values.items():
+                    cur.execute(
+                        """
+                        INSERT INTO ui_settings (skey, svalue) VALUES (%s, %s)
+                        ON CONFLICT (skey) DO UPDATE SET svalue = EXCLUDED.svalue
+                        """,
+                        (k, str(v)),
+                    )
+
+    def save_media(self, kind, filename, mime, data):
+        self.execute(
+            """
+            INSERT INTO ui_media (kind, filename, mime, data, updated_ts) VALUES (%s, %s, %s, %s, now())
+            ON CONFLICT (kind) DO UPDATE SET filename = EXCLUDED.filename, mime = EXCLUDED.mime,
+                data = EXCLUDED.data, updated_ts = now()
+            """,
+            (kind, filename, mime, data),
+        )
+
+    def media_meta(self, kind):
+        return self.fetchone(
+            "SELECT filename, mime, octet_length(data) AS size, EXTRACT(EPOCH FROM updated_ts)::bigint AS ver "
+            "FROM ui_media WHERE kind = %s",
+            (kind,),
+        )
+
+    def media_chunk(self, kind, start, length):
+        """Bytes [start, start+length) of the stored file (so videos can seek without loading it all)."""
+        row = self.fetchone(
+            "SELECT substring(data FROM %s FOR %s) AS chunk FROM ui_media WHERE kind = %s",
+            (start + 1, length, kind),
+        )
+        return bytes(row["chunk"]) if row and row["chunk"] is not None else b""
+
+    def delete_media(self, kind):
+        self.execute("DELETE FROM ui_media WHERE kind = %s", (kind,))
+
     # ------------------------------------------------------------------
     # Payments
     # ------------------------------------------------------------------
@@ -1175,5 +1293,6 @@ def init_db():
         )
     db.init_db()
     return db
+
 
 
