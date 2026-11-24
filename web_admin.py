@@ -15,6 +15,7 @@ from threading import Thread
 from flask import Flask, render_template_string, request, jsonify, redirect, session, Response
 
 from database import db, init_db, parse_prices, MENU_BUTTONS, BUTTON_GROUPS, BUTTON_COLORS
+import supplier_api
 # Filled in by main.py at start-up (the payment logic lives in main.py).
 parse_sms = None
 gmail_status = None
@@ -452,6 +453,7 @@ ADMIN_HTML = """
         <a class="sb-link" data-tab="resellers" onclick="showTab('resellers', this)"><span class="sb-ic g5">🤝</span> Resellers</a>
         <a class="sb-link" data-tab="topups" onclick="showTab('topups', this)"><span class="sb-ic g8">💳</span> Top-ups</a>
         <a class="sb-link" data-tab="upi" onclick="showTab('upi', this)"><span class="sb-ic g3">💳</span> UPI Payment Setup</a>
+        <a class="sb-link" data-tab="supplier" onclick="showTab('supplier', this)"><span class="sb-ic g5">🔌</span> Supplier API</a>
         <a class="sb-link" data-tab="broadcast" onclick="showTab('broadcast', this)"><span class="sb-ic g8">📢</span> Broadcast</a>
         <a class="sb-link" data-tab="coupons" onclick="showTab('coupons', this)"><span class="sb-ic g4">🎟️</span> Coupon Manager</a>
         <a class="sb-link" data-tab="btncolors" onclick="showTab('btncolors', this)"><span class="sb-ic g1">🎨</span> Button Colors</a>
@@ -1096,6 +1098,51 @@ ADMIN_HTML = """
         </div>
 
         <!-- 1️⃣1️⃣ 💳 TAB: TOP-UPS QUEUE -->
+        <div class="tab-pane-content" id="tab-supplier" style="display:none;">
+            <div class="page-head">
+                <div class="ph-ic">🔌</div>
+                <div><h3>Supplier API Setup</h3><p>Connect the other panel (panelstore.shop). When your own key stock is empty, the bot buys the key from them instantly.</p></div>
+            </div>
+
+            <div class="gcard blue">
+                <div class="sec-head"><span class="sec-no">1</span><div><h5>Connect</h5><p>Paste the API key from their "Reseller API Hub" page.</p></div></div>
+                <div class="row g-3">
+                    <div class="col-12">
+                        <label class="small mb-1">API URL</label>
+                        <input type="text" id="sup_url" class="form-control" placeholder="https://panelstore.shop/api/v1/index.php" autocomplete="off">
+                    </div>
+                    <div class="col-12">
+                        <label class="small mb-1">API Key <span class="pill g" id="sup_saved" style="display:none;">saved</span></label>
+                        <input type="password" id="sup_key" class="form-control" placeholder="usr_..." autocomplete="new-password">
+                    </div>
+                    <div class="col-12 d-flex gap-2 flex-wrap">
+                        <button class="btn-grad flex-fill" onclick="supSave()"><i class="fas fa-save me-1"></i> Save API Settings</button>
+                        <button class="btn btn-outline-warning flex-fill" onclick="supTest()"><i class="fas fa-vial me-1"></i> Test Connection</button>
+                    </div>
+                    <div class="col-12"><div class="ins-box mb-0 small" id="sup_status"><b>Status:</b> not tested yet</div></div>
+                </div>
+            </div>
+
+            <div class="gcard blue">
+                <div class="sec-head"><span class="sec-no">2</span><div><h5>Link your plans to their products</h5><p>For every plan you want to auto-buy, pick their product. Type a name to search (for example "drip"). Plans with no link only use your own stock.</p></div></div>
+                <div class="d-flex gap-2 flex-wrap mb-2">
+                    <button class="btn btn-outline-warning flex-fill" onclick="supLoadServices(true)"><i class="fas fa-rotate me-1"></i> Load / refresh their products</button>
+                </div>
+                <div class="small mb-2" id="sup_svc_info">Their products are not loaded yet.</div>
+                <datalist id="sup_dl"></datalist>
+                <div id="sup_maps"></div>
+            </div>
+
+            <div class="gcard blue">
+                <div class="sec-head"><span class="sec-no">3</span><div><h5>Test order (spends real money)</h5><p>Buys ONE real key from their panel. Use their cheapest product (testwithapi, 1 Hour, &#8377;0.50).</p></div></div>
+                <div class="row g-3">
+                    <div class="col-6"><label class="small mb-1">Their PID</label><input type="number" id="sup_t_pid" class="form-control" placeholder="107"></div>
+                    <div class="col-6 d-flex align-items-end"><button class="btn-grad w-100" onclick="supTestOrder()"><i class="fas fa-rocket me-1"></i> Buy 1 test key</button></div>
+                    <div class="col-12"><pre class="ins-box mb-0 small" id="sup_t_out" style="white-space:pre-wrap;word-break:break-all;">Result appears here.</pre></div>
+                </div>
+            </div>
+        </div>
+
         <div class="tab-pane-content" id="tab-topups" style="display:none;">
             <div class="card p-4">
                 <h5>💳 Deposit Requests (latest 30)</h5>
@@ -1534,6 +1581,7 @@ ADMIN_HTML = """
             window.scrollTo(0, 0);
             if (t === 'keystock' && typeof lkLoad === 'function') lkLoad();
             if (t === 'broadcast' && typeof bcHistLoad === 'function') bcHistLoad();
+            if (t === 'supplier' && typeof supLoad === 'function') supLoad();
         }
         function filterTable(inputId, tableId) {
             let filter = document.getElementById(inputId).value.toLowerCase();
@@ -1694,6 +1742,97 @@ ADMIN_HTML = """
             let t = document.getElementById('test_sms').value;
             fetch('/api/payment/test_parse', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({text: t}) })
             .then(r => r.json()).then(d => { document.getElementById('test_result').innerText = d.message; });
+        }
+        /* ===== Supplier API tab ===== */
+        let SUP_SVC = {};
+        function supJson(url, body) {
+            return fetch(url, body === undefined ? {} : { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) })
+                .then(r => r.json()).catch(() => ({ok: false, message: 'Network error'}));
+        }
+        function supLoad() {
+            supJson('/api/supplier/config').then(d => {
+                document.getElementById('sup_url').value = d.url || '';
+                document.getElementById('sup_saved').style.display = d.has_key ? 'inline-block' : 'none';
+                document.getElementById('sup_key').placeholder = d.has_key ? ('saved (' + d.key_hint + ') - leave empty to keep it') : 'usr_...';
+            });
+            supLoadMaps();
+        }
+        function supSave() {
+            supJson('/api/supplier/save', {url: document.getElementById('sup_url').value.trim(), key: document.getElementById('sup_key').value.trim()})
+                .then(d => { toast(d.message, d.ok !== false); document.getElementById('sup_key').value = ''; supLoad(); });
+        }
+        function supTest() {
+            const st = document.getElementById('sup_status');
+            st.innerText = 'Testing...';
+            supSave();
+            setTimeout(() => supJson('/api/supplier/test', {}).then(d => { st.innerText = d.message; toast(d.message, d.ok); }), 700);
+        }
+        function supLabel(s) {
+            return s.pid + ' | ' + s.name + ' | ' + (s.device || '') + ' | Rs ' + s.price + ' | stock ' + s.stock;
+        }
+        function supLoadServices(force) {
+            const info = document.getElementById('sup_svc_info');
+            info.innerText = 'Loading their products...';
+            return supJson('/api/supplier/services' + (force ? '?refresh=1' : '')).then(d => {
+                if (!d.ok) { info.innerText = d.message; return; }
+                SUP_SVC = {};
+                const dl = document.getElementById('sup_dl');
+                dl.innerHTML = '';
+                d.services.forEach(s => { SUP_SVC[s.pid] = s; const o = document.createElement('option'); o.value = supLabel(s); dl.appendChild(o); });
+                info.innerText = d.services.length + ' products loaded.';
+                document.querySelectorAll('.sup-pid').forEach(supCheck);
+            });
+        }
+        function supPidOf(v) { const m = String(v || '').trim().match(/^([0-9]+)/); return m ? parseInt(m[1], 10) : null; }
+        function supCheck(inp) {
+            const note = inp.parentElement.querySelector('.sup-note');
+            const pid = supPidOf(inp.value);
+            if (!pid) { note.innerHTML = ''; return; }
+            const s = SUP_SVC[pid];
+            if (!s) { note.innerHTML = '<span class="text-secondary">PID ' + pid + ' (load their products to see the price)</span>'; return; }
+            const cost = parseFloat(s.price), my = parseFloat(inp.dataset.price), res = parseFloat(inp.dataset.reseller);
+            let h = 'Their cost: <b>&#8377;' + cost.toFixed(2) + '</b> &middot; ' + esc(s.name);
+            if (res < cost) h += '<br><span class="text-danger"><b>Loss warning:</b> reseller price &#8377;' + res.toFixed(2) + ' is below their cost!</span>';
+            else if (my < cost) h += '<br><span class="text-danger"><b>Loss warning:</b> regular price &#8377;' + my.toFixed(2) + ' is below their cost!</span>';
+            note.innerHTML = h;
+        }
+        function supLoadMaps() {
+            supJson('/api/supplier/maps').then(d => {
+                const box = document.getElementById('sup_maps');
+                if (!d.products || !d.products.length) { box.innerHTML = '<div class="small">No products yet.</div>'; return; }
+                let h = '';
+                d.products.forEach(p => {
+                    h += '<div class="ins-box"><b>' + esc(p.name) + '</b>';
+                    p.plans.forEach(pl => {
+                        const id = 'sp_' + btoa(unescape(encodeURIComponent(p.prod_key + '|' + pl.plan))).replace(/[^A-Za-z0-9]/g, '');
+                        h += '<div class="mt-2 pt-2" style="border-top:1px solid rgba(255,255,255,.08)">'
+                          + '<div class="small">' + esc(pl.plan.replace(/_/g, ' ')) + ' &middot; your price &#8377;' + pl.price + ' (reseller &#8377;' + pl.reseller_price + ')</div>'
+                          + '<div class="d-flex gap-2 mt-1"><input class="form-control sup-pid" id="' + id + '" list="sup_dl" placeholder="their product (type to search)"'
+                          + ' value="' + (pl.pid ? esc(SUP_SVC[pl.pid] ? supLabel(SUP_SVC[pl.pid]) : String(pl.pid)) : '') + '"'
+                          + ' data-prod="' + esc(p.prod_key) + '" data-plan="' + esc(pl.plan) + '" data-price="' + pl.price + '" data-reseller="' + pl.reseller_price + '"'
+                          + ' oninput="supCheck(this)">'
+                          + '<button class="btn btn-outline-warning" onclick="supSaveMap(this.previousElementSibling)">Save</button></div>'
+                          + '<div class="small mt-1 sup-note"></div></div>';
+                    });
+                    h += '</div>';
+                });
+                box.innerHTML = h;
+                document.querySelectorAll('.sup-pid').forEach(supCheck);
+            });
+        }
+        function supSaveMap(inp) {
+            const raw = inp.value.trim();
+            const pid = raw === '' ? null : supPidOf(raw);
+            if (raw !== '' && !pid) { toast('Pick a product from the list (it starts with the PID number).', false); return; }
+            supJson('/api/supplier/map', {prod_key: inp.dataset.prod, plan: inp.dataset.plan, pid: pid}).then(d => { toast(d.message, d.ok !== false); supCheck(inp); });
+        }
+        function supTestOrder() {
+            const pid = parseInt(document.getElementById('sup_t_pid').value, 10);
+            if (!pid) { toast('Enter their PID first.', false); return; }
+            if (!confirm('This buys ONE real key from the supplier and spends money from your supplier wallet. Continue?')) return;
+            const out = document.getElementById('sup_t_out');
+            out.innerText = 'Ordering...';
+            supJson('/api/supplier/test_order', {pid: pid, confirm: true}).then(d => { out.innerText = d.message; toast(d.ok ? 'Test order done' : 'Test order failed', d.ok); });
         }
         updateUpiPreview();
         function saveIdStock() {
@@ -2478,6 +2617,101 @@ def api_gmail_detect():
         return jsonify({"ok": False, "message": "The payment reader is still starting. Try again in a moment."})
     return jsonify(gmail_detect())
 
+# ==========================================
+# 🔌 SUPPLIER API (other panel we buy keys from)
+# ==========================================
+RESELLER_FACTOR = 0.6   # same value as main.py: reseller price = regular price x 0.6
+_SUP_CACHE = {"t": 0.0, "data": None}
+
+@app.route('/api/supplier/config')
+def api_supplier_config():
+    if not admin_required(): return unauthorized()
+    url, key = supplier_api.get_config()
+    return jsonify({"url": url, "has_key": bool(key), "key_hint": ("..." + key[-4:]) if key else ""})
+
+@app.route('/api/supplier/save', methods=['POST'])
+def api_supplier_save():
+    if not admin_required(): return unauthorized()
+    d = request.json or {}
+    url = (d.get('url') or '').strip() or supplier_api.DEFAULT_URL
+    key = "".join((d.get('key') or '').split())
+    if not url.lower().startswith('https://'):
+        return jsonify({"ok": False, "message": "The API URL must start with https://"}), 400
+    db.set_supplier_config(url, key if key else None)
+    _SUP_CACHE["data"] = None
+    return jsonify({"ok": True, "message": "Supplier API settings saved."})
+
+@app.route('/api/supplier/test', methods=['POST'])
+def api_supplier_test():
+    if not admin_required(): return unauthorized()
+    try:
+        bal, cur = supplier_api.get_balance()
+        return jsonify({"ok": True, "message": f"✅ Connected! Supplier wallet balance: ₹{bal:,.2f} {cur}"})
+    except supplier_api.SupplierError as e:
+        return jsonify({"ok": False, "message": f"❌ {e}"})
+
+@app.route('/api/supplier/services')
+def api_supplier_services():
+    if not admin_required(): return unauthorized()
+    now = time.time()
+    if request.args.get('refresh') or not _SUP_CACHE["data"] or now - _SUP_CACHE["t"] > 120:
+        try:
+            items = supplier_api.get_services()
+        except supplier_api.SupplierError as e:
+            return jsonify({"ok": False, "message": f"❌ {e}"})
+        _SUP_CACHE["data"], _SUP_CACHE["t"] = [
+            {k: v for k, v in it.items() if k != "raw"} for it in items if it.get("pid") != ""
+        ], now
+    return jsonify({"ok": True, "services": _SUP_CACHE["data"]})
+
+@app.route('/api/supplier/maps')
+def api_supplier_maps():
+    if not admin_required(): return unauthorized()
+    mapped = {(m["prod_key"], m["plan"]): m["pid"] for m in db.list_supplier_map()}
+    out = []
+    for row in db.fetchall("SELECT prod_key, name, prices FROM products ORDER BY category, prod_key"):
+        plans = [{"plan": n, "price": p, "reseller_price": round(p * RESELLER_FACTOR, 2), "pid": mapped.get((row["prod_key"], n))}
+                 for n, p in parse_prices(row["prices"])]
+        out.append({"prod_key": row["prod_key"], "name": row["name"] or row["prod_key"], "plans": plans})
+    return jsonify({"products": out})
+
+@app.route('/api/supplier/map', methods=['POST'])
+def api_supplier_map():
+    if not admin_required(): return unauthorized()
+    d = request.json or {}
+    prod_key, plan, pid = d.get('prod_key'), d.get('plan'), d.get('pid')
+    prod = db.get_product_by_key(prod_key or '')
+    if not prod or not any(n == plan for n, _ in parse_prices(prod["prices"])):
+        return jsonify({"ok": False, "message": "Product or plan not found."}), 400
+    if pid in (None, ''):
+        db.delete_supplier_pid(prod_key, plan)
+        return jsonify({"ok": True, "message": "Link removed. This plan now uses only your own stock."})
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "message": "Invalid PID."}), 400
+    db.set_supplier_pid(prod_key, plan, pid)
+    return jsonify({"ok": True, "message": f"Linked to supplier PID {pid}. Empty stock now buys from the supplier."})
+
+@app.route('/api/supplier/test_order', methods=['POST'])
+def api_supplier_test_order():
+    if not admin_required(): return unauthorized()
+    d = request.json or {}
+    if d.get('confirm') is not True:
+        return jsonify({"ok": False, "message": "Confirmation missing."}), 400
+    try:
+        pid = int(d.get('pid'))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "message": "Invalid PID."}), 400
+    try:
+        r = supplier_api.order(pid, 1, "admin_test")
+    except supplier_api.SupplierUncertain as e:
+        return jsonify({"ok": False, "message": f"⚠️ Unclear result - the order MAY have been charged. Check the supplier panel.\n{e}"})
+    except supplier_api.SupplierError as e:
+        return jsonify({"ok": False, "message": f"❌ {e}"})
+    rem = f"₹{r['remaining_balance']:,.2f}" if r["remaining_balance"] is not None else "?"
+    return jsonify({"ok": True, "message": f"✅ Key: {r['license_key']}\nOrder: #{r['order_code']}\nSupplier balance left: {rem}"})
+
 PLAN_RE = re.compile(r'^[A-Za-z0-9 _.\-+]{1,22}$')   # short enough for Telegram's 64-byte callback data
 CATEGORIES = ("non_root", "root", "ios", "pc", "likes")
 
@@ -3241,6 +3475,7 @@ def run_web():
 if __name__ == "__main__":
     init_db()
     run_web()
+
 
 
 
