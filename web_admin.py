@@ -1054,6 +1054,24 @@ ADMIN_HTML = """
                 </div>
             </div>
 
+            <!-- 2b. BINANCE USDT -->
+            <div class="gcard amber">
+                <div class="sec-head"><span class="sec-no">₮</span><div><h5>Binance USDT payment</h5><p>Controls the <b>Binance USDT Payment</b> button in the bot. Turn it OFF to hide it. You approve each payment in Telegram.</p></div></div>
+                <div class="ins-box mb-3">
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" id="bn_enabled" {% if bn_cfg.enabled %}checked{% endif %}>
+                        <label class="form-check-label fw-bold" for="bn_enabled">🟡 Show Binance USDT button</label>
+                    </div>
+                </div>
+                <label class="small mb-1">Binance Pay ID / wallet address (customers send here)</label>
+                <input type="text" id="bn_pay_id" class="form-control mb-3" value="{{ bn_cfg.pay_id }}" placeholder="Binance Pay ID">
+                <label class="small mb-1">Rate: &#8377; per 1 USDT</label>
+                <input type="number" step="0.01" id="bn_rate" class="form-control mb-3" value="{{ bn_cfg.rate }}">
+                <label class="small mb-1">Extra note shown to customer (optional)</label>
+                <input type="text" id="bn_note" class="form-control mb-3" value="{{ bn_cfg.note }}" placeholder="e.g. Network: BEP20">
+                <button class="btn-grad w-100" onclick="saveBinance()"><i class="fas fa-save me-1"></i> Save Binance settings</button>
+            </div>
+
             <!-- 3. GMAIL -->
             <div class="gcard amber">
                 <div class="sec-head"><span class="sec-no">3</span><div><h5>FamPay e-mail connection (Gmail)</h5><p>This is what makes automatic confirmation work.</p></div></div>
@@ -1877,6 +1895,14 @@ ADMIN_HTML = """
             let name = document.getElementById('upi_name').value.trim();
             let auto = document.getElementById('auto_verify').checked;
             fetch('/api/payment/save', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({upi_id: upi, payee_name: name, auto_verify: auto}) })
+            .then(r => r.json()).then(d => toast(d.message));
+        }
+        function saveBinance() {
+            let body = {enabled: document.getElementById('bn_enabled').checked,
+                        pay_id: document.getElementById('bn_pay_id').value.trim(),
+                        rate: document.getElementById('bn_rate').value,
+                        note: document.getElementById('bn_note').value.trim()};
+            fetch('/api/binance/save', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) })
             .then(r => r.json()).then(d => toast(d.message));
         }
         function saveGmail() {
@@ -2840,6 +2866,7 @@ def dashboard():
     pay_cfg = {
         "upi_id": pay["upi_id"], "payee_name": pay["payee_name"], "auto_verify": bool(pay["auto_verify"]),
     }
+    bn_cfg = db.get_binance_settings()
     gm = db.get_gmail_config()
     gm_state = (gmail_status() if gmail_status else None) or {}
     gmail_cfg = {
@@ -2911,7 +2938,7 @@ def dashboard():
                "orders": tot_orders, "revenue": f"{tot_rev:,.2f}", "key_stock": tot_keys,
                "today_deposit": f"{today_dep:,.2f}", "awaiting": awaiting},
         products=prods, all_orders=all_orders, pending_orders=pending, users_list=users_list,
-        pay_cfg=pay_cfg, gmail=gmail_cfg, alerts=alerts, store=st, pay_stats=pay_stats
+        pay_cfg=pay_cfg, bn_cfg=bn_cfg, gmail=gmail_cfg, alerts=alerts, store=st, pay_stats=pay_stats
     )
 
 UPI_RE = re.compile(r'^[a-zA-Z0-9.\-_]{2,64}@[a-zA-Z0-9]{2,32}$')
@@ -2928,6 +2955,23 @@ def api_payment_save():
     db.set_payment_settings(upi_id, payee, auto)
     mode = "AUTOMATIC verification is ON." if auto else "Manual approval mode (you approve in Telegram)."
     return jsonify({"message": f"UPI settings saved! New payments use this QR immediately. {mode}"})
+
+@app.route('/api/binance/save', methods=['POST'])
+def api_binance_save():
+    if not admin_required(): return unauthorized()
+    d = request.json or {}
+    pay_id = (d.get('pay_id') or '').strip()[:120]
+    note = (d.get('note') or '').strip()[:200]
+    try:
+        rate = float(d.get('rate'))
+        if rate <= 0: raise ValueError
+    except (TypeError, ValueError):
+        return jsonify({"message": "Enter a valid USDT rate!"}), 400
+    enabled = bool(d.get('enabled'))
+    if enabled and not pay_id:
+        return jsonify({"message": "Enter your Binance Pay ID before turning it ON!"}), 400
+    db.set_binance_settings(enabled, pay_id, rate, note)
+    return jsonify({"message": "Binance USDT is ON — button visible in the bot." if enabled else "Binance USDT is OFF — button hidden."})
 
 @app.route('/api/payment/test_parse', methods=['POST'])
 def api_test_parse():
@@ -3997,6 +4041,7 @@ def run_web():
 if __name__ == "__main__":
     init_db()
     run_web()
+
 
 
 
