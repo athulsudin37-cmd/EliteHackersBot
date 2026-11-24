@@ -1104,6 +1104,14 @@ ADMIN_HTML = """
                 <div><h3>Supplier API Setup</h3><p>Connect the other panel (panelstore.shop). When your own key stock is empty, the bot buys the key from them instantly.</p></div>
             </div>
 
+            <div class="ins-box small mb-3">
+                <b>How it works (very simple)</b><br>
+                1&#65039;&#8419; <b>Connect</b> - paste their API key once.<br>
+                2&#65039;&#8419; <b>Add their plan to your shop</b> - you see <b>THEIR price</b> (what you pay), you type <b>YOUR price</b> (what customer pays). <span class="text-success"><b>Green = profit</b></span>, <span class="text-danger"><b>Red = loss</b></span>.<br>
+                3&#65039;&#8419; <b>Done</b> - when a customer buys and your own stock is empty, the bot buys the key from them automatically. You keep the difference.<br>
+                <span class="text-secondary">Your old products and prices are not changed.</span>
+            </div>
+
             <div class="gcard blue">
                 <div class="sec-head"><span class="sec-no">1</span><div><h5>Connect</h5><p>Paste the API key from their "Reseller API Hub" page.</p></div></div>
                 <div class="row g-3">
@@ -1124,21 +1132,21 @@ ADMIN_HTML = """
             </div>
 
             <div class="gcard blue">
-                <div class="sec-head"><span class="sec-no">2</span><div><h5>Add their products to my shop (one tap)</h5><p>Their products are listed below. Tick the plans you want, set YOUR selling price and press <b>Add to my shop</b>. The product, its plans, your price and the automatic purchase link are all created for you.</p></div></div>
+                <div class="sec-head"><span class="sec-no">2</span><div><h5>Add their products to my shop</h5><p>Press <b>Load</b>, open a product, tick the plans you want, check <b>YOUR price</b> (change it if you like) and press <b>Add to my shop</b>.</p></div></div>
                 <div class="d-flex gap-2 flex-wrap mb-2">
                     <button class="btn btn-outline-warning flex-fill" onclick="supLoadServices(true)"><i class="fas fa-rotate me-1"></i> Load / refresh their products</button>
                 </div>
                 <div class="row g-2 mb-2">
                     <div class="col-7"><input type="text" id="sup_q" class="form-control" placeholder="Search (drip, silent, ios...)" oninput="supRenderImport()"></div>
-                    <div class="col-5"><div class="input-group"><span class="input-group-text">x</span><input type="number" id="sup_mult" class="form-control" value="2" step="0.1" min="1"><button class="btn btn-outline-warning" onclick="supApplyMult()">Set</button></div></div>
+                    <div class="col-5"><div class="input-group"><span class="input-group-text">Price x</span><input type="number" id="sup_mult" class="form-control" value="2" step="0.1" min="1"><button class="btn btn-outline-warning" onclick="supApplyMult()">Apply</button></div></div>
                 </div>
-                <div class="small mb-2">Default price = their cost x <b>multiplier</b> (now 2 means you charge double). Resellers in your bot pay 60% of your price, so keep the multiplier at <b>1.7 or more</b> to stay in profit. You can change every price by hand.</div>
+                <div class="ins-box small mb-2"><b>Auto price:</b> YOUR price = THEIR price x the number above.<br>Example: their price &#8377;50, x2 &rarr; your price &#8377;100, profit &#8377;50.<br><b>Reseller customers pay only 60% of your price</b>, so keep the number at <b>1.7 or more</b> to stay in profit. You can also type any price by hand in each row.</div>
                 <div class="small mb-2" id="sup_imp_info"></div>
                 <div id="sup_import"></div>
             </div>
 
             <div class="gcard blue">
-                <div class="sec-head"><span class="sec-no">3</span><div><h5>Link a plan you already have (manual)</h5><p>For every plan you want to auto-buy, pick their product. Type a name to search (for example "drip"). Plans with no link only use your own stock.</p></div></div>
+                <div class="sec-head"><span class="sec-no">3</span><div><h5>Link a plan you ALREADY have in your shop</h5><p>Only for products that already exist in your shop. Under each of your plans, choose THEIR matching product (type a name to search, e.g. "drip") and press Save. Plans with no link use only your own stock.</p></div></div>
                 <div class="d-flex gap-2 flex-wrap mb-2">
                     <button class="btn btn-outline-warning flex-fill" onclick="supLoadServices(true)"><i class="fas fa-rotate me-1"></i> Load / refresh their products</button>
                 </div>
@@ -1818,8 +1826,10 @@ ADMIN_HTML = """
         function supCalcText(cost, my) {
             const res = Math.round(my * 0.6 * 100) / 100;
             const pr = my - cost, rp = res - cost;
-            return 'You earn <b class="' + (pr < 0 ? 'text-danger' : 'text-success') + '">&#8377;' + pr.toFixed(2) + '</b> per regular sale &middot; reseller pays &#8377;' + res.toFixed(2)
-                 + ' &rarr; <b class="' + (rp < 0 ? 'text-danger' : 'text-success') + '">' + (rp < 0 ? 'LOSS ' : 'earn ') + '&#8377;' + Math.abs(rp).toFixed(2) + '</b>';
+            const fmt = v => (v < 0 ? '<b class="text-danger">&#10060; LOSS &#8377;' + Math.abs(v).toFixed(2) + '</b>'
+                                    : '<b class="text-success">&#9989; profit &#8377;' + v.toFixed(2) + '</b>');
+            return '&#128100; Normal customer pays &#8377;' + my.toFixed(2) + ' &rarr; ' + fmt(pr)
+                 + '<br>&#128081; Reseller pays &#8377;' + res.toFixed(2) + ' &rarr; ' + fmt(rp);
         }
         function supRowCalc(inp) {
             const row = inp.closest('.sup-row');
@@ -1865,8 +1875,8 @@ ADMIN_HTML = """
                     const my = SUP_EDIT[pid] !== undefined ? parseFloat(SUP_EDIT[pid]) : Math.ceil(cost * mult);
                     rows += '<div class="sup-row mt-2 pt-2" style="border-top:1px solid rgba(255,255,255,.08)" data-pid="' + pid + '" data-plan="' + esc(plan) + '" data-cost="' + cost + '">'
                           + '<div class="d-flex align-items-center gap-2"><input type="checkbox" class="sup-chk" checked>'
-                          + '<span class="small flex-grow-1">' + esc(it.dur) + ' &middot; their cost <b>&#8377;' + cost.toFixed(2) + '</b> &middot; stock ' + esc(sv.stock) + '</span>'
-                          + '<input type="number" class="form-control sup-price" style="width:96px" value="' + my + '" min="0" step="1" oninput="supRowCalc(this)"></div>'
+                          + '<span class="small flex-grow-1">' + esc(it.dur) + ' &middot; their price <b>&#8377;' + cost.toFixed(2) + '</b> &middot; stock ' + esc(sv.stock) + '</span>'
+                          + '<div class="input-group" style="width:140px"><span class="input-group-text">Mine &#8377;</span><input type="number" class="form-control sup-price" value="' + my + '" min="0" step="1" oninput="supRowCalc(this)"></div></div>'
                           + '<div class="small mt-1 sup-calc">' + supCalcText(cost, my) + '</div></div>';
                 });
                 const cat = supGuessCat(g.device);
@@ -1888,6 +1898,13 @@ ADMIN_HTML = """
                 plans.push({plan: r.dataset.plan, pid: parseInt(r.dataset.pid, 10), price: r.querySelector('.sup-price').value});
             });
             if (!plans.length) { toast('Tick at least one plan.', false); return; }
+            let loss = 0;
+            grp.querySelectorAll('.sup-row').forEach(r => {
+                if (!r.querySelector('.sup-chk').checked) return;
+                const c = parseFloat(r.dataset.cost), m = parseFloat(r.querySelector('.sup-price').value);
+                if (isNaN(m) || m < c || m * 0.6 < c) loss++;
+            });
+            if (loss && !confirm(loss + ' plan(s) will give you a LOSS (their price is higher than what you earn). Add anyway?')) return;
             btn.disabled = true;
             supJson('/api/supplier/import', {name: grp.dataset.name, category: grp.querySelector('.sup-cat').value, plans: plans}).then(d => {
                 btn.disabled = false;
@@ -3640,6 +3657,7 @@ def run_web():
 if __name__ == "__main__":
     init_db()
     run_web()
+
 
 
 
