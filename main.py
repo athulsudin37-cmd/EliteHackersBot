@@ -1054,7 +1054,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [styled_button("💰 Add Balance", "add_balance", callback_data="add_balance"), styled_button("🧾 All History", "all_history", callback_data="all_history")],
         [styled_button("▶️ Tutorial watch", "tutorial", url=tutorial_link), styled_button("👑 Reseller", "reseller", callback_data="reseller_plan")],
         [styled_button("💼 Selling Proof ↗️", "selling_proof", url="https://t.me/+fJrFACSrntgwNjll"), styled_button("💬 Support", "support", callback_data="support_contact")],
-        [styled_button("🎰 Lucky Spin", "lucky_spin", callback_data="lucky_spin"), styled_button("👥 Referral", "referral", callback_data="referral_menu")]
+        [styled_button("🎰 Lucky Spin", "lucky_spin", callback_data="lucky_spin"), styled_button("👥 Referral", "referral", callback_data="referral_menu")],
+        [styled_button("👑 Top 5 Sellers Monthly", "top_sellers", callback_data="top_sellers")]
     ]
 
     if valid_url(cfg.get("update_link")):
@@ -1958,6 +1959,57 @@ async def history_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
 
 # ==========================================
+# 👑 TOP 5 SELLERS MONTHLY (auto-calculated from real purchases, resets every month)
+# ==========================================
+async def top_sellers_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user = update.effective_user
+    now = datetime.now(IST)
+    month_label = now.strftime("%B %Y")
+    # days left until the list resets on the 1st
+    next_month = (now.replace(day=1) + timedelta(days=32)).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    days_left = max(1, (next_month - now).days)
+
+    try:
+        rows = db.get_top_sellers_monthly(5)
+        mine = db.get_user_monthly_rank(user.id)
+    except Exception:
+        logger.exception("Top sellers query failed")
+        rows, mine = [], None
+
+    medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
+    text = (
+        "👑 <b>TOP 5 SELLERS MONTHLY</b>\n"
+        f"📅 <i>{month_label} — list resets automatically on the 1st of every month</i>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+    )
+    if not rows:
+        text += (
+            "🚫 <b>No purchases yet this month!</b>\n\n"
+            "🛒 Buy a key now and be the first on the leaderboard! 🔥\n"
+        )
+    else:
+        for i, r in enumerate(rows):
+            role = "RESELLER" if str(r["account_type"]).lower() == "reseller" else "USER"
+            name = html.escape((r["full_name"] or "Unknown").strip() or "Unknown")
+            text += (
+                f"{medals[i]} <b>{name}</b>\n"
+                f"👑 Role: {role}\n"
+                f"🔑 Keys: {int(r['keys_count'])}\n"
+                f"💰 Total Buy: ₹{float(r['total']):,.2f}\n\n"
+            )
+    text += "━━━━━━━━━━━━━━━━━━━━\n"
+    if mine:
+        text += f"📍 <b>Your rank:</b> #{int(mine['rnk'])} • 🔑 {int(mine['keys_count'])} keys • ₹{float(mine['total']):,.2f}\n"
+    else:
+        text += "📍 <b>Your rank:</b> not ranked yet — buy a key to join the list!\n"
+    text += f"⏳ Resets in <b>{days_left}</b> day{'s' if days_left != 1 else ''}"
+
+    keyboard = [[styled_button("➡️ Back to Menu", "back_menu", callback_data="main_menu")]]
+    await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
+
+# ==========================================
 # 🛒 8. SHOP KEY & DEVICE CATALOG
 # ==========================================
 async def shop_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2189,6 +2241,7 @@ def start_bot():
     app.add_handler(CallbackQueryHandler(perform_lucky_spin, pattern="^spin_action_play$"))
     app.add_handler(CallbackQueryHandler(referral_handler, pattern="^referral_menu$"))
     app.add_handler(CallbackQueryHandler(history_handler, pattern="^all_history$"))
+    app.add_handler(CallbackQueryHandler(top_sellers_handler, pattern="^top_sellers$"))
     app.add_handler(CallbackQueryHandler(shop_categories, pattern="^shop_key$"))
     app.add_handler(CallbackQueryHandler(list_category_products, pattern="^pcat_"))
     app.add_handler(CallbackQueryHandler(show_product_plans, pattern="^selprod_"))
