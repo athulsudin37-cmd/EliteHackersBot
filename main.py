@@ -26,7 +26,8 @@ from telegram.error import BadRequest
 import web_admin
 
 # 🗄️ Persistent PostgreSQL database layer
-from database import db, init_db as init_persistent_db, MENU_BUTTONS, BUTTON_COLORS
+from database import db, init_db as init_persistent_db, MENU_BUTTONS, BUTTON_COLORS, parse_prices
+import supplier_api
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -278,8 +279,14 @@ def purchase_with_wallet(user_id, prod_key, plan_name, allow_pending=False, utr=
         balance = float(user["wallet_balance"] or 0) if user else 0.0
         return {"status": "insufficient", "prod": prod, "price": price, "balance": balance}
 
+    key, supplier_order = None, None
     try:
         key = db.pop_auto_key(prod_key, plan_name)
+        if not key:
+            # No local stock -> buy it live from the supplier panel (only if this plan is mapped to a PID).
+            key, supplier_order = _buy_from_supplier(user_id, prod_key, plan_name)
+            if key:
+                utr = f"API:{supplier_order}" if supplier_order else "API"
         status = "ok"
         if not key:
             if not allow_pending:
@@ -294,9 +301,51 @@ def purchase_with_wallet(user_id, prod_key, plan_name, allow_pending=False, utr=
             logger.exception("Could not mark spin rewards as used")
     except Exception:
         db.update_balance(user_id, price)
+        if supplier_order is not None and key:
+            # The key was bought from the supplier but saving the order failed: never lose that key.
+            tg_call("sendMessage", {
+                "chat_id": ADMIN_ID, "parse_mode": "HTML",
+                "text": (f"🚨 <b>Supplier key bought but order could not be saved</b>\n"
+                         f"👤 <code>{user_id}</code> · {_esc(prod_key)} {_esc(plan_name)}\n"
+                         f"🧾 Supplier order: <code>{_esc(supplier_order)}</code>\n"
+                         f"🗝️ <code>{_esc(key)}</code>\n\nThe customer's wallet was refunded."),
+            })
         raise
 
     return {"status": status, "prod": prod, "price": price, "key": key, "balance": new_balance}
+
+
+def _buy_from_supplier(user_id, prod_key, plan_name):
+    """Buy one key from the supplier API for this product+plan.
+    Returns (key, order_code) or (None, None) when it is not mapped / not possible (customer is then refunded)."""
+    if not supplier_api.configured():
+        return None, None
+    try:
+        pid = db.get_supplier_pid(prod_key, plan_name)
+    except Exception:
+        logger.exception("Could not read supplier PID mapping")
+        return None, None
+    if not pid:
+        return None, None
+    try:
+        res = supplier_api.order(pid, 1, f"tg_{user_id}")
+    except supplier_api.SupplierError as e:
+        logger.error("Supplier order failed (pid %s): %s", pid, e)
+        warn = ""
+        if isinstance(e, supplier_api.SupplierUncertain):
+            warn = "\n⚠️ <b>The order MAY have been charged by the supplier</b> — check their panel before retrying."
+        _alert_once(
+            f"supplier:{prod_key}:{plan_name}",
+            f"⚠️ <b>Supplier purchase failed</b>\n📦 {_esc(prod_key)} · {_esc(plan_name)} (PID {pid})\n"
+            f"Reason: {_esc(str(e)[:300])}{warn}\nThe customer was refunded automatically.",
+            hours=0.1 if warn else 1,
+        )
+        return None, None
+    rem = res.get("remaining_balance")
+    if rem is not None and rem < 100:
+        _alert_once("supplier-low-balance",
+                    f"💰 <b>Supplier wallet is low:</b> ₹{rem:,.2f} left. Top it up so customers keep getting keys.")
+    return res["license_key"], res["order_code"]
 
 
 # ----------------------------------------------------------------------
@@ -1738,7 +1787,9 @@ async def admin_payment_decision(update: Update, context: ContextTypes.DEFAULT_T
     notice = f"✅ <b>Payment Verified Successfully!</b>\n₹{amount:,.2f} has been added to your wallet."
     try:
         if row.get("is_deficit") and row.get("prod_key") and row.get("plan"):
-            res = purchase_with_wallet(user_id, row["prod_key"], row["plan"], allow_pending=False, utr="UPI_DEFICIT")
+            res = await asyncio.to_thread(
+                purchase_with_wallet, user_id, row["prod_key"], row["plan"], allow_pending=False, utr="UPI_DEFICIT"
+            )
             status = res["status"]
             if status == "ok":
                 await context.bot.send_message(
@@ -2116,7 +2167,7 @@ async def process_plan_purchase(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return
 
-    result = purchase_with_wallet(user.id, prod_key, plan_name)
+    result = await asyncio.to_thread(purchase_with_wallet, user.id, prod_key, plan_name)
     status = result["status"]
 
     # MODE A: Sufficient wallet balance ➔ instant key delivery
@@ -2217,6 +2268,100 @@ async def spin_expiry_loop(app):
 async def post_init(app):
     spawn(spin_expiry_loop(app))
 
+# ==========================================
+# 🔌 SUPPLIER API: admin commands (only ADMIN_ID can use them)
+#   /apibalance                      -> supplier wallet balance
+#   /apiservices                     -> supplier products with their PIDs
+#   /apimaps                         -> our products/plans and which PID each is linked to
+#   /apimap <prod_key> <plan> <pid>  -> link one of our plans to a supplier PID
+#   /apiunmap <prod_key> <plan>      -> remove the link
+# ==========================================
+def _is_admin(update):
+    return bool(update.effective_user and update.effective_user.id == ADMIN_ID)
+
+async def _reply_chunks(update, lines, header=""):
+    chunk = header
+    for line in lines:
+        if len(chunk) + len(line) + 1 > 3500:
+            await update.message.reply_text(chunk, parse_mode="HTML")
+            chunk = ""
+        chunk += line + "\n"
+    if chunk.strip():
+        await update.message.reply_text(chunk, parse_mode="HTML")
+
+async def api_balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update):
+        return
+    if not supplier_api.configured():
+        await update.message.reply_text("⚠️ SUPPLIER_API_KEY is not set in Render → Environment.")
+        return
+    try:
+        bal, cur = await asyncio.to_thread(supplier_api.get_balance)
+        await update.message.reply_text(f"💰 Supplier wallet: ₹{bal:,.2f} {cur}")
+    except supplier_api.SupplierError as e:
+        await update.message.reply_text(f"❌ {html.escape(str(e))}")
+
+async def api_services_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update):
+        return
+    try:
+        items = await asyncio.to_thread(supplier_api.get_services)
+    except supplier_api.SupplierError as e:
+        await update.message.reply_text(f"❌ {html.escape(str(e))}")
+        return
+    if not items:
+        await update.message.reply_text("No products returned by the supplier.")
+        return
+    lines = []
+    for it in items:
+        extra = " · ".join(x for x in (
+            f"₹{it['price']}" if it["price"] != "" else "",
+            f"stock {it['stock']}" if it["stock"] != "" else "",
+            str(it["device"]) if it.get("device") else "",
+        ) if x)
+        lines.append(f"PID <code>{html.escape(str(it['pid']))}</code> — {html.escape(str(it['name']))}" + (f" ({html.escape(extra)})" if extra else ""))
+    await _reply_chunks(update, lines, f"🔌 <b>Supplier products ({len(items)})</b>\n\n")
+
+async def api_maps_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update):
+        return
+    mapped = {(m["prod_key"], m["plan"]): m["pid"] for m in db.list_supplier_map()}
+    lines = []
+    for row in db.fetchall("SELECT prod_key, name, prices FROM products ORDER BY category, prod_key"):
+        lines.append(f"\n<b>{html.escape(row['name'] or row['prod_key'])}</b>")
+        for plan, _price in parse_prices(row["prices"]):
+            pid = mapped.get((row["prod_key"], plan))
+            lines.append(f"• <code>{html.escape(row['prod_key'])} {html.escape(plan)}</code> → " + (f"PID {pid} ✅" if pid else "—"))
+    if not lines:
+        await update.message.reply_text("No products yet.")
+        return
+    lines.append("\nLink: <code>/apimap prod_key plan pid</code>")
+    await _reply_chunks(update, lines, "🔗 <b>Supplier links</b>\n")
+
+async def api_map_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update):
+        return
+    args = context.args
+    if len(args) != 3 or not args[2].isdigit():
+        await update.message.reply_text("Use: /apimap <prod_key> <plan> <pid>\nExample: /apimap drip_apk 1_Day 109\nSee /apimaps for the exact names.")
+        return
+    prod_key, plan, pid = args[0], args[1], int(args[2])
+    prod = db.get_product_by_key(prod_key)
+    if not prod or not any(n == plan for n, _ in prod["prices"]):
+        await update.message.reply_text("⚠️ Product or plan name not found. Copy it exactly from /apimaps.")
+        return
+    db.set_supplier_pid(prod_key, plan, pid)
+    await update.message.reply_text(f"✅ {prod_key} / {plan} → supplier PID {pid}\nWhen local stock is empty, keys are now bought live from the supplier.")
+
+async def api_unmap_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update):
+        return
+    if len(context.args) != 2:
+        await update.message.reply_text("Use: /apiunmap <prod_key> <plan>")
+        return
+    db.delete_supplier_pid(context.args[0], context.args[1])
+    await update.message.reply_text("✅ Link removed.")
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.error("Unhandled error while processing an update", exc_info=context.error)
 
@@ -2247,6 +2392,11 @@ def start_bot():
     app.add_handler(CallbackQueryHandler(show_product_plans, pattern="^selprod_"))
     app.add_handler(CallbackQueryHandler(process_plan_purchase, pattern="^buyplan_"))
     app.add_handler(CallbackQueryHandler(def_pay_click, pattern="^def_pay_"))
+    app.add_handler(CommandHandler("apibalance", api_balance_cmd))
+    app.add_handler(CommandHandler("apiservices", api_services_cmd))
+    app.add_handler(CommandHandler("apimaps", api_maps_cmd))
+    app.add_handler(CommandHandler("apimap", api_map_cmd))
+    app.add_handler(CommandHandler("apiunmap", api_unmap_cmd))
     app.add_error_handler(error_handler)
 
     print("🤖 Telegram Bot Engine Running...")
