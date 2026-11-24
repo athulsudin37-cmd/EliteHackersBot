@@ -679,6 +679,7 @@ ADMIN_HTML = """
                         <select id="pm_cat" class="form-select">
                             <option value="non_root">Non-Root Mobile</option><option value="root">Root Mobile</option>
                             <option value="ios">iOS Panels</option><option value="pc">PC Panels</option><option value="likes">8 Level ID / Likes</option>
+                            <option value="carrom">Carrom Pool (game)</option><option value="pool8">8 Ball Pool (game)</option>
                         </select>
                     </div>
                     <div class="col-4"><label class="small mb-1">Icon</label><input type="text" id="pm_icon" class="form-control" placeholder="⚡"></div>
@@ -1104,6 +1105,49 @@ ADMIN_HTML = """
                 <div><h3>Supplier API Setup</h3><p>Connect the other panel (panelstore.shop). When your own key stock is empty, the bot buys the key from them instantly.</p></div>
             </div>
 
+            <style>
+                .sup-flow{display:flex;align-items:center;justify-content:center;gap:6px;flex-wrap:wrap;text-align:center;margin:6px 0 10px}
+                .sup-node{border-radius:14px;padding:10px 12px;min-width:92px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12)}
+                .sup-node .big{font-size:26px;line-height:1.1}
+                .sup-node b{display:block;font-size:15px}
+                .sup-node small{opacity:.8}
+                .sup-arr{font-size:20px;opacity:.8;text-align:center;line-height:1.1}
+                .sup-arr small{display:block;font-size:11px}
+                .sup-win{border-color:#3fb67a;background:rgba(63,182,122,.15)}
+                .sup-lose{border-color:#ef6c4a;background:rgba(239,108,74,.15)}
+                .sup-row{border-radius:12px;padding:10px;margin-top:10px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.1)}
+                .sup-money{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0}
+                .sup-box{flex:1;min-width:120px;border-radius:10px;padding:8px;text-align:center}
+                .sup-box.theirs{background:rgba(239,108,74,.15);border:1px solid #ef6c4a}
+                .sup-box.mine{background:rgba(63,182,122,.15);border:1px solid #3fb67a}
+                .sup-box .lbl{display:block;font-size:12px;opacity:.9}
+                .sup-box .amt{font-size:20px;font-weight:700}
+                .sup-box input{max-width:110px;margin:2px auto 0;text-align:center;font-weight:700}
+                .sup-sub{font-size:12px;font-weight:700;margin-top:8px}
+                .sup-bl{display:flex;align-items:center;gap:6px;font-size:12px;margin-top:3px}
+                .sup-bl .t{width:112px;flex:none}
+                .sup-bl .track{flex:1;height:12px;border-radius:6px;background:rgba(255,255,255,.08);overflow:hidden}
+                .sup-bl .bar{height:100%;border-radius:6px}
+                .sup-bl .bar.cost{background:#ef6c4a}
+                .sup-bl .bar.mine{background:#3fb67a}
+                .sup-bl .v{width:62px;flex:none;text-align:right;font-weight:700}
+                .sup-badge{display:inline-block;margin-top:5px;padding:3px 10px;border-radius:20px;font-weight:700;font-size:13px}
+                .sup-badge.good{background:#1f8f5a;color:#fff}
+                .sup-badge.bad{background:#d63a2f;color:#fff}
+            </style>
+
+            <div class="ins-box mb-3">
+                <b>&#128214; Look at this picture (example)</b>
+                <div class="sup-flow">
+                    <div class="sup-node sup-lose"><div class="big">&#127981;</div><b>THEIR shop</b><small>sells to you for</small><b>&#8377;50</b></div>
+                    <div class="sup-arr">&#10145;&#65039;<small>you buy</small></div>
+                    <div class="sup-node"><div class="big">&#129489;&#8205;&#128188;</div><b>YOU</b><small>sell to customer for</small><b>&#8377;100</b></div>
+                    <div class="sup-arr">&#10145;&#65039;<small>customer buys</small></div>
+                    <div class="sup-node sup-win"><div class="big">&#128176;</div><b>Your profit</b><small>100 - 50 =</small><b>&#8377;50</b></div>
+                </div>
+                <div class="small"><span class="text-danger"><b>Orange = money you pay them.</b></span> &nbsp; <span class="text-success"><b>Green = money customer pays you.</b></span> &nbsp; Green is longer than orange = &#9989; profit.</div>
+            </div>
+
             <div class="ins-box small mb-3">
                 <b>How it works (very simple)</b><br>
                 1&#65039;&#8419; <b>Connect</b> - paste their API key once.<br>
@@ -1113,7 +1157,7 @@ ADMIN_HTML = """
             </div>
 
             <div class="gcard blue">
-                <div class="sec-head"><span class="sec-no">1</span><div><h5>Connect</h5><p>Paste the API key from their "Reseller API Hub" page.</p></div></div>
+                <div class="sec-head"><span class="sec-no">1</span><div><h5>&#128273; Connect (do this once)</h5><p>Paste the API key from their "Reseller API Hub" page.</p></div></div>
                 <div class="row g-3">
                     <div class="col-12">
                         <label class="small mb-1">API URL</label>
@@ -1132,7 +1176,7 @@ ADMIN_HTML = """
             </div>
 
             <div class="gcard blue">
-                <div class="sec-head"><span class="sec-no">2</span><div><h5>Add their products to my shop</h5><p>Press <b>Load</b>, open a product, tick the plans you want, check <b>YOUR price</b> (change it if you like) and press <b>Add to my shop</b>.</p></div></div>
+                <div class="sec-head"><span class="sec-no">2</span><div><h5>&#10133; Add their product to my shop</h5><p>Press <b>Load</b>, open a product, tick the plans you want, check <b>YOUR price</b> (change it if you like) and press <b>Add to my shop</b>.</p></div></div>
                 <div class="d-flex gap-2 flex-wrap mb-2">
                     <button class="btn btn-outline-warning flex-fill" onclick="supLoadServices(true)"><i class="fas fa-rotate me-1"></i> Load / refresh their products</button>
                 </div>
@@ -1146,7 +1190,7 @@ ADMIN_HTML = """
             </div>
 
             <div class="gcard blue">
-                <div class="sec-head"><span class="sec-no">3</span><div><h5>My shop products (remove / link)</h5><p>All products in your shop. Tap a product to open it. Press &#128465; to remove a plan. (Optional: pick THEIR product and press Save to link a plan.)</p></div></div>
+                <div class="sec-head"><span class="sec-no">3</span><div><h5>&#128717; My shop products (see / remove)</h5><p>All products in your shop. Tap a product to open it. Press &#128465; to remove a plan. (Optional: pick THEIR product and press Save to link a plan.)</p></div></div>
                 <div class="d-flex gap-2 flex-wrap mb-2">
                     <button class="btn btn-outline-warning flex-fill" onclick="supLoadServices(true)"><i class="fas fa-rotate me-1"></i> Load / refresh their products</button>
                 </div>
@@ -1156,7 +1200,7 @@ ADMIN_HTML = """
             </div>
 
             <div class="gcard blue">
-                <div class="sec-head"><span class="sec-no">4</span><div><h5>Test order (spends real money)</h5><p>Buys ONE real key from their panel. Use their cheapest product (testwithapi, 1 Hour, &#8377;0.50).</p></div></div>
+                <div class="sec-head"><span class="sec-no">4</span><div><h5>&#129514; Test order (spends real money)</h5><p>Buys ONE real key from their panel. Use their cheapest product (testwithapi, 1 Hour, &#8377;0.50).</p></div></div>
                 <div class="row g-3">
                     <div class="col-6"><label class="small mb-1">Their PID</label><input type="number" id="sup_t_pid" class="form-control" placeholder="107"></div>
                     <div class="col-6 d-flex align-items-end"><button class="btn-grad w-100" onclick="supTestOrder()"><i class="fas fa-rocket me-1"></i> Buy 1 test key</button></div>
@@ -1813,7 +1857,10 @@ ADMIN_HTML = """
             const n = String(dur || '').replace(/[^A-Za-z0-9 .+-]/g, '').trim().replace(/ +/g, '_').slice(0, 22);
             return n || 'Key';
         }
-        function supGuessCat(dev) {
+        function supGuessCat(dev, panel) {
+            const pn = String(panel || '').toLowerCase();
+            if (pn.includes('carrom')) return 'carrom';
+            if (pn.includes('8 ball') || pn.includes('8ball') || pn.includes('pool')) return 'pool8';
             const d = String(dev || '').toUpperCase();
             if (d.includes('IOS') || d.includes('IPHONE')) return 'ios';
             if ((' ' + d + ' ').includes(' PC ') || d.includes('WINDOWS')) return 'pc';
@@ -1823,13 +1870,22 @@ ADMIN_HTML = """
         }
         function supMult() { const m = parseFloat(document.getElementById('sup_mult').value); return m >= 1 ? m : 2; }
         function supApplyMult() { SUP_EDIT = {}; supRenderImport(); }
+        function supMoney(v) { return '&#8377;' + (Math.round(v * 100) / 100); }
+        function supBarLine(label, amt, max, cls) {
+            const w = Math.max(3, Math.min(100, Math.round(amt / max * 100)));
+            return '<div class="sup-bl"><span class="t">' + label + '</span><div class="track"><div class="bar ' + cls + '" style="width:' + w + '%"></div></div><span class="v">' + supMoney(amt) + '</span></div>';
+        }
+        function supBadge(v) {
+            return v < 0 ? '<span class="sup-badge bad">&#10060; LOSS ' + supMoney(Math.abs(v)) + '</span>'
+                         : '<span class="sup-badge good">&#9989; PROFIT ' + supMoney(v) + '</span>';
+        }
         function supCalcText(cost, my) {
             const res = Math.round(my * 0.6 * 100) / 100;
-            const pr = my - cost, rp = res - cost;
-            const fmt = v => (v < 0 ? '<b class="text-danger">&#10060; LOSS &#8377;' + Math.abs(v).toFixed(2) + '</b>'
-                                    : '<b class="text-success">&#9989; profit &#8377;' + v.toFixed(2) + '</b>');
-            return '&#128100; Normal customer pays &#8377;' + my.toFixed(2) + ' &rarr; ' + fmt(pr)
-                 + '<br>&#128081; Reseller pays &#8377;' + res.toFixed(2) + ' &rarr; ' + fmt(rp);
+            const max = Math.max(cost, my, 1);
+            return '<div class="sup-sub">&#128100; Normal customer</div>'
+                 + supBarLine('I pay them', cost, max, 'cost') + supBarLine('Customer pays me', my, max, 'mine') + supBadge(my - cost)
+                 + '<div class="sup-sub">&#128081; Reseller customer (pays 60% of my price)</div>'
+                 + supBarLine('I pay them', cost, max, 'cost') + supBarLine('Reseller pays me', res, max, 'mine') + supBadge(res - cost);
         }
         function supRowCalc(inp) {
             const row = inp.closest('.sup-row');
@@ -1874,14 +1930,18 @@ ADMIN_HTML = """
                     }
                     free++;
                     const my = SUP_EDIT[pid] !== undefined ? parseFloat(SUP_EDIT[pid]) : Math.ceil(cost * mult);
-                    rows += '<div class="sup-row mt-2 pt-2" style="border-top:1px solid rgba(255,255,255,.08)" data-pid="' + pid + '" data-plan="' + esc(plan) + '" data-cost="' + cost + '">'
+                    rows += '<div class="sup-row" data-pid="' + pid + '" data-plan="' + esc(plan) + '" data-cost="' + cost + '">'
                           + '<div class="d-flex align-items-center gap-2"><input type="checkbox" class="sup-chk" checked>'
-                          + '<span class="small flex-grow-1">' + esc(it.dur) + ' &middot; their price <b>&#8377;' + cost.toFixed(2) + '</b> &middot; stock ' + esc(sv.stock) + '</span>'
-                          + '<div class="input-group" style="width:140px"><span class="input-group-text">Mine &#8377;</span><input type="number" class="form-control sup-price" value="' + my + '" min="0" step="1" oninput="supRowCalc(this)"></div></div>'
-                          + '<div class="small mt-1 sup-calc">' + supCalcText(cost, my) + '</div></div>';
+                          + '<b class="flex-grow-1">&#128338; ' + esc(it.dur) + '</b><span class="small">stock ' + esc(sv.stock) + '</span></div>'
+                          + '<div class="sup-money">'
+                          + '<div class="sup-box theirs"><span class="lbl">&#127981; I pay THEM</span><span class="amt">' + supMoney(cost) + '</span></div>'
+                          + '<div class="sup-arr">&#10145;&#65039;</div>'
+                          + '<div class="sup-box mine"><span class="lbl">&#128100; Customer pays ME</span><input type="number" class="form-control sup-price" value="' + my + '" min="0" step="1" oninput="supRowCalc(this)"></div>'
+                          + '</div>'
+                          + '<div class="sup-calc">' + supCalcText(cost, my) + '</div></div>';
                 });
-                const cat = supGuessCat(g.device);
-                const opts = [['non_root', 'Non-Root Mobile'], ['root', 'Root Mobile'], ['ios', 'iOS'], ['pc', 'PC'], ['likes', '8 Level ID']]
+                const cat = supGuessCat(g.device, g.panel);
+                const opts = [['non_root', 'Non-Root Mobile'], ['root', 'Root Mobile'], ['ios', 'iOS'], ['pc', 'PC'], ['likes', '8 Level ID'], ['carrom', 'Carrom Pool'], ['pool8', '8 Ball Pool']]
                     .map(o => '<option value="' + o[0] + '"' + (o[0] === cat ? ' selected' : '') + '>' + o[1] + '</option>').join('');
                 h += '<details class="ins-box sup-grp" data-name="' + esc(dispName) + '"><summary><b>' + esc(dispName) + '</b> <span class="small">&middot; ' + esc(g.device) + ' &middot; ' + g.items.length + ' plan(s)</span></summary>'
                    + rows
@@ -1915,16 +1975,13 @@ ADMIN_HTML = """
         }
         function supPidOf(v) { const m = String(v || '').trim().match(/^([0-9]+)/); return m ? parseInt(m[1], 10) : null; }
         function supCheck(inp) {
-            const note = inp.parentElement.querySelector('.sup-note');
+            const note = inp.parentElement.parentElement.querySelector('.sup-note');
             const pid = supPidOf(inp.value);
-            if (!pid) { note.innerHTML = ''; return; }
+            if (!pid) { note.innerHTML = '<span class="text-secondary">Not linked - uses only your own keys.</span>'; return; }
             const s = SUP_SVC[pid];
-            if (!s) { note.innerHTML = '<span class="text-secondary">PID ' + pid + ' (load their products to see the price)</span>'; return; }
-            const cost = parseFloat(s.price), my = parseFloat(inp.dataset.price), res = parseFloat(inp.dataset.reseller);
-            let h = 'Their cost: <b>&#8377;' + cost.toFixed(2) + '</b> &middot; ' + esc(s.name);
-            if (res < cost) h += '<br><span class="text-danger"><b>Loss warning:</b> reseller price &#8377;' + res.toFixed(2) + ' is below their cost!</span>';
-            else if (my < cost) h += '<br><span class="text-danger"><b>Loss warning:</b> regular price &#8377;' + my.toFixed(2) + ' is below their cost!</span>';
-            note.innerHTML = h;
+            if (!s) { note.innerHTML = '<span class="text-secondary">Linked to their PID ' + pid + '. Press "Load / refresh their products" above to see the picture.</span>'; return; }
+            const cost = parseFloat(s.price), my = parseFloat(inp.dataset.price);
+            note.innerHTML = '<div class="small"><b>' + esc(s.name) + '</b></div>' + supCalcText(cost, my);
         }
         function supLoadMaps() {
             supJson('/api/supplier/maps').then(d => {
@@ -2947,7 +3004,7 @@ def api_supplier_import():
     return jsonify({"ok": True, "message": msg + " Customers can buy it now; keys come from the supplier automatically."})
 
 PLAN_RE = re.compile(r'^[A-Za-z0-9 _.\-+]{1,22}$')   # short enough for Telegram's 64-byte callback data
-CATEGORIES = ("non_root", "root", "ios", "pc", "likes")
+CATEGORIES = ("non_root", "root", "ios", "pc", "likes", "carrom", "pool8")
 
 def _clean_plans(raw):
     """Validate the plans sent by the admin form. Returns (plans, error)."""
@@ -3709,6 +3766,7 @@ def run_web():
 if __name__ == "__main__":
     init_db()
     run_web()
+
 
 
 
