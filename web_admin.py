@@ -8,6 +8,8 @@ import csv
 import io
 import urllib.request
 import urllib.error
+import mimetypes
+import html as _html
 from datetime import datetime, timedelta, timezone
 from threading import Thread
 from flask import Flask, render_template_string, request, jsonify, redirect, session, Response
@@ -334,9 +336,73 @@ ADMIN_HTML = """
         #toastBox { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 5000; display: flex; flex-direction: column; gap: 8px; align-items: center; width: calc(100% - 28px); max-width: 420px; pointer-events: none; }
         .toast-i { background: #065f46; color: #fff; padding: 12px 18px; border-radius: 14px; font-weight: 700; box-shadow: 0 8px 28px rgba(0,0,0,.5); border: 1px solid #34d399; width: 100%; text-align: center; }
         .toast-i.err { background: #7f1d1d; border-color: #f87171; }
+
+        /* ===== LIVE WALLPAPER (video + song) ===== */
+        html { background: #05020c; }
+        #bgVideo { position: fixed; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; z-index: -2; display: none; background: #05020c; }
+        #bgDim { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: -1; display: none; pointer-events: none; background: rgba(5,2,12,.45); }
+        body.bg-live { background: transparent !important; --card-glass: rgba(24,14,52,.66); }
+        body.bg-live #bgVideo, body.bg-live #bgDim { display: block; }
+        body.bg-live::before { opacity: .35; }
+        body.bg-live .card, body.bg-live .gcard, body.bg-live .stat-card, body.bg-live .gold-box, body.bg-live .cyan-box, body.bg-live .mc, body.bg-live .hero-card { backdrop-filter: blur(9px); -webkit-backdrop-filter: blur(9px); }
+        .music-fab { position: fixed; right: 16px; bottom: 18px; z-index: 1500; display: none; align-items: center; gap: 8px; padding: 10px 14px; border-radius: 999px; background: rgba(20,8,46,.88); border: 1px solid #a855f7; color: #fff; font-weight: 800; font-size: .82rem; box-shadow: 0 8px 26px rgba(0,0,0,.5); cursor: pointer; backdrop-filter: blur(8px); }
+        .music-fab #musicIc { font-size: 1.15rem; }
+        .music-fab.need-tap { animation: fabPulse 1.4s infinite; border-color: #f472b6; }
+        .music-fab:not(.need-tap) #musicHint { display: none; }
+        @keyframes fabPulse { 0% { box-shadow: 0 0 0 0 rgba(244,114,182,.7); } 70% { box-shadow: 0 0 0 14px rgba(244,114,182,0); } 100% { box-shadow: 0 0 0 0 rgba(244,114,182,0); } }
+        .wp-btn { display: inline-flex; align-items: center; gap: 8px; padding: 9px 15px; border: 0; border-radius: 14px; color: #fff; font-weight: 800; font-size: .85rem; background: linear-gradient(135deg,#ec4899,#8b5cf6,#38bdf8); background-size: 220% 220%; animation: wpShift 6s ease infinite; box-shadow: 0 6px 22px rgba(168,85,247,.5); }
+        @keyframes wpShift { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
+        .topbar { flex-wrap: wrap; gap: 10px; }
+        .topbar-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-left: auto; order: 2; }
+        .topbar .crown-ring { order: 3; }
+        @media (max-width: 768px) { .topbar-tools { order: 3; flex-basis: 100%; margin-left: 0; } .topbar .crown-ring { order: 2; margin-left: auto; width: 46px; height: 46px; } .topbar .title-grad { font-size: 1.2rem !important; } }
+        .live-chip { display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px; border-radius: 999px; font-size: .72rem; font-weight: 700; color: #6ee7b7; background: rgba(16,185,129,.12); border: 1px solid rgba(16,185,129,.35); white-space: nowrap; }
+        .live-chip i { width: 8px; height: 8px; border-radius: 50%; background: #34d399; animation: livePulse 1.6s infinite; }
+        .live-chip b { color: #fff; min-width: 1.3em; display: inline-block; text-align: right; }
+        @keyframes livePulse { 0% { box-shadow: 0 0 0 0 rgba(52,211,153,.7); } 70% { box-shadow: 0 0 0 7px rgba(52,211,153,0); } 100% { box-shadow: 0 0 0 0 rgba(52,211,153,0); } }
+        .wp-prog { height: 8px; border-radius: 99px; background: rgba(255,255,255,.12); overflow: hidden; margin-top: 8px; display: none; }
+        .wp-prog > i { display: block; height: 100%; width: 0; background: linear-gradient(90deg,#ec4899,#38bdf8); transition: width .2s; }
+        .wp-now { font-size: .8rem; color: var(--txt-soft); margin-bottom: 8px; word-break: break-all; }
+        .wp-now b { color: #fff; }
+
+        /* ===== MEMBERS & INSPECTOR ===== */
+        .mem-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
+        .mc { position: relative; overflow: hidden; background: var(--card-glass); border: 1px solid var(--neon-border); border-radius: 20px; padding: 16px 16px 16px 20px; }
+        .mc::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 5px; background: #64748b; }
+        .mc.reseller::before { background: linear-gradient(180deg,#f59e0b,#ec4899); }
+        .mc .av, .ins-av { width: 46px; height: 46px; border-radius: 15px; display: flex; align-items: center; justify-content: center; font-weight: 900; font-size: 1.2rem; color: #fff; background: linear-gradient(135deg,#8b5cf6,#38bdf8); flex-shrink: 0; }
+        .mc-name { font-weight: 800; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 150px; }
+        .mc-sub { font-size: .76rem; color: var(--txt-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 170px; }
+        .mc-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
+        .mc-stats div { background: rgba(10,4,30,.55); border: 1px solid rgba(139,92,246,.3); border-radius: 12px; padding: 8px 6px; text-align: center; }
+        .mc-stats b { display: block; color: #fff; font-size: .95rem; }
+        .mc-stats span { font-size: .66rem; color: var(--txt-soft); text-transform: uppercase; letter-spacing: .04em; }
+        .ins-head { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
+        .ins-av { width: 58px; height: 58px; font-size: 1.5rem; border-radius: 18px; }
+        .ins-tiles { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 14px; }
+        .ins-tile { background: rgba(10,4,30,.6); border: 1px solid rgba(139,92,246,.35); border-radius: 16px; padding: 12px; }
+        .ins-tile small { display: block; color: var(--txt-soft); font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; }
+        .ins-tile b { color: #fff; font-size: 1.2rem; }
+        .ins-tile.big b { color: #fbbf24; font-size: 1.5rem; }
+        .ins-box { background: rgba(10,4,30,.5); border: 1px solid rgba(139,92,246,.3); border-radius: 18px; padding: 14px; margin-bottom: 14px; }
+        .ins-box h6 { font-weight: 800; margin-bottom: 10px; color: #c4b5fd; }
+        .ins-row { display: flex; justify-content: space-between; gap: 10px; padding: 7px 0; border-bottom: 1px dashed rgba(167,139,250,.25); font-size: .82rem; }
+        .ins-row:last-child { border-bottom: 0; }
+        .ins-row span:first-child { color: #fff; font-weight: 600; word-break: break-word; }
+        .ins-row span:last-child { color: var(--txt-soft); text-align: right; white-space: nowrap; }
+        .step-list { counter-reset: st; list-style: none; padding: 0; margin: 0 0 14px; }
+        .step-list li { counter-increment: st; position: relative; padding: 8px 8px 8px 44px; margin-bottom: 6px; background: rgba(10,4,30,.5); border-radius: 12px; font-size: .84rem; color: var(--txt-soft); }
+        .step-list li::before { content: counter(st); position: absolute; left: 10px; top: 7px; width: 26px; height: 26px; border-radius: 9px; background: #fbbf24; color: #0b0420; font-weight: 900; display: flex; align-items: center; justify-content: center; }
+        .field-note { font-size: .78rem; color: var(--txt-soft); margin-top: 6px; line-height: 1.45; }
+        .qr-box { text-align: center; background: rgba(10,4,30,.5); border: 1px dashed rgba(56,189,248,.45); border-radius: 18px; padding: 14px; }
 </style>
 </head>
-<body>
+<body class="{% if bg.video and bg.enabled %}bg-live{% endif %}">
+    <video id="bgVideo" muted loop playsinline autoplay preload="auto"></video>
+    <div id="bgDim"></div>
+    <audio id="bgAudio" loop preload="auto"></audio>
+    <div id="musicFab" class="music-fab" onclick="musicToggle()" title="Music on / off"><span id="musicIc">🎵</span><span id="musicHint">Tap to play music</span></div>
+    <script>const BG = {{ bg|tojson }};</script>
 
     {% if not session.get('admin_logged') %}
     <!-- 🔐 LOGIN SCREEN -->
@@ -397,39 +463,119 @@ ADMIN_HTML = """
     <!-- 🌟 1. CUSTOMER PROFILE INSPECTOR MODAL -->
     <div class="modal-bg" id="userModal">
         <div class="modal-card">
-            <div class="d-flex justify-content-between align-items-center mb-3">
+            <div class="d-flex justify-content-between align-items-start mb-2">
                 <h5 class="fw-bold m-0 text-info"><i class="fas fa-user-shield me-2"></i>Customer Profile Inspector</h5>
-                <button class="btn-close btn-close-white" onclick="document.getElementById('userModal').style.display='none'"></button>
+                <button class="btn-close btn-close-white" onclick="closeInspector()"></button>
             </div>
-            <div class="card p-3 mb-3" style="background:#1a0c3d;">
-                <div class="row g-2 small">
-                    <div class="col-6"><strong>Name:</strong> <span id="m_name"></span></div>
-                    <div class="col-6"><strong>Telegram ID:</strong> <code id="m_id"></code></div>
-                    <div class="col-6"><strong>Username:</strong> <span id="m_user"></span></div>
-                    <div class="col-6"><strong>Account Role:</strong> <span id="m_role" class="badge bg-warning text-dark"></span></div>
-                    <div class="col-12"><strong>Joined:</strong> <span id="m_joined"></span></div>
+
+            <div class="ins-head">
+                <div class="ins-av" id="m_av">?</div>
+                <div style="min-width:0;flex:1;">
+                    <div class="fw-bold fs-5 text-white" id="m_name" style="word-break:break-word;"></div>
+                    <div class="small text-muted"><span id="m_user"></span> &middot; ID <code id="m_id"></code>
+                        <a href="#" class="ms-1" onclick="copyUid();return false;" title="Copy Telegram ID"><i class="far fa-copy"></i></a></div>
+                </div>
+                <span id="m_role" class="pill a"></span>
+            </div>
+
+            <div class="ins-tiles">
+                <div class="ins-tile big"><small>💰 Wallet balance</small><b>&#8377;<span id="m_bal">0.00</span></b></div>
+                <div class="ins-tile"><small>🧾 Lifetime spent</small><b>&#8377;<span id="m_spent">0.00</span></b></div>
+                <div class="ins-tile"><small>🛒 Orders</small><b id="m_orders">0</b></div>
+                <div class="ins-tile"><small>👥 Referrals</small><b><span id="m_refs">0</span> <span class="small text-muted">(&#8377;<span id="m_refearn">0</span>)</span></b></div>
+            </div>
+
+            <div class="ins-box">
+                <h6>📅 Account</h6>
+                <div class="ins-row"><span>Joined</span><span id="m_joined"></span></div>
+                <div class="d-flex gap-2 mt-2">
+                    <button class="btn btn-sm btn-outline-warning flex-fill" id="m_role_btn" onclick="inspectToggleRole()">👑 Make Reseller</button>
                 </div>
             </div>
-            <div class="card p-3 mb-3" style="background:#1a0c3d;">
-                <h6 class="text-success fw-bold">💰 Financials & Balance</h6>
-                <div class="row g-2 mb-3">
-                    <div class="col-6">Current Balance: <h4 class="text-warning m-0">₹<span id="m_bal"></span></h4></div>
-                    <div class="col-6">Lifetime Spent: <h5 class="text-muted m-0">₹<span id="m_spent"></span></h5></div>
-                </div>
-                <div class="d-flex gap-2 mb-2">
-                    <button class="btn btn-sm btn-outline-success" onclick="quickAddBal(50)">+₹50</button>
-                    <button class="btn btn-sm btn-outline-success" onclick="quickAddBal(100)">+₹100</button>
-                    <button class="btn btn-sm btn-outline-success" onclick="quickAddBal(500)">+₹500</button>
-                    <button class="btn btn-sm btn-outline-danger" onclick="quickAddBal(-50)">-₹50</button>
+
+            <div class="ins-box">
+                <h6>💰 Adjust wallet</h6>
+                <div class="d-flex gap-2 flex-wrap mb-2">
+                    <button class="btn btn-sm btn-outline-success" onclick="quickAddBal(50)">+&#8377;50</button>
+                    <button class="btn btn-sm btn-outline-success" onclick="quickAddBal(100)">+&#8377;100</button>
+                    <button class="btn btn-sm btn-outline-success" onclick="quickAddBal(500)">+&#8377;500</button>
+                    <button class="btn btn-sm btn-outline-danger" onclick="quickAddBal(-50)">-&#8377;50</button>
+                    <button class="btn btn-sm btn-outline-danger" onclick="quickAddBal(-100)">-&#8377;100</button>
                 </div>
                 <div class="d-flex gap-2">
                     <input type="number" id="m_custom_bal" class="form-control form-control-sm" placeholder="Custom amount (+150 or -50)">
                     <button class="btn btn-sm btn-custom" onclick="applyCustomBal()">Apply</button>
                 </div>
             </div>
-            <div class="d-flex justify-content-between">
-                <a id="m_dm_link" href="#" target="_blank" class="btn btn-primary btn-sm"><i class="fab fa-telegram me-1"></i> Send DM on Telegram</a>
-                <button class="btn btn-secondary btn-sm" onclick="document.getElementById('userModal').style.display='none'">Close</button>
+
+            <div class="ins-box">
+                <h6>🛒 Recent orders</h6>
+                <div id="m_recent" class="small text-muted">Loading...</div>
+            </div>
+
+            <div class="ins-box">
+                <h6>💬 Contact</h6>
+                <div class="d-flex gap-2 flex-wrap mb-2">
+                    <a id="m_dm_link" href="#" rel="noopener" class="btn btn-primary btn-sm flex-fill"><i class="fab fa-telegram me-1"></i> Send DM on Telegram</a>
+                </div>
+                <div class="field-note" id="m_dm_note"></div>
+                <textarea id="m_msg" class="form-control mt-2" rows="2" maxlength="3500" placeholder="Or type a message and send it from your bot..."></textarea>
+                <button class="btn btn-sm btn-custom w-100 mt-2" onclick="sendBotMsg()"><i class="fas fa-paper-plane me-1"></i> Message via bot</button>
+            </div>
+
+            <div class="text-end">
+                <button class="btn btn-secondary btn-sm" onclick="closeInspector()">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 🎬 LIVE WALLPAPER MODAL -->
+    <div class="modal-bg" id="wpModal">
+        <div class="modal-card">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h5 class="fw-bold m-0"><i class="fas fa-film me-2"></i>Live Wallpaper &amp; Music</h5>
+                <button class="btn-close btn-close-white" onclick="closeWallpaper()"></button>
+            </div>
+            <p class="small text-muted">Add a video that plays behind the whole admin panel and a song that plays with it. Both repeat forever, so a song of any length keeps looping.</p>
+
+            <div class="gcard pink" style="margin-bottom:14px;">
+                <div class="sec-head"><span class="sec-no">🎬</span><div><h5>Background video</h5><p>Muted loop. Short 720p MP4 works best.</p></div></div>
+                <div class="wp-now" id="wp_vnow"></div>
+                <label class="small mb-1">Video link (direct .mp4 / .webm address)</label>
+                <input type="url" id="wp_vurl" class="form-control mb-2" placeholder="https://.../video.mp4">
+                <label class="small mb-1">...or upload a video file (max 50 MB)</label>
+                <input type="file" id="wp_vfile" class="form-control" accept="video/*">
+                <div class="wp-prog" id="wp_vprog"><i></i></div>
+                <button class="btn btn-sm btn-outline-danger mt-2" onclick="wpClear('video')"><i class="fas fa-trash me-1"></i> Remove video</button>
+            </div>
+
+            <div class="gcard blue" style="margin-bottom:14px;">
+                <div class="sec-head"><span class="sec-no">🎵</span><div><h5>Song</h5><p>Plays together with the video and repeats automatically.</p></div></div>
+                <div class="wp-now" id="wp_anow"></div>
+                <label class="small mb-1">Song link (direct .mp3 / .m4a address)</label>
+                <input type="url" id="wp_aurl" class="form-control mb-2" placeholder="https://.../song.mp3">
+                <label class="small mb-1">...or upload a song file (max 20 MB)</label>
+                <input type="file" id="wp_afile" class="form-control" accept="audio/*">
+                <div class="wp-prog" id="wp_aprog"><i></i></div>
+                <button class="btn btn-sm btn-outline-danger mt-2" onclick="wpClear('audio')"><i class="fas fa-trash me-1"></i> Remove song</button>
+            </div>
+
+            <div class="gcard green" style="margin-bottom:14px;">
+                <div class="sec-head"><span class="sec-no">🎚️</span><div><h5>Look &amp; sound</h5><p>Changes are applied when you press Save.</p></div></div>
+                <label class="small mb-1">Music volume: <b id="wp_vol_t">60</b>%</label>
+                <input type="range" min="0" max="100" value="60" id="wp_vol" class="form-range mb-3" oninput="wpPreview()">
+                <label class="small mb-1">Dark overlay (makes text easier to read): <b id="wp_dim_t">45</b>%</label>
+                <input type="range" min="0" max="85" value="45" id="wp_dim" class="form-range mb-3" oninput="wpPreview()">
+                <div class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" id="wp_on" checked>
+                    <label class="form-check-label fw-bold" for="wp_on">Live wallpaper ON</label>
+                </div>
+            </div>
+
+            <div class="field-note mb-3">&#9888;&#65039; Browsers do not allow sound before you touch the page. If the music does not start by itself, tap anywhere once (or the music button at the bottom) and it will play and keep looping. YouTube links do not work &mdash; use a direct file link or upload the file.</div>
+            <div class="d-flex gap-2">
+                <button class="btn-grad flex-fill" id="wp_save" onclick="wpSave()">💾 Save &amp; Apply</button>
+                <button class="btn btn-secondary" onclick="closeWallpaper()">Close</button>
             </div>
         </div>
     </div>
@@ -439,6 +585,10 @@ ADMIN_HTML = """
             <div class="d-flex align-items-center gap-3">
                 <button class="menu-btn d-md-none" id="menuBtn" onclick="toggleSidebar()"><i id="menuIcon" class="fas fa-bars"></i></button>
                 <div class="title-grad" style="font-size:1.5rem;">⚡ Bot Control Center</div>
+            </div>
+            <div class="topbar-tools">
+                <span class="live-chip" id="liveChip" title="This page updates itself in the background"><i></i> Live &middot; auto refresh in <b id="liveSec">15</b>s</span>
+                <button class="wp-btn" onclick="openWallpaper()"><i class="fas fa-film"></i><span>Live Wallpaper</span></button>
             </div>
             <a href="/" class="crown-ring" title="Home"><span>👑</span></a>
         </div>
@@ -450,7 +600,7 @@ ADMIN_HTML = """
                 <h2>Welcome back.</h2>
                 <p>Here's how <b style="color:#fff;">{{ bot_info.username }}</b> is doing right now.</p>
             </div>
-            <div class="stat-grid">
+            <div class="stat-grid" data-live>
                 <div class="stat-card"><div class="si">👥</div><div class="sv">{{ stats.users }}</div><div class="sl">Members</div></div>
                 <div class="stat-card c-green"><div class="si">💰</div><div class="sv">₹{{ stats.total_wallet }}</div><div class="sl">Wallet balance (all)</div></div>
                 <div class="stat-card c-blue"><div class="si">📦</div><div class="sv">{{ stats.products_count }}</div><div class="sl">Catalog items</div></div>
@@ -550,7 +700,7 @@ ADMIN_HTML = """
                 <div class="table-responsive">
                     <table class="table table-dark align-middle" id="keysTable">
                         <thead><tr><th>User ID</th><th>Product</th><th>Plan</th><th>Paid</th><th>Delivered Key</th><th>Date (IST)</th></tr></thead>
-                        <tbody>
+                        <tbody data-live>
                             {% for o in all_orders %}
                             <tr>
                                 <td><code>{{ o[1] }}</code></td>
@@ -577,7 +727,7 @@ ADMIN_HTML = """
                 <div class="table-responsive">
                     <table class="table table-dark">
                         <thead><tr><th>User ID</th><th>Product</th><th>Plan</th><th>Paid</th><th>Action</th></tr></thead>
-                        <tbody>
+                        <tbody data-live>
                             {% for pk in pending_orders %}
                             <tr>
                                 <td><code>{{ pk[1] }}</code></td>
@@ -623,28 +773,60 @@ ADMIN_HTML = """
 
         <!-- 6️⃣ 👥 TAB: MEMBERS & WALLETS (INSPECTOR) -->
         <div class="tab-pane-content" id="tab-members" style="display:none;">
-            <div class="card p-4">
-                <h5>👥 Members & Wallets Management</h5>
-                <input type="text" id="memSearch" class="form-control mt-2 mb-3" placeholder="🔍 Search by name, @username, or Telegram ID..." onkeyup="filterTable('memSearch', 'memTable')">
-                <div class="table-responsive">
-                    <table class="table table-dark align-middle" id="memTable">
-                        <thead><tr><th>Telegram ID</th><th>Name</th><th>Role</th><th>Balance</th><th>Orders</th><th>Action</th></tr></thead>
-                        <tbody>
-                            {% for u in users_list %}
-                            <tr>
-                                <td><code>{{ u[0] }}</code></td>
-                                <td>{{ u[1] }} <small class="text-muted">({{ u[2] }})</small></td>
-                                <td><span class="badge {{ 'bg-warning text-dark' if u[9]=='Reseller' else 'bg-secondary' }}">{{ u[9] }}</span></td>
-                                <td><strong>₹{{ u[5] }}</strong></td>
-                                <td>{{ u[4] }}</td>
-                                <td>
-                                    <button class="btn btn-sm btn-custom" onclick='openInspector({{ u[0] }}, {{ u[1]|tojson }}, {{ u[2]|tojson }}, {{ u[3]|tojson }}, {{ u[5] }}, {{ u[6] }}, {{ u[9]|tojson }})'><i class="fas fa-eye me-1"></i> Inspect Profile</button>
-                                </td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
+            <div class="page-head">
+                <div class="ph-ic">👥</div>
+                <div><h3>Members &amp; Wallets</h3><p>Everyone who started your bot. Tap <b>Inspect Profile</b> to see orders, change the wallet or contact the member.</p></div>
+            </div>
+
+            <div class="gcard blue">
+                <div class="sec-head"><span class="sec-no">1</span><div><h5>Overview</h5><p>Your community at a glance.</p></div></div>
+                <div class="ov-grid" data-live>
+                    <div class="ov"><div class="oi">👥</div><div class="ov-v">{{ bc_counts.all }}</div><div class="ov-l">Total members</div></div>
+                    <div class="ov"><div class="oi">🛒</div><div class="ov-v">{{ bc_counts.customers }}</div><div class="ov-l">Buyers</div></div>
+                    <div class="ov"><div class="oi">👑</div><div class="ov-v">{{ bc_counts.resellers }}</div><div class="ov-l">Resellers</div></div>
+                    <div class="ov"><div class="oi">💰</div><div class="ov-v">&#8377;{{ stats.total_wallet }}</div><div class="ov-l">Total in wallets</div></div>
                 </div>
+            </div>
+
+            <div class="gcard green">
+                <div class="sec-head"><span class="sec-no">2</span><div><h5>Find a member</h5><p>Search by name, @username or Telegram ID, or pick a filter.</p></div></div>
+                <input type="text" id="memSearch" class="form-control mb-3" placeholder="🔍 Search by name, @username, or Telegram ID..." oninput="memFilter()">
+                <div class="d-flex gap-2 flex-wrap" id="memChips">
+                    <button type="button" class="chip-btn on" data-f="all" onclick="memChip(this)">All</button>
+                    <button type="button" class="chip-btn" data-f="reseller" onclick="memChip(this)">👑 Resellers</button>
+                    <button type="button" class="chip-btn" data-f="regular" onclick="memChip(this)">Regular</button>
+                    <button type="button" class="chip-btn" data-f="buyers" onclick="memChip(this)">🛒 Buyers</button>
+                    <button type="button" class="chip-btn" data-f="balance" onclick="memChip(this)">💰 Has balance</button>
+                </div>
+            </div>
+
+            <div class="gcard">
+                <div class="sec-head"><span class="sec-no">3</span><div><h5>Member list</h5><p>Newest members first (latest 500).</p></div><span class="pill b" id="memCount">0</span></div>
+                <div class="mem-grid" id="memGrid" data-live>
+                    {% for u in users_list %}
+                    <div class="mc {{ 'reseller' if u[9] == 'Reseller' else '' }}"
+                         data-uid="{{ u[0] }}" data-name="{{ u[1] or '' }}" data-user="{{ u[2] or '' }}" data-joined="{{ u[3] or '' }}"
+                         data-bal="{{ u[5] or 0 }}" data-spent="{{ u[6] or 0 }}" data-orders="{{ u[4] or 0 }}"
+                         data-refs="{{ u[7] or 0 }}" data-refearn="{{ u[8] or 0 }}" data-role="{{ u[9] }}"
+                         data-search="{{ ((u[0]|string) ~ ' ' ~ (u[1] or '') ~ ' ' ~ (u[2] or ''))|lower }}">
+                        <div class="d-flex gap-3 align-items-center">
+                            <div class="av">{{ (u[1] or '?')[:1]|upper }}</div>
+                            <div style="min-width:0;">
+                                <div class="mc-name">{{ u[1] or 'Unknown' }}</div>
+                                <div class="mc-sub">{{ u[2] or 'N/A' }} &middot; {{ u[0] }}</div>
+                            </div>
+                            <span class="pill {{ 'a' if u[9] == 'Reseller' else '' }} ms-auto">{{ '👑 Reseller' if u[9] == 'Reseller' else 'Regular' }}</span>
+                        </div>
+                        <div class="mc-stats">
+                            <div><b>&#8377;{{ '%.2f'|format(u[5] or 0) }}</b><span>Balance</span></div>
+                            <div><b>{{ u[4] or 0 }}</b><span>Orders</span></div>
+                            <div><b>&#8377;{{ '%.0f'|format(u[6] or 0) }}</b><span>Spent</span></div>
+                        </div>
+                        <button class="btn-grad w-100 mt-3" onclick="openInspector(this.closest('.mc'))"><i class="fas fa-eye me-1"></i> Inspect Profile</button>
+                    </div>
+                    {% endfor %}
+                </div>
+                <div id="memEmpty" class="text-center text-muted py-4" style="display:none;">No member matches your search.</div>
             </div>
         </div>
 
@@ -655,7 +837,7 @@ ADMIN_HTML = """
                 <div class="table-responsive mt-3">
                     <table class="table table-dark align-middle">
                         <thead><tr><th>Telegram ID</th><th>Name</th><th>Wallet</th><th>Promote / Demote</th></tr></thead>
-                        <tbody>
+                        <tbody data-live>
                             {% for u in users_list %}
                             <tr>
                                 <td><code>{{ u[0] }}</code></td>
@@ -780,75 +962,104 @@ ADMIN_HTML = """
 
         <!-- 🔟 💳 TAB: UPI PAYMENT SETUP -->
         <div class="tab-pane-content" id="tab-upi" style="display:none;">
-            <div class="cyan-box">
-                <h5 class="text-info fw-bold mb-3"><i class="fas fa-qrcode me-2"></i>UPI Payment Setup</h5>
-                <p class="small text-muted">Customers scan a QR made from your UPI ID (FamPay, GPay, PhonePe... any UPI ID). Changes apply to the bot <b>instantly</b>.</p>
+            <div class="page-head">
+                <div class="ph-ic">💳</div>
+                <div><h3>UPI Payment Setup</h3><p>Choose where customers pay, connect Gmail for automatic confirmation and watch every payment in one place.</p></div>
+            </div>
+
+            <!-- 1. OVERVIEW -->
+            <div class="gcard blue">
+                <div class="sec-head"><span class="sec-no">1</span><div><h5>Payment overview</h5><p>Live numbers for today.</p></div></div>
+                <div class="ov-grid" data-live>
+                    <div class="ov"><div class="oi">📅</div><div class="ov-v">&#8377;{{ stats.today_deposit }}</div><div class="ov-l">Today's deposit</div></div>
+                    <div class="ov"><div class="oi">✅</div><div class="ov-v">{{ pay_stats.today_count }}</div><div class="ov-l">Verified today</div></div>
+                    <div class="ov"><div class="oi">⏳</div><div class="ov-v">{{ stats.awaiting }}</div><div class="ov-l">Awaiting review</div></div>
+                    <div class="ov"><div class="oi">❓</div><div class="ov-v">{{ pay_stats.unmatched }}</div><div class="ov-l">Unmatched credits</div></div>
+                    <div class="ov"><div class="oi">🤖</div><div class="ov-v">{{ 'ON' if pay_cfg.auto_verify else 'OFF' }}</div><div class="ov-l">Auto confirm</div></div>
+                    <div class="ov"><div class="oi">📧</div><div class="ov-v">{{ 'Linked' if (gmail.user and gmail.has_password) else 'Not set' }}</div><div class="ov-l">Gmail</div></div>
+                </div>
+            </div>
+
+            <!-- 2. UPI DETAILS -->
+            <div class="gcard green">
+                <div class="sec-head"><span class="sec-no">2</span><div><h5>UPI details</h5><p>Customers scan a QR made from this UPI ID (FamPay, GPay, PhonePe...). Changes reach the bot <b>instantly</b>.</p></div></div>
                 <div class="row g-3">
-                    <div class="col-md-6">
-                        <label class="small text-muted">UPI ID (where you receive the money)</label>
-                        <input type="text" id="upi_id" class="form-control" value="{{ pay_cfg.upi_id }}" placeholder="yourname@fam" oninput="updateUpiPreview()">
-                    </div>
-                    <div class="col-md-6">
-                        <label class="small text-muted">Payee / Shop Name</label>
-                        <input type="text" id="upi_name" class="form-control" value="{{ pay_cfg.payee_name }}" placeholder="Elite Hackers Store" oninput="updateUpiPreview()">
-                    </div>
-                    <div class="col-12">
-                        <div class="form-check form-switch">
-                            <input class="form-check-input" type="checkbox" id="auto_verify" {% if pay_cfg.auto_verify %}checked{% endif %}>
-                            <label class="form-check-label fw-bold" for="auto_verify">Automatic payment confirmation</label>
+                    <div class="col-md-7">
+                        <label class="small mb-1">UPI ID (where you receive the money)</label>
+                        <input type="text" id="upi_id" class="form-control mb-3" value="{{ pay_cfg.upi_id }}" placeholder="yourname@fam" oninput="updateUpiPreview()">
+                        <label class="small mb-1">Payee / Shop name</label>
+                        <input type="text" id="upi_name" class="form-control mb-3" value="{{ pay_cfg.payee_name }}" placeholder="Elite Hackers Store" oninput="updateUpiPreview()">
+                        <div class="ins-box mb-3">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="auto_verify" {% if pay_cfg.auto_verify %}checked{% endif %}>
+                                <label class="form-check-label fw-bold" for="auto_verify">🤖 Automatic payment confirmation</label>
+                            </div>
+                            <div class="field-note"><b>ON:</b> every customer pays an exact amount (for example &#8377;100.07). The bot reads your FamPay &ldquo;You received...&rdquo; e-mail in Gmail every 5 seconds, checks amount, UTR and time, and confirms the payment by itself.<br><b>OFF:</b> you approve each payment in Telegram.</div>
                         </div>
-                        <div class="small text-muted mt-1">ON: every customer pays an exact amount (for example &#8377;100.07). The bot reads your FamPay "You received..." e-mail in Gmail every 5 seconds, checks amount, UTR and time, and confirms the payment by itself. The customer can tap "I have paid" once, but does not have to. OFF: you approve each payment in Telegram.</div>
+                        <button class="btn-grad w-100" onclick="saveUpiSettings()"><i class="fas fa-save me-1"></i> Save UPI settings</button>
                     </div>
-                    <div class="col-12">
-                        <button class="btn btn-custom w-100" onclick="saveUpiSettings()"><i class="fas fa-save me-1"></i> Save UPI Settings</button>
-                    </div>
-                    <div class="col-12 text-center">
-                        <div class="small text-muted mb-2">Live QR preview (&#8377;1 test amount)</div>
-                        <img id="upi_qr_preview" alt="QR preview" style="width:220px;height:220px;background:#fff;padding:8px;border-radius:12px;display:none;">
-                        <div id="upi_qr_empty" class="small text-warning">Enter your UPI ID to see the QR.</div>
+                    <div class="col-md-5">
+                        <div class="qr-box">
+                            <div class="small text-muted mb-2">Live QR preview (&#8377;1 test amount)</div>
+                            <img id="upi_qr_preview" alt="QR preview" style="width:210px;max-width:100%;background:#fff;padding:8px;border-radius:12px;display:none;">
+                            <div id="upi_qr_empty" class="small text-warning">Enter your UPI ID to see the QR.</div>
+                        </div>
                     </div>
                 </div>
             </div>
 
-            <div class="gold-box">
-                <h5 class="text-warning fw-bold mb-3"><i class="fas fa-envelope me-2"></i>FamPay e-mail connection (Gmail)</h5>
-                <ol class="small text-muted ps-3 mb-3">
-                    <li>Use the Gmail that receives your FamPay "You received &#8377;..." e-mails.</li>
+            <!-- 3. GMAIL -->
+            <div class="gcard amber">
+                <div class="sec-head"><span class="sec-no">3</span><div><h5>FamPay e-mail connection (Gmail)</h5><p>This is what makes automatic confirmation work.</p></div></div>
+                <ol class="step-list">
+                    <li>Use the Gmail that receives your FamPay &ldquo;You received &#8377;...&rdquo; e-mails.</li>
                     <li>Google Account &rarr; Security &rarr; turn on <b>2-Step Verification</b> &rarr; <b>App passwords</b> &rarr; create one (16 letters).</li>
                     <li>Fill the Gmail address and the App Password below and press <b>Save</b>.</li>
                     <li>Press <b>Connect &amp; detect sender</b>. It finds FamPay's sender domain by itself.</li>
-                    <li>Switch on <b>Automatic payment confirmation</b> above, Save, and test with &#8377;10.</li>
+                    <li>Switch on <b>Automatic payment confirmation</b> above, save, and test with &#8377;10.</li>
                 </ol>
-                <label class="small text-muted">Gmail address</label>
-                <input type="email" id="gm_user" class="form-control mb-2" value="{{ gmail.user }}" placeholder="you@gmail.com" autocomplete="off">
-                <label class="small text-muted">App Password {% if gmail.has_password %}(saved, leave empty to keep it){% endif %}</label>
-                <input type="password" id="gm_pass" class="form-control mb-2" placeholder="{% if gmail.has_password %}saved{% else %}16-letter App Password{% endif %}" autocomplete="new-password">
-                <label class="small text-muted">FamPay sender domain (filled by the detect button)</label>
-                <input type="text" id="gm_domain" class="form-control mb-3" value="{{ gmail.domain }}" placeholder="for example famapp.in" autocomplete="off">
-                <div class="d-flex gap-2">
-                    <button class="btn btn-custom flex-fill" onclick="saveGmail()"><i class="fas fa-save me-1"></i> Save</button>
-                    <button class="btn btn-outline-warning flex-fill" onclick="detectGmail()"><i class="fas fa-magnifying-glass me-1"></i> Connect &amp; detect sender</button>
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="small mb-1">Gmail address</label>
+                        <input type="email" id="gm_user" class="form-control" value="{{ gmail.user }}" placeholder="you@gmail.com" autocomplete="off">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="small mb-1">App Password {% if gmail.has_password %}<span class="pill g">saved</span>{% endif %}</label>
+                        <input type="password" id="gm_pass" class="form-control" placeholder="{% if gmail.has_password %}saved &mdash; leave empty to keep it{% else %}16-letter App Password{% endif %}" autocomplete="new-password">
+                    </div>
+                    <div class="col-12">
+                        <label class="small mb-1">FamPay sender domain (filled by the detect button)</label>
+                        <input type="text" id="gm_domain" class="form-control" value="{{ gmail.domain }}" placeholder="for example famapp.in" autocomplete="off">
+                    </div>
+                    <div class="col-12 d-flex gap-2 flex-wrap">
+                        <button class="btn-grad flex-fill" onclick="saveGmail()"><i class="fas fa-save me-1"></i> Save</button>
+                        <button class="btn btn-outline-warning flex-fill" onclick="detectGmail()"><i class="fas fa-magnifying-glass me-1"></i> Connect &amp; detect sender</button>
+                    </div>
+                    <div class="col-12"><div class="ins-box mb-0 small" id="gm_status"><b>Status:</b> {{ gmail.status }}</div></div>
                 </div>
-                <div class="small mt-3" id="gm_status"><b>Status:</b> {{ gmail.status }}</div>
-                <hr>
-                <label class="small text-muted">Test an e-mail (nothing is credited)</label>
+            </div>
+
+            <!-- 4. TEST -->
+            <div class="gcard pink">
+                <div class="sec-head"><span class="sec-no">4</span><div><h5>Test an e-mail</h5><p>Paste the text of a payment e-mail. Nothing is credited.</p></div></div>
                 <textarea id="test_sms" class="form-control mb-2" rows="3" placeholder="Paste the text of a FamPay e-mail, for example: You received 10.01 in your FamX account ... UTR 632512726024"></textarea>
                 <button class="btn btn-custom w-100" onclick="testParse()"><i class="fas fa-vial me-1"></i> Test this message</button>
                 <div id="test_result" class="small mt-2 text-info"></div>
             </div>
 
-            <div class="card p-4 mb-4">
-                <h5 class="fw-bold mb-3"><i class="fas fa-list me-2"></i>Recent payment e-mails (last 20)</h5>
+            <!-- 5. E-MAILS READ -->
+            <div class="gcard">
+                <div class="sec-head"><span class="sec-no">5</span><div><h5>Recent payment e-mails</h5><p>The last 20 e-mails the bot read from Gmail.</p></div></div>
                 <div class="table-responsive">
-                    <table class="table table-dark align-middle">
+                    <table class="table table-dark align-middle mb-0">
                         <thead><tr><th>Time (IST)</th><th>Amount</th><th>UTR</th><th>Result</th><th>Message</th></tr></thead>
-                        <tbody>
+                        <tbody data-live>
                             {% for a in alerts %}
                             <tr>
-                                <td>{{ a.time_txt }}</td>
+                                <td class="small">{{ a.time_txt }}</td>
                                 <td>{% if a.amount is not none %}&#8377;{{ '%.2f'|format(a.amount) }}{% else %}-{% endif %}</td>
                                 <td><code>{{ a.utr or '-' }}</code></td>
-                                <td>{{ a.status }}{% if a.order_id %}<br><small><code>{{ a.order_id }}</code></small>{% endif %}</td>
+                                <td><span class="pill {{ {'matched': 'g', 'unmatched': 'r', 'logged': 'b'}.get(a.status, '') }}">{{ a.status }}</span>{% if a.order_id %}<br><small><code>{{ a.order_id }}</code></small>{% endif %}</td>
                                 <td class="small text-muted">{{ a.snippet }}</td>
                             </tr>
                             {% else %}
@@ -857,7 +1068,30 @@ ADMIN_HTML = """
                         </tbody>
                     </table>
                 </div>
-                <div class="small text-muted">matched = credited automatically &middot; unmatched = money arrived but no order has that exact amount (check manually) &middot; ignored = not a "money received" e-mail &middot; logged = read while automatic mode was OFF</div>
+                <div class="field-note"><span class="pill g">matched</span> credited automatically &nbsp; <span class="pill r">unmatched</span> money arrived but no order has that exact amount (check manually) &nbsp; <span class="pill">ignored</span> not a &ldquo;money received&rdquo; e-mail &nbsp; <span class="pill b">logged</span> read while automatic mode was OFF</div>
+            </div>
+
+            <!-- 6. DEPOSIT HISTORY -->
+            <div class="gcard blue">
+                <div class="sec-head"><span class="sec-no">6</span><div><h5>Deposit history</h5><p>The latest 15 wallet top-up requests (full list in the Top-ups page).</p></div></div>
+                <div class="table-responsive">
+                    <table class="table align-middle mb-0">
+                        <thead><tr><th>Time</th><th>User ID</th><th>Amount</th><th>Status</th><th>Order</th></tr></thead>
+                        <tbody data-live>
+                            {% for t in topups[:15] %}
+                            <tr>
+                                <td class="small">{{ t[0] }}</td>
+                                <td><code>{{ t[1] }}</code></td>
+                                <td>&#8377;{{ '%.2f'|format(t[2] or 0) }}</td>
+                                <td><span class="badge-st b-{{ t[3] }}">{{ t[3] }}</span></td>
+                                <td class="small"><code>{{ t[4] }}</code></td>
+                            </tr>
+                            {% else %}
+                            <tr><td colspan="5" class="text-center text-muted">No deposit requests yet.</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
             </div>
         </div>
 
@@ -869,7 +1103,7 @@ ADMIN_HTML = """
                 <div class="table-responsive mt-2">
                     <table class="table align-middle">
                         <thead><tr><th>Time</th><th>User ID</th><th>Amount</th><th>Status</th><th>Order</th></tr></thead>
-                        <tbody>
+                        <tbody data-live>
                             {% for t in topups %}
                             <tr>
                                 <td class="small">{{ t[0] }}</td>
@@ -894,7 +1128,7 @@ ADMIN_HTML = """
                 <div class="table-responsive mt-3">
                     <table class="table table-dark align-middle">
                         <thead><tr><th>Product</th><th>Direct Buy Link</th><th>Action</th></tr></thead>
-                        <tbody>
+                        <tbody data-live>
                             {% for p in products %}
                             <tr>
                                 <td>{{ p.name }}</td>
@@ -1006,7 +1240,7 @@ ADMIN_HTML = """
                     <span class="sec-no">1</span>
                     <div><h5>Overview</h5><p>Your key business at a glance.</p></div>
                 </div>
-                <div class="ov-grid">
+                <div class="ov-grid" data-live>
                     <div class="ov"><div class="oi">🛒</div><div class="ov-v">{{ key_stats.total }}</div><div class="ov-l">Total keys sold</div></div>
                     <div class="ov"><div class="oi">📈</div><div class="ov-v">{{ key_stats.today }}</div><div class="ov-l">Sold today</div></div>
                     <div class="ov"><div class="oi">💎</div><div class="ov-v">₹{{ key_stats.today_rev }}</div><div class="ov-l">Today's revenue</div></div>
@@ -1039,7 +1273,7 @@ ADMIN_HTML = """
                 <div class="table-responsive">
                     <table class="table align-middle mb-0">
                         <thead><tr><th>Product</th><th>Plan</th><th>Keys left</th></tr></thead>
-                        <tbody>
+                        <tbody data-live>
                             {% for p in products %}{% for pl in p.prices %}
                             <tr><td>{{ p.name }}</td><td>{{ pl[0]|replace('_', ' ') }}</td><td>{% set left = p.stock.get(pl[0], 0) %}<span class="pill {{ 'g' if left > 5 else ('a' if left > 0 else 'r') }}">{{ left }}</span></td></tr>
                             {% endfor %}{% else %}
@@ -1060,7 +1294,7 @@ ADMIN_HTML = """
                 <div class="table-responsive">
                     <table class="table align-middle mb-0">
                         <thead><tr><th>Product</th><th>Keys sold</th><th>Amount</th></tr></thead>
-                        <tbody>
+                        <tbody data-live>
                             {% for r in today_by_product %}
                             <tr><td>{{ r[0] }}</td><td><b>{{ r[1] }}</b></td><td>₹{{ '%.2f'|format(r[2]) }}</td></tr>
                             {% else %}
@@ -1080,7 +1314,7 @@ ADMIN_HTML = """
                 <div class="table-responsive">
                     <table class="table align-middle mb-0">
                         <thead><tr><th>Product</th><th>Status</th><th>Sold</th><th>Revenue</th><th>In stock</th><th>Actions</th></tr></thead>
-                        <tbody>
+                        <tbody data-live>
                             {% for p in products %}
                             <tr>
                                 <td style="min-width:120px;font-weight:700;text-transform:uppercase;">{{ p.name }}</td>
@@ -1169,29 +1403,119 @@ ADMIN_HTML = """
 
     <script>
         let currentInspectUid = null;
-        function openInspector(uid, name, user, joined, bal, spent, role) {
-            currentInspectUid = uid;
-            document.getElementById('m_id').innerText = uid;
-            document.getElementById('m_name').innerText = name;
-            document.getElementById('m_user').innerText = user;
-            document.getElementById('m_joined').innerText = joined;
-            document.getElementById('m_bal').innerText = parseFloat(bal).toFixed(2);
-            document.getElementById('m_spent').innerText = parseFloat(spent).toFixed(2);
-            document.getElementById('m_role').innerText = role;
-            document.getElementById('m_dm_link').href = 'tg://user?id=' + uid;
+        let curU = null;
+        function escH(v) { return String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+        function dmTarget(user, uid) {
+            const u = String(user || '').replace('@', '').trim();
+            if (/^[A-Za-z][A-Za-z0-9_]{4,31}$/.test(u)) return {href: 'https://t.me/' + u, web: true};
+            return {href: 'tg://user?id=' + uid, web: false};
+        }
+        function openInspector(card) {
+            const d = card.dataset;
+            curU = {uid: d.uid, name: d.name, user: d.user, role: d.role, bal: parseFloat(d.bal) || 0};
+            currentInspectUid = d.uid;
+            document.getElementById('m_av').innerText = ((d.name || '?').trim().charAt(0) || '?').toUpperCase();
+            document.getElementById('m_id').innerText = d.uid;
+            document.getElementById('m_name').innerText = d.name || 'Unknown';
+            document.getElementById('m_user').innerText = d.user || 'N/A';
+            document.getElementById('m_joined').innerText = d.joined || '-';
+            document.getElementById('m_bal').innerText = (parseFloat(d.bal) || 0).toFixed(2);
+            document.getElementById('m_spent').innerText = (parseFloat(d.spent) || 0).toFixed(2);
+            document.getElementById('m_orders').innerText = d.orders || 0;
+            document.getElementById('m_refs').innerText = d.refs || 0;
+            document.getElementById('m_refearn').innerText = (parseFloat(d.refearn) || 0).toFixed(0);
+            inspectShowRole();
+            const t = dmTarget(d.user, d.uid);
+            const a = document.getElementById('m_dm_link');
+            a.href = t.href;
+            if (t.web) { a.target = '_blank'; } else { a.removeAttribute('target'); }
+            document.getElementById('m_dm_note').innerText = t.web
+                ? "Opens this member's chat in Telegram."
+                : 'This member has no public @username, so Telegram cannot always open the chat from a browser. If it does not open, use "Message via bot" below.';
+            document.getElementById('m_msg').value = '';
+            document.getElementById('m_custom_bal').value = '';
+            document.getElementById('m_recent').innerText = 'Loading...';
             document.getElementById('userModal').style.display = 'flex';
+            fetch('/api/user/detail?user_id=' + encodeURIComponent(d.uid), {credentials: 'same-origin'})
+                .then(r => r.json()).then(x => {
+                    const box = document.getElementById('m_recent');
+                    if (!curU || String(curU.uid) !== String(d.uid)) return;
+                    if (!x.orders || !x.orders.length) { box.innerText = 'No orders yet.'; return; }
+                    box.innerHTML = x.orders.map(o =>
+                        '<div class="ins-row"><span>' + escH(o.prod_name) + ' - ' + escH(String(o.plan || '').replace(/_/g, ' ')) +
+                        (o.pending ? ' <span class="pill a">pending</span>' : '') + '</span><span>&#8377;' + Number(o.amount || 0).toFixed(2) +
+                        '<br><small>' + escH(o.timestamp) + '</small></span></div>').join('');
+                }).catch(() => { document.getElementById('m_recent').innerText = 'Could not load orders.'; });
+        }
+        function closeInspector() { document.getElementById('userModal').style.display = 'none'; curU = null; }
+        function inspectShowRole() {
+            const isRes = curU && curU.role === 'Reseller';
+            const r = document.getElementById('m_role');
+            r.innerText = isRes ? '👑 Reseller' : 'Regular';
+            r.className = 'pill ' + (isRes ? 'a' : '');
+            document.getElementById('m_role_btn').innerText = isRes ? 'Revoke Reseller' : '👑 Make Reseller';
+        }
+        function inspectToggleRole() {
+            if (!curU) return;
+            const role = curU.role === 'Reseller' ? 'Regular' : 'Reseller';
+            fetch('/api/user/set_role', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({user_id: curU.uid, role: role}) })
+            .then(r => r.json()).then(d => { toast(d.message); curU.role = role; inspectShowRole(); liveRefresh(true); });
+        }
+        function copyUid() {
+            if (!curU) return;
+            try { navigator.clipboard.writeText(String(curU.uid)); toast('Telegram ID copied'); } catch (e) { toast('Copy failed', false); }
+        }
+        function sendBotMsg() {
+            if (!curU) return;
+            const text = document.getElementById('m_msg').value.trim();
+            if (!text) return toast('Type a message first', false);
+            fetch('/api/user/message', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({user_id: curU.uid, text: text}) })
+            .then(r => r.json()).then(d => { toast(d.message, !d.error); if (!d.error) document.getElementById('m_msg').value = ''; });
         }
         function quickAddBal(delta) {
-            if(!currentInspectUid) return;
-            fetch('/api/user/adjust_balance', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({user_id: currentInspectUid, delta: delta}) })
-            .then(r => r.json()).then(d => { alert(d.message); location.reload(); });
+            if (!curU) return;
+            fetch('/api/user/adjust_balance', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({user_id: curU.uid, delta: delta}) })
+            .then(r => r.json()).then(d => {
+                toast(d.message);
+                curU.bal = Math.max(0, curU.bal + delta);
+                document.getElementById('m_bal').innerText = curU.bal.toFixed(2);
+                liveRefresh(true);
+            });
         }
         function applyCustomBal() {
             let val = parseFloat(document.getElementById('m_custom_bal').value);
-            if(isNaN(val)) return alert('Enter valid number');
+            if (isNaN(val)) return toast('Enter a valid number', false);
             quickAddBal(val);
+            document.getElementById('m_custom_bal').value = '';
         }
-        const PRODUCTS = {% if session.get('admin_logged') %}{{ products|tojson }}{% else %}[]{% endif %};
+        /* ---- Members list: search + filter chips ---- */
+        let memFilterKey = 'all';
+        function memChip(btn) {
+            memFilterKey = btn.dataset.f;
+            document.querySelectorAll('#memChips .chip-btn').forEach(b => b.classList.toggle('on', b === btn));
+            memFilter();
+        }
+        function memFilter() {
+            const qEl = document.getElementById('memSearch');
+            if (!qEl) return;
+            const q = qEl.value.toLowerCase().trim();
+            let shown = 0;
+            document.querySelectorAll('#memGrid .mc').forEach(c => {
+                const d = c.dataset;
+                let ok = !q || (d.search || '').includes(q);
+                if (ok && memFilterKey === 'reseller') ok = d.role === 'Reseller';
+                if (ok && memFilterKey === 'regular') ok = d.role !== 'Reseller';
+                if (ok && memFilterKey === 'buyers') ok = (parseInt(d.orders) || 0) > 0;
+                if (ok && memFilterKey === 'balance') ok = (parseFloat(d.bal) || 0) > 0;
+                c.style.display = ok ? '' : 'none';
+                if (ok) shown++;
+            });
+            const cnt = document.getElementById('memCount');
+            if (cnt) cnt.innerText = shown + ' shown';
+            const em = document.getElementById('memEmpty');
+            if (em) em.style.display = shown ? 'none' : 'block';
+        }
+        let PRODUCTS = {% if session.get('admin_logged') %}{{ products|tojson }}{% else %}[]{% endif %};
         function toggleSidebar(force) {
             const sb = document.getElementById('sidebar');
             if (!sb) return;
@@ -1338,14 +1662,14 @@ ADMIN_HTML = """
             let name = document.getElementById('upi_name').value.trim();
             let auto = document.getElementById('auto_verify').checked;
             fetch('/api/payment/save', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({upi_id: upi, payee_name: name, auto_verify: auto}) })
-            .then(r => r.json()).then(d => alert(d.message));
+            .then(r => r.json()).then(d => toast(d.message));
         }
         function saveGmail() {
             let body = {gmail_user: document.getElementById('gm_user').value.trim(),
                         app_password: document.getElementById('gm_pass').value,
                         bank_domain: document.getElementById('gm_domain').value.trim()};
             return fetch('/api/gmail/save', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) })
-            .then(r => r.json()).then(d => { alert(d.message); document.getElementById('gm_pass').value = ''; return d; });
+            .then(r => r.json()).then(d => { toast(d.message); document.getElementById('gm_pass').value = ''; return d; });
         }
         function detectGmail() {
             let st = document.getElementById('gm_status');
@@ -1756,6 +2080,196 @@ ADMIN_HTML = """
             if (!confirm('Log out of the panel on ALL devices?')) return;
             postJSON('/api/security/logout_all', {}).then(d => { toast(d.message, d._ok); setTimeout(() => location.href = '/', 900); });
         }
+
+        /* ===== LIVE WALLPAPER: background video + looping song ===== */
+        let bgCfg = BG;
+        const bgV = document.getElementById('bgVideo');
+        const bgA = document.getElementById('bgAudio');
+        const musicFab = document.getElementById('musicFab');
+        let musicMuted = false;
+        try { musicMuted = localStorage.getItem('bg_music_muted') === '1'; } catch (e) {}
+        function musicFabState(playing, needTap) {
+            if (!musicFab) return;
+            document.getElementById('musicIc').innerText = playing ? '🔊' : (musicMuted ? '🔇' : '🎵');
+            musicFab.classList.toggle('need-tap', !!needTap);
+        }
+        function musicTry() {
+            if (!bgA || !bgA.getAttribute('src') || musicMuted) { musicFabState(false, false); return; }
+            const p = bgA.play();
+            if (p && p.then) {
+                p.then(() => musicFabState(true, false)).catch(() => {
+                    musicFabState(false, true);
+                    const once = () => { document.removeEventListener('pointerdown', once, true); document.removeEventListener('keydown', once, true); musicTry(); };
+                    document.addEventListener('pointerdown', once, true);
+                    document.addEventListener('keydown', once, true);
+                });
+            }
+        }
+        function musicToggle() {
+            if (!bgA || !bgA.getAttribute('src')) return;
+            if (!bgA.paused) { bgA.pause(); musicMuted = true; }
+            else { musicMuted = false; }
+            try { localStorage.setItem('bg_music_muted', musicMuted ? '1' : '0'); } catch (e) {}
+            if (musicMuted) { musicFabState(false, false); } else { musicTry(); }
+        }
+        function bgApply(cfg) {
+            bgCfg = cfg;
+            const live = !!(cfg.enabled && cfg.video);
+            document.body.classList.toggle('bg-live', live);
+            const dim = document.getElementById('bgDim');
+            if (dim) dim.style.background = 'rgba(5,2,12,' + cfg.dim + ')';
+            if (live) {
+                if (bgV.getAttribute('src') !== cfg.video) { bgV.src = cfg.video; }
+                bgV.muted = true;
+                const vp = bgV.play(); if (vp && vp.catch) vp.catch(() => {});
+            } else {
+                bgV.pause(); bgV.removeAttribute('src'); bgV.load();
+            }
+            const song = !!(cfg.enabled && cfg.audio);
+            if (song) {
+                if (bgA.getAttribute('src') !== cfg.audio) { bgA.src = cfg.audio; }
+                bgA.loop = true;
+                bgA.volume = Math.min(1, Math.max(0, cfg.volume));
+                if (musicFab) musicFab.style.display = 'flex';
+                musicTry();
+            } else {
+                bgA.pause(); bgA.removeAttribute('src'); bgA.load();
+                if (musicFab) musicFab.style.display = 'none';
+            }
+        }
+        bgApply(BG);
+        function wpNow(kind) {
+            const el = document.getElementById(kind === 'video' ? 'wp_vnow' : 'wp_anow');
+            const name = bgCfg[kind + '_name'], src = bgCfg[kind + '_src'];
+            el.innerHTML = name ? ('Now: <b>' + escH(name) + '</b> (' + (src === 'upload' ? 'uploaded file' : 'link') + ')') : 'Nothing added yet.';
+        }
+        function openWallpaper() {
+            document.getElementById('wp_vurl').value = bgCfg.video_src === 'url' ? bgCfg.video : '';
+            document.getElementById('wp_aurl').value = bgCfg.audio_src === 'url' ? bgCfg.audio : '';
+            document.getElementById('wp_vfile').value = '';
+            document.getElementById('wp_afile').value = '';
+            document.getElementById('wp_vol').value = Math.round(bgCfg.volume * 100);
+            document.getElementById('wp_dim').value = Math.round(bgCfg.dim * 100);
+            document.getElementById('wp_on').checked = !!bgCfg.enabled;
+            wpNow('video'); wpNow('audio'); wpPreview();
+            document.getElementById('wpModal').style.display = 'flex';
+        }
+        function closeWallpaper() { document.getElementById('wpModal').style.display = 'none'; bgApply(bgCfg); }
+        function wpPreview() {
+            const v = parseInt(document.getElementById('wp_vol').value), d = parseInt(document.getElementById('wp_dim').value);
+            document.getElementById('wp_vol_t').innerText = v;
+            document.getElementById('wp_dim_t').innerText = d;
+            if (bgA) bgA.volume = v / 100;
+            const dim = document.getElementById('bgDim'); if (dim) dim.style.background = 'rgba(5,2,12,' + (d / 100) + ')';
+        }
+        function wpUpload(kind, file) {
+            return new Promise((resolve, reject) => {
+                const prog = document.getElementById(kind === 'video' ? 'wp_vprog' : 'wp_aprog');
+                const bar = prog.firstElementChild;
+                prog.style.display = 'block'; bar.style.width = '0';
+                const fd = new FormData(); fd.append('kind', kind); fd.append('file', file);
+                const x = new XMLHttpRequest();
+                x.open('POST', '/api/bg/upload');
+                x.upload.onprogress = e => { if (e.lengthComputable) bar.style.width = Math.round(e.loaded * 100 / e.total) + '%'; };
+                x.onload = () => {
+                    let d = {};
+                    try { d = JSON.parse(x.responseText); } catch (e) {}
+                    if (x.status >= 200 && x.status < 300) { bar.style.width = '100%'; resolve(d); }
+                    else reject(new Error(d.message || (x.status === 413 ? 'File is too large' : 'Upload failed')));
+                };
+                x.onerror = () => reject(new Error('Network error while uploading'));
+                x.send(fd);
+            });
+        }
+        async function wpSave() {
+            const btn = document.getElementById('wp_save');
+            btn.disabled = true; btn.innerText = 'Saving...';
+            try {
+                const vf = document.getElementById('wp_vfile').files[0];
+                const af = document.getElementById('wp_afile').files[0];
+                if (vf) await wpUpload('video', vf);
+                if (af) await wpUpload('audio', af);
+                const body = {
+                    volume: parseInt(document.getElementById('wp_vol').value) / 100,
+                    dim: parseInt(document.getElementById('wp_dim').value) / 100,
+                    enabled: document.getElementById('wp_on').checked
+                };
+                const vu = document.getElementById('wp_vurl').value.trim();
+                const au = document.getElementById('wp_aurl').value.trim();
+                if (!vf && vu !== (bgCfg.video_src === 'url' ? bgCfg.video : '')) body.video_url = vu;
+                if (!af && au !== (bgCfg.audio_src === 'url' ? bgCfg.audio : '')) body.audio_url = au;
+                const r = await fetch('/api/bg/save', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
+                const d = await r.json();
+                if (!r.ok) throw new Error(d.message || 'Save failed');
+                bgApply(d.bg);
+                document.getElementById('wpModal').style.display = 'none';
+                toast('Live wallpaper saved ✔');
+            } catch (e) {
+                toast(e.message || 'Save failed', false);
+            }
+            btn.disabled = false; btn.innerText = '💾 Save & Apply';
+            document.querySelectorAll('.wp-prog').forEach(p => { p.style.display = 'none'; });
+        }
+        function wpClear(kind) {
+            if (!confirm('Remove the ' + kind + '?')) return;
+            fetch('/api/bg/clear', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({kind: kind}) })
+            .then(r => r.json()).then(d => {
+                bgApply(d.bg);
+                document.getElementById(kind === 'video' ? 'wp_vurl' : 'wp_aurl').value = '';
+                wpNow('video'); wpNow('audio');
+                toast(d.message);
+            });
+        }
+
+        /* ===== AUTO REFRESH every 15 s: silent, the page never reloads (so the video and song keep playing) ===== */
+        let liveLeft = 15, liveBusy = false, liveReloaded = false;
+        function anyModalOpen() {
+            return Array.from(document.querySelectorAll('.modal-bg')).some(m => m.style.display === 'flex');
+        }
+        async function liveRefresh(force) {
+            if (liveBusy) return;
+            if (!force && (document.hidden || anyModalOpen())) return;
+            liveBusy = true;
+            try {
+                const r = await fetch('/', { credentials: 'same-origin', cache: 'no-store' });
+                const html = await r.text();
+                const doc = new DOMParser().parseFromString(html, 'text/html');
+                if (!doc.getElementById('tab-dashboard')) {
+                    if (!liveReloaded) { liveReloaded = true; location.reload(); }
+                    return;
+                }
+                document.querySelectorAll('.tab-pane-content').forEach(pane => {
+                    const np = doc.getElementById(pane.id);
+                    if (!np) return;
+                    const cur = pane.querySelectorAll('[data-live]');
+                    const nw = np.querySelectorAll('[data-live]');
+                    if (cur.length !== nw.length) return;
+                    cur.forEach((el, i) => {
+                        if (el.innerHTML === nw[i].innerHTML) return;
+                        // never overwrite something the admin is typing into
+                        if (el.contains(document.activeElement)) return;
+                        if (Array.from(el.querySelectorAll('input,textarea')).some(f => f.value)) return;
+                        el.innerHTML = nw[i].innerHTML;
+                    });
+                });
+                const m = html.match(/PRODUCTS = (.*);/);
+                const pm = document.getElementById('prodModal');
+                if (m && !(pm && pm.style.display === 'flex')) { try { PRODUCTS = JSON.parse(m[1]); } catch (e) {} }
+                document.querySelectorAll('.tab-pane-content input[onkeyup]').forEach(i => { if (i.value && i.onkeyup) i.onkeyup(); });
+                if (typeof memFilter === 'function') memFilter();
+            } catch (e) { /* network hiccup: try again at the next tick */ }
+            liveBusy = false;
+        }
+        (function () {
+            const sec = document.getElementById('liveSec');
+            if (!sec) return;
+            memFilter();
+            setInterval(() => {
+                liveLeft -= 1;
+                if (liveLeft <= 0) { liveLeft = 15; liveRefresh(false); }
+                sec.textContent = liveLeft;
+            }, 1000);
+        })();
     </script>
 </body>
 </html>
@@ -1790,7 +2304,7 @@ def login():
         session['sv'] = db.get_session_version()
         return redirect('/')
     time.sleep(1)  # slow down password guessing
-    return render_template_string(ADMIN_HTML, bot_info=BOT_INFO, error="Invalid Admin Password!")
+    return render_template_string(ADMIN_HTML, bg=_bg_ctx(), bot_info=BOT_INFO, error="Invalid Admin Password!")
 
 @app.route('/logout')
 def logout():
@@ -1801,7 +2315,7 @@ def logout():
 def dashboard():
     if not admin_required():
         session.clear()  # drops stale sessions (e.g. after "Logout all devices")
-        return render_template_string(ADMIN_HTML, bot_info=BOT_INFO)
+        return render_template_string(ADMIN_HTML, bg=_bg_ctx(), bot_info=BOT_INFO)
 
     r_u = q_one('SELECT COUNT(*), COALESCE(SUM(wallet_balance), 0) FROM users')
     tot_users, tot_wallet = r_u[0] or 0, float(r_u[1] or 0)
@@ -1829,7 +2343,7 @@ def dashboard():
     ]
     all_orders = q_all('SELECT id, user_id, prod_name, plan, key_delivered, amount, utr, timestamp FROM order_history ORDER BY id DESC LIMIT 50')
     pending = q_all("SELECT id, user_id, prod_name, plan, key_delivered, amount, timestamp FROM order_history WHERE LEFT(key_delivered, 7) = 'PENDING' ORDER BY id DESC")
-    users_list = q_all('SELECT user_id, full_name, username, joined_date, orders_count, wallet_balance, total_spent, total_referrals, referral_earnings, account_type FROM users ORDER BY user_id DESC LIMIT 50')
+    users_list = q_all('SELECT user_id, full_name, username, joined_date, orders_count, wallet_balance, total_spent, total_referrals, referral_earnings, account_type FROM users ORDER BY user_id DESC LIMIT 500')
     topups = q_all('SELECT created_at, user_id, COALESCE(pay_amount, amount), status, order_id FROM payment_records ORDER BY id DESC LIMIT 30')
     st_r = q_one('SELECT support_username, how_to_use_link FROM store_settings WHERE id = 1') or ("@Athulsudin", "")
     pay = db.get_payment_settings()
@@ -1854,6 +2368,13 @@ def dashboard():
         }
         for r in db.recent_bank_credits(20)
     ]
+
+    pay_stats = {
+        "today_count": q_one(
+            "SELECT COUNT(*) FROM payment_records WHERE status = 'verified' "
+            "AND (created_ts AT TIME ZONE 'Asia/Kolkata')::date = (now() AT TIME ZONE 'Asia/Kolkata')::date")[0] or 0,
+        "unmatched": q_one("SELECT COUNT(*) FROM bank_credits WHERE status = 'unmatched'")[0] or 0,
+    }
 
     saved_styles = db.get_button_styles()
     button_groups = [
@@ -1893,14 +2414,14 @@ def dashboard():
     st = db.get_settings()
 
     return render_template_string(
-        ADMIN_HTML, bot_info=BOT_INFO, button_groups=button_groups, topups=topups,
+        ADMIN_HTML, bg=_bg_ctx(), bot_info=BOT_INFO, button_groups=button_groups, topups=topups,
         key_stats=key_stats, today_by_product=today_by_product, lifetime=lifetime,
         bc_counts=bc_counts, admin_id=ADMIN_ID,
         stats={"users": tot_users, "total_wallet": f"{tot_wallet:,.2f}", "products_count": tot_prods,
                "orders": tot_orders, "revenue": f"{tot_rev:,.2f}", "key_stock": tot_keys,
                "today_deposit": f"{today_dep:,.2f}", "awaiting": awaiting},
         products=prods, all_orders=all_orders, pending_orders=pending, users_list=users_list,
-        pay_cfg=pay_cfg, gmail=gmail_cfg, alerts=alerts, store=st
+        pay_cfg=pay_cfg, gmail=gmail_cfg, alerts=alerts, store=st, pay_stats=pay_stats
     )
 
 UPI_RE = re.compile(r'^[a-zA-Z0-9.\-_]{2,64}@[a-zA-Z0-9]{2,32}$')
@@ -2527,6 +3048,168 @@ def api_logout_all():
     session.clear()
     return jsonify({"message": "Logged out on all devices."})
 
+# ==========================================
+# 🎬 LIVE WALLPAPER (background video + looping song)
+# ==========================================
+BG_LIMITS = {"video": 50 * 1024 * 1024, "audio": 20 * 1024 * 1024}
+BG_CHUNK = 4 * 1024 * 1024
+
+def _bg_ctx():
+    """Everything the page needs to show the wallpaper (safe defaults if the database has nothing)."""
+    out = {"enabled": True, "volume": 0.6, "dim": 0.45,
+           "video": "", "video_name": "", "video_src": "",
+           "audio": "", "audio_name": "", "audio_src": ""}
+    try:
+        cfg = db.get_ui_settings()
+        out["enabled"] = str(cfg.get("enabled", "1")) == "1"
+        out["volume"] = min(1.0, max(0.0, float(cfg.get("volume", 0.6))))
+        out["dim"] = min(0.9, max(0.0, float(cfg.get("dim", 0.45))))
+        for kind in ("video", "audio"):
+            meta = db.media_meta(kind)
+            url = (cfg.get(kind + "_url") or "").strip()
+            if meta:
+                out[kind] = f"/media/{kind}?v={meta['ver']}"
+                out[kind + "_name"] = meta["filename"] or kind
+                out[kind + "_src"] = "upload"
+            elif re.match(r"^https?://\S+$", url):
+                out[kind], out[kind + "_name"], out[kind + "_src"] = url, url, "url"
+    except Exception:
+        pass
+    return out
+
+@app.route('/media/<kind>')
+def media_file(kind):
+    """Serves the uploaded wallpaper files with Range support, so videos can start and seek quickly."""
+    if kind not in BG_LIMITS:
+        return "", 404
+    meta = db.media_meta(kind)
+    if not meta:
+        return "", 404
+    size = int(meta["size"])
+    mime = meta["mime"] or "application/octet-stream"
+    headers = {"Accept-Ranges": "bytes", "Cache-Control": "public, max-age=86400"}
+    rng = (request.headers.get("Range") or "").strip()
+    m = re.match(r"^bytes=(\d*)-(\d*)$", rng)
+    if m and (m.group(1) or m.group(2)):
+        if m.group(1):
+            start = int(m.group(1))
+            end = int(m.group(2)) if m.group(2) else size - 1
+        else:
+            start = max(0, size - int(m.group(2)))
+            end = size - 1
+        if start >= size:
+            return Response(status=416, headers={"Content-Range": f"bytes */{size}"})
+        end = min(end, size - 1, start + BG_CHUNK - 1)
+        data = db.media_chunk(kind, start, end - start + 1)
+        headers.update({"Content-Range": f"bytes {start}-{end}/{size}", "Content-Length": str(len(data))})
+        return Response(data, status=206, mimetype=mime, headers=headers)
+
+    def _stream():
+        pos = 0
+        while pos < size:
+            part = db.media_chunk(kind, pos, min(BG_CHUNK, size - pos))
+            if not part:
+                break
+            pos += len(part)
+            yield part
+    headers["Content-Length"] = str(size)
+    return Response(_stream(), mimetype=mime, headers=headers)
+
+@app.route('/api/bg/save', methods=['POST'])
+def api_bg_save():
+    if not admin_required(): return unauthorized()
+    d = request.json or {}
+    vals = {}
+    for kind in ("video", "audio"):
+        key = kind + "_url"
+        if key in d:
+            url = str(d[key] or "").strip()
+            if url and not re.match(r"^https?://\S+$", url):
+                return jsonify({"message": f"The {kind} link must start with http:// or https://"}), 400
+            vals[key] = url
+            if url:
+                db.delete_media(kind)   # a link replaces an uploaded file
+    try:
+        if "volume" in d: vals["volume"] = min(1.0, max(0.0, float(d["volume"])))
+        if "dim" in d: vals["dim"] = min(0.9, max(0.0, float(d["dim"])))
+    except (TypeError, ValueError):
+        return jsonify({"message": "Invalid volume or dimming value"}), 400
+    if "enabled" in d: vals["enabled"] = "1" if d["enabled"] else "0"
+    if vals:
+        db.set_ui_settings(vals)
+    return jsonify({"message": "Live wallpaper saved!", "bg": _bg_ctx()})
+
+@app.route('/api/bg/upload', methods=['POST'])
+def api_bg_upload():
+    if not admin_required(): return unauthorized()
+    kind = request.form.get("kind", "")
+    f = request.files.get("file")
+    if kind not in BG_LIMITS or not f or not f.filename:
+        return jsonify({"message": "Choose a video or song file first."}), 400
+    mime = (f.mimetype or "").lower()
+    if not mime.startswith(kind + "/"):
+        guessed = (mimetypes.guess_type(f.filename)[0] or "").lower()
+        if guessed.startswith(kind + "/"):
+            mime = guessed
+        else:
+            return jsonify({"message": f"That file is not a {kind} file."}), 400
+    data = f.read()
+    if len(data) > BG_LIMITS[kind]:
+        return jsonify({"message": f"The {kind} is too large (max {BG_LIMITS[kind] // (1024 * 1024)} MB)."}), 413
+    if not data:
+        return jsonify({"message": "The file is empty."}), 400
+    db.save_media(kind, os.path.basename(f.filename)[:120], mime, data)
+    db.set_ui_settings({kind + "_url": ""})
+    return jsonify({"message": f"{kind.title()} uploaded!", "bg": _bg_ctx()})
+
+@app.route('/api/bg/clear', methods=['POST'])
+def api_bg_clear():
+    if not admin_required(): return unauthorized()
+    kind = (request.json or {}).get("kind", "")
+    if kind not in BG_LIMITS:
+        return jsonify({"message": "Invalid type"}), 400
+    db.delete_media(kind)
+    db.set_ui_settings({kind + "_url": ""})
+    return jsonify({"message": f"{kind.title()} removed.", "bg": _bg_ctx()})
+
+# ==========================================
+# 👤 MEMBER INSPECTOR HELPERS
+# ==========================================
+@app.route('/api/user/detail')
+def api_user_detail():
+    if not admin_required(): return unauthorized()
+    try:
+        uid = int(request.args.get("user_id", ""))
+    except ValueError:
+        return jsonify({"message": "Invalid user"}), 400
+    rows = db.fetchall(
+        "SELECT prod_name, plan, amount, timestamp, key_delivered FROM order_history "
+        "WHERE user_id = %s ORDER BY id DESC LIMIT 5", (uid,))
+    orders = [{
+        "prod_name": r["prod_name"] or "", "plan": r["plan"] or "", "amount": float(r["amount"] or 0),
+        "timestamp": r["timestamp"] or "", "pending": str(r["key_delivered"] or "").startswith("PENDING"),
+    } for r in rows]
+    return jsonify({"orders": orders})
+
+@app.route('/api/user/message', methods=['POST'])
+def api_user_message():
+    """Send a message to a member from the bot (works for anyone who has started the bot)."""
+    if not admin_required(): return unauthorized()
+    d = request.json or {}
+    try:
+        uid = int(d["user_id"])
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"message": "Invalid user", "error": True}), 400
+    text = str(d.get("text") or "").strip()[:3500]
+    if not text:
+        return jsonify({"message": "Type a message first", "error": True}), 400
+    try:
+        tg_send(uid, "📩 <b>Message from Admin</b>\n\n" + _html.escape(text))
+    except Exception:
+        return jsonify({"message": "Could not deliver (the user may have blocked the bot).", "error": True})
+    return jsonify({"message": "Message sent!"})
+
+
 def _csv_response(name, header, rows):
     buf = io.StringIO()
     w = csv.writer(buf)
@@ -2558,6 +3241,7 @@ def run_web():
 if __name__ == "__main__":
     init_db()
     run_web()
+
 
 
 
