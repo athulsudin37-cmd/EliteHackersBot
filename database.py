@@ -44,6 +44,9 @@ BUTTON_GROUPS = [
         ("web_admin", "👑 Web Admin Panel (owner only)", "success"),
     ]),
     ("🛒 Shop & Products", [
+        ("game_ff", "🔥 FREE FIRE", "primary"),
+        ("game_carrom", "🎱 CARROM POOL", "primary"),
+        ("game_pool8", "🎱 8BALL POOL", "primary"),
         ("cat_non_root", "☎️ Non-Root Mobile", "primary"),
         ("cat_root", "🔓 Root Mobile", "primary"),
         ("cat_ios", "🍏 iOS Panels", "primary"),
@@ -1333,6 +1336,7 @@ def init_db():
         )
     db.init_db()
     return db
+
 
 
 
