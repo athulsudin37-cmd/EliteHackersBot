@@ -6,7 +6,10 @@ Keep DATABASE_URL in Render Environment Variables, not in GitHub.
 """
 
 import os
+import re
 import json
+import time
+import threading
 import logging
 import secrets
 import random
@@ -1393,6 +1396,66 @@ class Database:
         )
 
 
+# ----------------------------------------------------------------------
+# 🔎 Automatic button discovery
+# Every button written in main.py as styled_button("Label", "key", ...) / tg_button(...) is picked up
+# here (at start-up and again every 5 seconds if main.py changed), and shows up in the admin panel's
+# "Button Colors" page by itself. BUTTON_GROUPS and MENU_BUTTONS are updated IN PLACE, so web_admin.py
+# and main.py (which imported them) see the new buttons with no change to those files.
+# ----------------------------------------------------------------------
+AUTO_GROUP_TITLE = "🆕 Other buttons (found automatically)"
+_STATIC_KEYS = set(MENU_BUTTONS)
+_BTN_RE = re.compile(r"""(?:styled_button|tg_button)\(\s*f?(["'])(.+?)\1\s*,\s*(["'])([A-Za-z0-9_]+)\3""")
+_btn_state = {"mtime": None}
+
+def _clean_label(label):
+    label = re.sub(r"\{[^}]*\}", "X", label)          # f-string parts like {amount}
+    return " ".join(label.replace("\\n", " ").split())[:60] or "Button"
+
+def refresh_buttons(path=None):
+    """Re-read main.py when it changed and register any button key that is not listed above."""
+    path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "main.py")
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return False
+    if _btn_state["mtime"] == mtime:
+        return False
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as fh:
+            text = fh.read()
+    except OSError:
+        return False
+    found, seen = [], set()
+    for m in _BTN_RE.finditer(text):
+        key = m.group(4)
+        if key in _STATIC_KEYS or key in seen:
+            continue
+        seen.add(key)
+        found.append((key, _clean_label(m.group(2)), ""))
+    # drop the previous automatic group, then add the fresh one
+    for key in [k for k in MENU_BUTTONS if k not in _STATIC_KEYS]:
+        MENU_BUTTONS.pop(key, None)
+    BUTTON_GROUPS[:] = [g for g in BUTTON_GROUPS if g[0] != AUTO_GROUP_TITLE]
+    if found:
+        BUTTON_GROUPS.append((AUTO_GROUP_TITLE, found))
+        for key, label, default in found:
+            MENU_BUTTONS[key] = (label, default)
+    _btn_state["mtime"] = mtime
+    return True
+
+def _button_watcher():
+    while True:
+        try:
+            refresh_buttons()
+        except Exception:
+            logger.exception("Button discovery failed")
+        time.sleep(5)
+
+refresh_buttons()
+threading.Thread(target=_button_watcher, name="button-watcher", daemon=True).start()
+
+
 db = Database(DATABASE_URL) if DATABASE_URL else None
 
 
@@ -1403,6 +1466,7 @@ def init_db():
         )
     db.init_db()
     return db
+
 
 
 
