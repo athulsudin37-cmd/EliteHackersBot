@@ -76,7 +76,7 @@ def ack(query):
     """Answer a button tap in the background, so the next screen does not wait for this extra Telegram call."""
     async def _go():
         try:
-            ack(query)
+            await query.answer()
         except Exception:
             pass
     spawn(_go())
@@ -105,6 +105,96 @@ def _num(value, default):
         return float(value)
     except (TypeError, ValueError):
         return float(default)
+
+# ----------------------------------------------------------------------
+# 👑 RESELLER SETTINGS  (controlled from the web admin panel)
+#
+# HOOK FOR THE WEB ADMIN: all values live in the existing `ui_settings` table
+# (key/value, keys start with "reseller_"). On every start the bot publishes
+# RESELLER_SCHEMA into ui_settings["bot_schema_reseller"] (JSON, with a version) and
+# seeds missing defaults. web_admin.py can read that schema to draw the form by
+# itself, and save with db.set_ui_settings({...}). The bot picks changes up within 5 s.
+# ----------------------------------------------------------------------
+RESELLER_SCHEMA_VERSION = 1
+RESELLER_SCHEMA = [
+    # key, label, type, default
+    ("reseller_enabled", "Reseller plan enabled (1 = on, 0 = off)", "number", "1"),
+    ("reseller_min_balance", "Minimum wallet balance (₹)", "number", "2500"),
+    ("reseller_fee", "Activation fee (₹)", "number", "700"),
+    ("reseller_factor", "Reseller price factor (0.6 = pay 60% of regular price)", "number", "0.6"),
+    ("reseller_text", "Reseller plan screen text (HTML). Use {min_balance} {fee} {rest}", "textarea",
+     "🤝 <b>RESELLER PLAN</b>\n_________________________\n\n"
+     "💰 Minimum Balance: <b>₹{min_balance}</b>\n"
+     "💸 Activation Fee: <b>Only ₹{fee}</b>\n"
+     "_________________________\n\n"
+     "⚡ <b>How does it work?</b>\n"
+     "Deposit ₹{min_balance} in your wallet — only ₹{fee} will be charged as activation fee!\n"
+     "The remaining ₹{rest} stays safe in your wallet to purchase any products at wholesale rates!\n\n"
+     "👑 <b>Reseller Benefits:</b>\n"
+     "• Get all products at exclusive discounted prices!\n"
+     "• Set your own margin & earn maximum profit\n"
+     "• Unlimited earning opportunity\n"
+     "• Exclusive VIP Reseller badge on your profile\n\n"
+     "💸 <b>Example:</b>\n"
+     "🔷 Regular ₹90 Product → Reseller Price: <b>₹40</b>\n"
+     "🔷 Regular ₹300 Product → Reseller Price: <b>₹150</b>\n\n"
+     "🔥 Start reselling now and earn huge profits!"),
+    ("reseller_buy_label", "Buy button text", "text", "Buy Reseller Plan"),
+    ("reseller_success_text", "Success message (HTML). Use {fee} {rest}", "textarea",
+     "🎉 <b>CONGRATULATIONS!</b>\n\nYou are now officially a <b>👑 VIP Reseller!</b>\n"
+     "₹{fee} activation fee deducted. Your remaining ₹{rest}+ is safe in your wallet for purchases."),
+    ("reseller_lowbal_text", "Not-enough-balance message (HTML). Use {min_balance} {balance}", "textarea",
+     "⚠️ <b>Insufficient Balance!</b>\n\n💰 Required: <b>₹{min_balance}</b>\n"
+     "💸 Your Balance: <b>₹{balance}</b>\n\nPlease add balance to your wallet to activate the VIP Reseller Plan."),
+]
+RESELLER_DEFAULTS = {k: d for k, _l, _t, d in RESELLER_SCHEMA}
+_reseller_cache = {"t": 0.0, "v": None}
+
+
+def publish_reseller_schema():
+    """Tell the web admin which reseller settings exist (called on every bot start)."""
+    try:
+        current = db.get_ui_settings()
+        values = {"bot_schema_reseller": json.dumps(
+            {"version": RESELLER_SCHEMA_VERSION,
+             "fields": [{"key": k, "label": l, "type": t, "default": d} for k, l, t, d in RESELLER_SCHEMA]},
+            ensure_ascii=False)}
+        for k, d in RESELLER_DEFAULTS.items():
+            if k not in current:
+                values[k] = d
+        db.set_ui_settings(values)
+    except Exception:
+        logger.exception("Could not publish reseller schema")
+
+
+def get_reseller_cfg():
+    """Reseller settings from the admin panel (cached 5 s), defaults for anything missing."""
+    if _reseller_cache["v"] is not None and time.time() - _reseller_cache["t"] < 5:
+        return _reseller_cache["v"]
+    cfg = dict(RESELLER_DEFAULTS)
+    try:
+        cfg.update({k: v for k, v in db.get_ui_settings().items() if k in RESELLER_DEFAULTS and v != ""})
+    except Exception:
+        logger.exception("Could not load reseller settings")
+    cfg["min_balance"] = _num(cfg["reseller_min_balance"], 2500)
+    cfg["fee"] = _num(cfg["reseller_fee"], 700)
+    cfg["factor"] = _num(cfg["reseller_factor"], 0.6)
+    cfg["enabled"] = str(cfg["reseller_enabled"]).strip() not in ("0", "", "false", "False")
+    _reseller_cache["v"], _reseller_cache["t"] = cfg, time.time()
+    return cfg
+
+
+def _is_reseller_row(u_data):
+    return bool(u_data and u_data[8] == "Reseller")
+
+
+def _fill(template, **vals):
+    """Fill {placeholders}; a typo in the admin-written text can never crash the bot."""
+    out = str(template)
+    for k, v in vals.items():
+        out = out.replace("{" + k + "}", fmt_amount(v))
+    return out
+
 
 def fmt_amount(value):
     value = float(value)
@@ -248,7 +338,7 @@ def now_ist():
 # Pricing & wallet purchase
 # ----------------------------------------------------------------------
 def unit_price(reg_price, is_reseller):
-    return round(float(reg_price) * RESELLER_FACTOR, 2) if is_reseller else float(reg_price)
+    return round(float(reg_price) * get_reseller_cfg()["factor"], 2) if is_reseller else float(reg_price)
 
 
 def fmt_price(value):
@@ -1030,6 +1120,7 @@ def back_to_menu_markup():
 
 # Initialize the persistent PostgreSQL schema before the bot starts.
 init_db()
+publish_reseller_schema()
 
 # ==========================================
 # ✨ MESSAGE-REPLACEMENT NAVIGATION
@@ -1138,7 +1229,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [styled_button("🛒 Shop Key", "shop_key", callback_data="shop_key"), styled_button("👤 My Profile", "my_profile", callback_data="my_profile")],
         [styled_button("💰 Add Balance", "add_balance", callback_data="add_balance"), styled_button("🧾 All History", "all_history", callback_data="all_history")],
-        [styled_button("▶️ Tutorial watch", "tutorial", url=tutorial_link), styled_button("👑 Reseller", "reseller", callback_data="reseller_plan")],
+        [styled_button("▶️ Tutorial watch", "tutorial", url=tutorial_link)]
+        + ([] if (_is_reseller_row(u_data) or not get_reseller_cfg()["enabled"])
+           else [styled_button("👑 Reseller", "reseller", callback_data="reseller_plan")]),
         [styled_button("💼 Selling Proof ↗️", "selling_proof", url="https://t.me/+fJrFACSrntgwNjll"), styled_button("💬 Support", "support", callback_data="support_contact")],
         [styled_button("🎰 Lucky Spin", "lucky_spin", callback_data="lucky_spin"), styled_button("👥 Referral", "referral", callback_data="referral_menu")],
         [styled_button("👑 Top 5 Sellers Monthly", "top_sellers", callback_data="top_sellers")]
@@ -1216,10 +1309,10 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🕒 Joined: {joined}"
     )
 
-    keyboard = [
-        [styled_button("👑 Upgrade To Reseller", "profile_upgrade", callback_data="reseller_plan")],
-        [styled_button("🔜 Back", "back", callback_data="main_menu")]
-    ]
+    keyboard = []
+    if account_type != "Reseller" and get_reseller_cfg()["enabled"]:
+        keyboard.append([styled_button("👑 Upgrade To Reseller", "profile_upgrade", callback_data="reseller_plan")])
+    keyboard.append([styled_button("🔜 Back", "back", callback_data="main_menu")])
     await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
 
 # ==========================================
@@ -1228,29 +1321,20 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def reseller_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     ack(query)
+    user = update.effective_user
+    cfg = get_reseller_cfg()
 
-    text = (
-        "🤝 <b>RESELLER PLAN</b>\n"
-        "_________________________\n\n"
-        "💰 Minimum Balance: <b>₹2500</b>\n"
-        "💸 Activation Fee: <b>Only ₹700</b>\n"
-        "_________________________\n\n"
-        "⚡ <b>How does it work?</b>\n"
-        "Deposit ₹2500 in your wallet — only ₹700 will be charged as activation fee!\n"
-        "The remaining ₹1800 stays safe in your wallet to purchase any products at wholesale rates!\n\n"
-        "👑 <b>Reseller Benefits:</b>\n"
-        "• Get all products at exclusive discounted prices!\n"
-        "• Set your own margin & earn maximum profit\n"
-        "• Unlimited earning opportunity\n"
-        "• Exclusive VIP Reseller badge on your profile\n\n"
-        "💸 <b>Example:</b>\n"
-        "🔷 Regular ₹90 Product → Reseller Price: <b>₹40</b>\n"
-        "🔷 Regular ₹300 Product → Reseller Price: <b>₹150</b>\n\n"
-        "🔥 Start reselling now and earn huge profits!"
-    )
+    # One-time purchase: an existing reseller (or a switched-off plan) never sees this screen again.
+    if _is_reseller_row(db_get_user(user.id)) or not cfg["enabled"]:
+        msg = ("✅ You are already a <b>👑 VIP Reseller</b>." if cfg["enabled"]
+               else "⚠️ The reseller plan is not available right now.")
+        await replace_callback_message(query, context, msg, back_to_menu_markup())
+        return
 
+    text = _fill(cfg["reseller_text"], min_balance=cfg["min_balance"], fee=cfg["fee"],
+                 rest=max(0.0, cfg["min_balance"] - cfg["fee"]))
     keyboard = [
-        [styled_button("Buy Reseller Plan", "reseller_buy", callback_data="buy_reseller_action")],
+        [styled_button(cfg["reseller_buy_label"] or "Buy Reseller Plan", "reseller_buy", callback_data="buy_reseller_action")],
         [styled_button("🔜 Back", "back", callback_data="main_menu")]
     ]
     await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
@@ -1259,25 +1343,23 @@ async def buy_reseller_action(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     ack(query)
     user = update.effective_user
+    cfg = get_reseller_cfg()
     u_data = db_get_user(user.id)
     balance = u_data[4] if u_data else 0.0
 
-    if balance >= 2500 and db.try_deduct(user.id, 700) is not None:
+    if _is_reseller_row(u_data) or not cfg["enabled"]:
+        await replace_callback_message(query, context, "✅ Reseller plan is already active on your account." if cfg["enabled"]
+                                       else "⚠️ The reseller plan is not available right now.", back_to_menu_markup())
+        return
+
+    if balance >= cfg["min_balance"] and db.try_deduct(user.id, cfg["fee"]) is not None:
         db_set_reseller(user.id)
-        text = (
-            "🎉 <b>CONGRATULATIONS!</b>\n\n"
-            "You are now officially a <b>👑 VIP Reseller!</b>\n"
-            "₹700 activation fee deducted. Your remaining ₹1800+ is safe in your wallet for purchases."
-        )
+        text = _fill(cfg["reseller_success_text"], fee=cfg["fee"], rest=max(0.0, cfg["min_balance"] - cfg["fee"]),
+                     min_balance=cfg["min_balance"])
         keyboard = [[styled_button("👤 View Profile", "view_profile", callback_data="my_profile")]]
         await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
     else:
-        text = (
-            "⚠️ <b>Insufficient Balance!</b>\n\n"
-            "💰 Required: <b>₹2500</b>\n"
-            f"💸 Your Balance: <b>₹{balance:,.2f}</b>\n\n"
-            "Please add balance to your wallet to activate the VIP Reseller Plan."
-        )
+        text = _fill(cfg["reseller_lowbal_text"], min_balance=cfg["min_balance"], balance=balance, fee=cfg["fee"])
         keyboard = [
             [styled_button("💰 Add Balance", "reseller_add_balance", callback_data="add_balance")],
             [styled_button("🔜 Back", "back", callback_data="reseller_plan")]
