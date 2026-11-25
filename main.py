@@ -282,7 +282,7 @@ def get_products_by_category(category):
     rows = db.get_products_by_category(category)
     result = {}
     for row in rows:
-        if row.get("maintenance") or row.get("stock_out"):
+        if row.get("stock_out"):
             continue
         result[row["prod_key"]] = {
             "name": row["name"],
@@ -337,8 +337,47 @@ def now_ist():
 # ----------------------------------------------------------------------
 # Pricing & wallet purchase
 # ----------------------------------------------------------------------
-def unit_price(reg_price, is_reseller):
-    return round(float(reg_price) * get_reseller_cfg()["factor"], 2) if is_reseller else float(reg_price)
+# ======================================================================
+# 🔌 WEB ADMIN / DATABASE HOOKS  (main.py is already ready for these)
+# ----------------------------------------------------------------------
+# HOOK 1 - Reseller price per plan, typed by the owner in the web admin:
+#   database.py : add column  products.reseller_prices  (TEXT, SAME format as products.prices,
+#                 e.g. "1 day:3,7 day:15") and save/return it with the product.
+#   web_admin.py: in Add/Edit Product, give every plan a "Reseller price" box next to the
+#                 regular price and save it into products.reseller_prices.
+# As soon as a plan has a reseller price, this file uses it (read live from the DB - no restart).
+# Plans without one still use the old "factor" price while RESELLER_AUTO_FALLBACK is True.
+# When every plan has its own reseller price, set RESELLER_AUTO_FALLBACK = False to remove the
+# automatic % price completely (then a plan without a reseller price sells at the regular price).
+# ======================================================================
+RESELLER_AUTO_FALLBACK = True
+
+def _reseller_price_for(prod_key, plan_name, row=None):
+    """Owner-typed reseller price for one plan, or None if the web admin has not set it."""
+    try:
+        row = row or db.get_product_by_key(prod_key)
+        raw = (row or {}).get("reseller_prices")
+        if not raw:
+            return None
+        pairs = parse_prices(raw) if isinstance(raw, str) else raw
+        if isinstance(pairs, dict):
+            pairs = list(pairs.items())
+        for n, p in pairs:
+            if n == plan_name and p not in (None, ""):
+                return float(p)
+    except Exception:
+        logger.exception("Could not read reseller price for %s/%s", prod_key, plan_name)
+    return None
+
+def unit_price(reg_price, is_reseller, prod_key=None, plan_name=None):
+    if not is_reseller:
+        return float(reg_price)
+    custom = _reseller_price_for(prod_key, plan_name) if prod_key and plan_name else None
+    if custom is not None:
+        return round(custom, 2)
+    if RESELLER_AUTO_FALLBACK:
+        return round(float(reg_price) * get_reseller_cfg()["factor"], 2)
+    return float(reg_price)
 
 
 def fmt_price(value):
@@ -379,7 +418,7 @@ def purchase_with_wallet(user_id, prod_key, plan_name, allow_pending=False, utr=
     if reg_price is None:
         return {"status": "no_plan", "prod": prod}
 
-    price = max(0.0, round(unit_price(reg_price, is_reseller) - float(discount or 0), 2))
+    price = max(0.0, round(unit_price(reg_price, is_reseller, prod_key, plan_name) - float(discount or 0), 2))
     new_balance = db.try_deduct(user_id, price)
     if new_balance is None:
         balance = float(user["wallet_balance"] or 0) if user else 0.0
@@ -2378,7 +2417,14 @@ async def list_category_products(update: Update, context: ContextTypes.DEFAULT_T
         return
 
     text = "🛒 <b>PRODUCT STORE — SHOP</b> 🛒\n\n🔥 Choose a product:"
-    keyboard = [[styled_button(f"{p['icon']} {p['name']}", "product_item", callback_data=f"selprod_{k}")] for k, p in prods.items()]
+    keyboard = []
+    for k, p in prods.items():
+        if p.get("maintenance"):
+            # Under maintenance: always a RED button; tapping it shows the maintenance notice.
+            keyboard.append([InlineKeyboardButton(f"{p['icon']} {p['name']}", callback_data=f"selprod_{k}",
+                                                  api_kwargs={"style": "danger"})])
+        else:
+            keyboard.append([styled_button(f"{p['icon']} {p['name']}", "product_item", callback_data=f"selprod_{k}")])
     keyboard.append([styled_button("👆 Back", "back", callback_data=back_cb)])
     await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
 
@@ -2417,7 +2463,7 @@ def build_plans_view(user_id, prod_key):
 
     keyboard = []
     for pl_name, reg_price in prod.get("prices", []):
-        final_price = unit_price(reg_price, is_reseller)
+        final_price = unit_price(reg_price, is_reseller, prod_key, pl_name)
         keyboard.append([styled_button(
             f"🕒 {pl_name.replace('_', ' ')} | {fmt_price(final_price)}", "plan_item",
             callback_data=f"buyplan_{prod_key}_{pl_name}"
@@ -2432,6 +2478,24 @@ def build_plans_view(user_id, prod_key):
 async def show_product_plans(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     prod_key = query.data.replace("selprod_", "", 1)
+
+    _mp = get_product_by_key(prod_key)
+    if _mp and _mp.get("maintenance"):
+        # Maintenance: send the notice as a NEW message (product name + Check Update + Back).
+        ack(query)
+        kb = []
+        if valid_url(_mp.get("download_link")):
+            kb.append([styled_button("Check Update", "check_update", url=_mp["download_link"])])
+        kb.append([styled_button("Back", "back", callback_data="pcat_" + (_mp.get("category") or "non_root"))])
+        try:
+            await context.bot.send_message(
+                chat_id=query.message.chat_id, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(kb),
+                text=(f"<blockquote><b>{html.escape(_mp['icon'] or '')} {html.escape(_mp['name'] or '')}</b>\n\n"
+                      "This product is currently under maintenance. Please check back later "
+                      "— sorry for the inconvenience!</blockquote>"))
+        except Exception:
+            logger.exception("Could not send maintenance notice")
+        return
 
     view = build_plans_view(update.effective_user.id, prod_key)
     if not view:
@@ -2460,7 +2524,7 @@ def _order_price(user_id, prod_key, plan_name):
     reg = next((p for n, p in prod["prices"] if n == plan_name), None)
     if reg is None:
         return None, prod
-    return unit_price(reg, is_reseller), prod
+    return unit_price(reg, is_reseller, prod_key, plan_name), prod
 
 def _order_markup(prod_key):
     kb = [[styled_button("💳 UPI Payment (QR Code)", "pay_upi", callback_data="ordpay_upi")]]
@@ -2631,6 +2695,12 @@ async def order_pay_binance_click(update: Update, context: ContextTypes.DEFAULT_
         return
     discount = min(float(od.get("discount") or 0), price)
     final = round(price - discount, 2)
+    _bu = db_get_user(user.id)
+    _bal = float(_bu[4]) if _bu else 0.0
+    if _bal >= final:
+        if await _deliver_from_wallet(query, context, user.id, od["prod_key"], od["plan"], discount, od.get("coupon")):
+            return
+    final = round(final - _bal, 2) if _bal < final else final   # amount still to pay
     usdt = round(final / max(bn["rate"], 0.01), 2)
     order_id = f"BIN{datetime.now(IST).strftime('%Y%m%d%H%M%S')}{os.urandom(4).hex().upper()}"
     await asyncio.to_thread(
@@ -2641,7 +2711,7 @@ async def order_pay_binance_click(update: Update, context: ContextTypes.DEFAULT_
     text = (
         "🟡 <b>BINANCE USDT PAYMENT</b>\n__________________________________\n\n"
         f"🛒 {html.escape(prod['name'])} — {html.escape(od['plan'].replace('_', ' '))}\n"
-        f"💰 Total: ₹{final:,.2f}\n"
+        f"💰 To pay: ₹{final:,.2f}\n"
         f"💵 Send exactly: <b>{usdt:,.2f} USDT</b>\n\n"
         f"📨 Binance Pay ID: <code>{html.escape(bn['pay_id'])}</code>\n"
         + (f"\n{html.escape(bn['note'])}\n" if bn["note"] else "") +
@@ -2808,7 +2878,38 @@ async def api_unmap_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.error("Unhandled error while processing an update", exc_info=context.error)
 
+_HOOK_STATE = {"ok": None, "last_warn": 0}
+
+def _hooks_missing():
+    missing = []
+    try:
+        rows = db.fetchall("SELECT * FROM products LIMIT 1") if hasattr(db, "fetchall") else []
+        if rows and "reseller_prices" not in rows[0]:
+            missing.append("database.py: products.reseller_prices column (reseller price per plan)")
+    except Exception:
+        pass
+    return missing
+
+def _hook_watcher():
+    """Re-checks every 30 s. While a hook is missing it keeps warning in the logs (every 10 min);
+    when database.py / web_admin.py are updated it switches on by itself - no change needed here."""
+    while True:
+        try:
+            missing = _hooks_missing()
+            ok = not missing
+            if ok and _HOOK_STATE["ok"] is False:
+                logger.info("✅ Web admin hooks are now ACTIVE - reseller prices come from the admin panel.")
+            if not ok and time.time() - _HOOK_STATE["last_warn"] > 600:
+                logger.warning("⚠️ main.py is waiting for: %s. Add it to database.py / web_admin.py "
+                               "(see the 'WEB ADMIN / DATABASE HOOKS' block in main.py).", "; ".join(missing))
+                _HOOK_STATE["last_warn"] = time.time()
+            _HOOK_STATE["ok"] = ok
+        except Exception:
+            logger.exception("hook watcher error")
+        time.sleep(30)
+
 def start_bot():
+    Thread(target=_hook_watcher, daemon=True).start()
     app = Application.builder().token(BOT_TOKEN).concurrent_updates(False).post_init(post_init).build()
 
     app.add_handler(CommandHandler("start", start_command))
