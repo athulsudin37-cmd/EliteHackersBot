@@ -11,7 +11,7 @@ import io
 from threading import Thread
 from datetime import datetime, timedelta
 import pytz
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, MenuButtonCommands
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -72,14 +72,30 @@ def spawn(coro):
     task.add_done_callback(_bg_tasks.discard)
     return task
 
+def ack(query):
+    """Answer a button tap in the background, so the next screen does not wait for this extra Telegram call."""
+    async def _go():
+        try:
+            ack(query)
+        except Exception:
+            pass
+    spawn(_go())
+
 def init_db():
     return init_persistent_db()
 
+_settings_cache = {"t": 0.0, "v": None}
+
 def get_settings():
     """Live store settings from the admin panel (branding, deposit limits, referral, spin).
+    Cached for 5 seconds (like the button colors), so a button tap does not hit the database for it.
     Falls back to the built-in defaults if the database cannot be read."""
+    if _settings_cache["v"] is not None and time.time() - _settings_cache["t"] < 5:
+        return dict(_settings_cache["v"])
     try:
-        return db.get_settings()
+        value = db.get_settings()
+        _settings_cache["v"], _settings_cache["t"] = value, time.time()
+        return dict(value)
     except Exception:
         logger.exception("Could not load store settings")
         return dict(db.SETTING_DEFAULTS, support_username="", how_to_use_link="")
@@ -1018,10 +1034,23 @@ init_db()
 # ==========================================
 # ✨ MESSAGE-REPLACEMENT NAVIGATION
 # ==========================================
+FAST_EDIT = os.environ.get("FAST_EDIT", "1") != "0"
+
 async def replace_callback_message(query, context, text, reply_markup=None, parse_mode="HTML"):
     """Delete the current callback message, then open the next screen as a fresh message.
     Used only for callback-menu navigation so every screen transition uses the same behavior.
     """
+    msg = query.message
+    # Fast path: ONE Telegram call edits the screen in place (works for text messages).
+    # Set FAST_EDIT=0 in Render to go back to "delete + send a fresh message".
+    if FAST_EDIT and msg is not None and getattr(msg, "text", None) is not None:
+        try:
+            return await query.edit_message_text(text=text, parse_mode=parse_mode, reply_markup=reply_markup)
+        except BadRequest as e:
+            if "not modified" in str(e).lower():
+                return msg
+        except Exception:
+            pass
     chat_id = query.message.chat_id
     try:
         await query.message.delete()
@@ -1041,12 +1070,13 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     args = context.args
     cfg = get_store_config()
+    existing = db_get_user(user.id)   # one read, reused below
 
     # Referral Tracking Logic
     if args and args[0].startswith("ref_"):
         try:
             ref_by = int(args[0].replace("ref_", ""))
-            if ref_by != user.id and not db_get_user(user.id):
+            if ref_by != user.id and not existing:
                 ref_bonus = _num(get_settings().get("referral_bonus"), 0)
                 if ref_bonus > 0:
                     db.execute(
@@ -1068,7 +1098,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-    db_add_or_update_user(user.id, user.full_name, f"@{user.username}" if user.username else "N/A", get_ist_time())
+    uname = f"@{user.username}" if user.username else "N/A"
+    if (not existing) or existing[0] != user.full_name or existing[1] != uname:
+        db_add_or_update_user(user.id, user.full_name, uname, get_ist_time())
+        existing = db_get_user(user.id)
 
     # Direct buy link from the admin panel: /start buy_<product_key>
     if args and args[0].startswith("buy_") and update.message:
@@ -1077,7 +1110,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(view[0], parse_mode="HTML", reply_markup=view[1])
             return
 
-    u_data = db_get_user(user.id)
+    u_data = existing
     balance = u_data[4] if u_data else 0.0
 
     text = (
@@ -1130,7 +1163,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==========================================
 async def support_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    ack(query)
     username = (get_store_config().get("support_username") or "").strip()
     handle = username.lstrip("@")
 
@@ -1152,7 +1185,7 @@ async def support_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==========================================
 async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    ack(query)
     user = update.effective_user
     u_data = db_get_user(user.id)
 
@@ -1194,7 +1227,7 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==========================================
 async def reseller_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    ack(query)
 
     text = (
         "🤝 <b>RESELLER PLAN</b>\n"
@@ -1224,7 +1257,7 @@ async def reseller_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def buy_reseller_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    ack(query)
     user = update.effective_user
     u_data = db_get_user(user.id)
     balance = u_data[4] if u_data else 0.0
@@ -1256,7 +1289,7 @@ async def buy_reseller_action(update: Update, context: ContextTypes.DEFAULT_TYPE
 # ==========================================
 async def add_balance_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    ack(query)
 
     text = (
         "💰 <b>ADD BALANCE</b>\n"
@@ -1273,7 +1306,7 @@ async def add_balance_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def select_deposit_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    ack(query)
     context.user_data['deposit_method'] = "upi"
 
     user = update.effective_user
@@ -1295,7 +1328,7 @@ async def select_deposit_amount(update: Update, context: ContextTypes.DEFAULT_TY
     await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
 
 async def numpad_open(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
+    ack(update.callback_query)
     await render_numpad(update, context)
 
 async def render_numpad(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1339,17 +1372,17 @@ async def handle_numpad_input(update: Update, context: ContextTypes.DEFAULT_TYPE
         if len(val) < 6:
             val += action
             context.user_data['numpad_val'] = val
-        await query.answer()
+        ack(query)
         await render_numpad(update, context)
 
     elif action == "clear":
         context.user_data['numpad_val'] = ''
-        await query.answer()
+        ack(query)
         await render_numpad(update, context)
 
     elif action == "backspace":
         context.user_data['numpad_val'] = val[:-1]
-        await query.answer()
+        ack(query)
         await render_numpad(update, context)
 
     elif action == "confirm":
@@ -1362,13 +1395,13 @@ async def handle_numpad_input(update: Update, context: ContextTypes.DEFAULT_TYPE
             await query.answer(f"⚠️ Maximum deposit is ₹{max_dep:,.2f}!", show_alert=True)
             return
 
-        await query.answer()
+        ack(query)
         deposit_amt = float(val)
         context.user_data['numpad_val'] = ''
         await generate_deposit_qr(update, context, deposit_amt)
 
 async def preset_dep_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
+    ack(update.callback_query)
     amt = float(update.callback_query.data.replace("preset_dep_", ""))
     await generate_deposit_qr(update, context, amt)
 
@@ -1844,7 +1877,7 @@ async def admin_payment_decision(update: Update, context: ContextTypes.DEFAULT_T
 
 async def cancel_deposit_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    ack(query)
     order_id = query.data[len("canceldep_"):]
 
     pay = db.get_payment(order_id)
@@ -1883,7 +1916,7 @@ def fmt_wait(seconds):
 
 async def lucky_spin_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    ack(query)
     cooldown_h, _lo, _hi, expiry_h = spin_settings()
     remaining = db.spin_remaining_seconds(update.effective_user.id, cooldown_h)
 
@@ -1922,7 +1955,7 @@ async def perform_lucky_spin(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not db.claim_spin(user.id, cooldown_h):
         await query.answer("⏳ Your next free spin is not available yet. Try again later!", show_alert=True)
         return
-    await query.answer()
+    ack(query)
 
     frames = [
         "🎰 Spinning... [ 🍒 | 🍋 | 💎 ]",
@@ -1966,7 +1999,7 @@ async def perform_lucky_spin(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # ==========================================
 async def referral_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    ack(query)
     user = update.effective_user
     bot_me = await context.bot.get_me()
 
@@ -1994,7 +2027,7 @@ async def referral_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==========================================
 async def history_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    ack(query)
     user = update.effective_user
     orders = db_get_user_history(user.id, limit=20)
 
@@ -2028,7 +2061,7 @@ async def history_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==========================================
 async def top_sellers_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    ack(query)
     user = update.effective_user
     now = datetime.now(IST)
     month_label = now.strftime("%B %Y")
@@ -2075,11 +2108,104 @@ async def top_sellers_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
 
 # ==========================================
+# 📡 /ping — live speed test + "Restart" (refreshes the customer's session)
+# ==========================================
+def _ms(t0):
+    return int((time.perf_counter() - t0) * 1000)
+
+def _grade(ms, good, ok):
+    return "🟢 Fast" if ms < good else ("🟡 OK" if ms < ok else "🔴 Slow")
+
+def ping_keyboard():
+    return InlineKeyboardMarkup([
+        [styled_button("🔁 Test Again", "ping_again", callback_data="ping_again")],
+        [styled_button("🔄 Restart", "ping_restart", callback_data="ping_restart")],
+        [styled_button("➡️ Back to Menu", "back_menu", callback_data="main_menu")],
+    ])
+
+async def _ping_finish(context, chat_id, message_id, first_ms):
+    """Measure the bot -> Telegram and bot -> database speed, then show the result in the same message."""
+    samples = [first_ms]
+    try:
+        for _ in range(2):
+            t = time.perf_counter()
+            await context.bot.get_me()
+            samples.append(_ms(t))
+    except Exception:
+        pass
+    tg_ms = int(sum(samples) / len(samples))
+
+    db_times = []
+    for _ in range(2):
+        t = time.perf_counter()
+        try:
+            await asyncio.to_thread(db.fetchone, "SELECT 1")
+            db_times.append(_ms(t))
+        except Exception:
+            db_times.append(9999)
+    db_ms = min(db_times)
+
+    total = tg_ms + db_ms
+    verdict = (
+        "✅ Everything is running fast." if total < 900
+        else "⚠️ A little slow right now. Tap <b>🔄 Restart</b> to refresh your connection."
+    )
+    text = (
+        "📡 <b>PING RESULT</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"🤖 Bot ↔ Telegram: <b>{tg_ms} ms</b>  {_grade(tg_ms, 500, 1000)}\n"
+        f"🗄️ Database: <b>{'n/a' if db_ms >= 9999 else str(db_ms) + ' ms'}</b>  {_grade(db_ms, 150, 500)}\n"
+        f"⚡ Total: <b>{total} ms</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"{verdict}\n"
+        "<i>Your own phone network adds a little on top of this.</i>"
+    )
+    try:
+        await context.bot.edit_message_text(
+            chat_id=chat_id, message_id=message_id, text=text,
+            parse_mode="HTML", reply_markup=ping_keyboard())
+    except Exception:
+        logger.exception("Could not show the ping result")
+
+async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    t0 = time.perf_counter()
+    msg = await context.bot.send_message(
+        chat_id=chat_id, parse_mode="HTML",
+        text="📡 <b>Ping testing...</b>\n⏳ Measuring your speed live, please wait.")
+    await _ping_finish(context, chat_id, msg.message_id, _ms(t0))
+
+async def ping_again(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    ack(query)
+    t0 = time.perf_counter()
+    try:
+        await query.edit_message_text(
+            "📡 <b>Ping testing...</b>\n⏳ Measuring your speed live, please wait.", parse_mode="HTML")
+    except Exception:
+        pass
+    await _ping_finish(context, query.message.chat_id, query.message.message_id, _ms(t0))
+
+async def ping_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Refreshes THIS customer's session (forgets half-finished steps, clears caches, wakes the database
+    connection) and opens a fresh main menu. It does not restart the server for everyone."""
+    query = update.callback_query
+    ack(query)
+    context.user_data.clear()
+    _settings_cache["v"] = None
+    _style_cache["t"] = 0.0
+    try:
+        await asyncio.to_thread(db.fetchone, "SELECT 1")
+    except Exception:
+        pass
+    await start_command(update, context)
+
+# ==========================================
 # 🛒 8. SHOP KEY & DEVICE CATALOG
 # ==========================================
 async def shop_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    ack(query)
 
     text = "🛒 <b>PRODUCT STORE — SHOP</b> 🛒\n\n🎮 Select your game:"
     keyboard = [
@@ -2093,7 +2219,7 @@ async def shop_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def shop_ff_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """FREE FIRE -> the device-type list (Non-Root, Root, iOS, PC, 8 Level ID)."""
     query = update.callback_query
-    await query.answer()
+    ack(query)
 
     text = "🔥 <b>FREE FIRE — SHOP</b> 🔥\n\n📱 Select your device type:"
     keyboard = [
@@ -2108,7 +2234,7 @@ async def shop_ff_categories(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def list_category_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    ack(query)
     cat_key = query.data.replace("pcat_", "")
     context.user_data['selected_cat'] = cat_key
 
@@ -2181,7 +2307,7 @@ async def show_product_plans(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not view:
         await query.answer("⚠️ Product not available.", show_alert=True)
         return
-    await query.answer()
+    ack(query)
     await replace_callback_message(query, context, view[0], view[1])
 
 def parse_buyplan(data):
@@ -2246,7 +2372,7 @@ async def show_order_summary(query, context, user_id, note=""):
 async def process_plan_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Plan tapped -> order summary only. The key is delivered after a payment is confirmed."""
     query = update.callback_query
-    await query.answer()
+    ack(query)
     prod_key, plan_name = parse_buyplan(query.data)
     if not prod_key:
         await replace_callback_message(query, context, "⚠️ This product or plan is no longer available.", back_to_menu_markup())
@@ -2257,7 +2383,7 @@ async def process_plan_purchase(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def order_coupon_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    ack(query)
     if not context.user_data.get("order"):
         await replace_callback_message(query, context, "⚠️ Session expired. Please select the product again.", back_to_menu_markup())
         return
@@ -2268,7 +2394,7 @@ async def order_coupon_click(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def order_back_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    ack(query)
     context.user_data.pop("awaiting_coupon", None)
     await show_order_summary(query, context, update.effective_user.id)
 
@@ -2297,7 +2423,7 @@ async def coupon_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def order_pay_upi_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    ack(query)
     od = context.user_data.get("order")
     if not od:
         await replace_callback_message(query, context, "⚠️ Session expired. Please select the product again.", back_to_menu_markup())
@@ -2321,7 +2447,7 @@ async def order_pay_binance_click(update: Update, context: ContextTypes.DEFAULT_
     if not od or not bn["enabled"] or not bn["pay_id"]:
         await query.answer("⚠️ Binance payment is not available right now.", show_alert=True)
         return
-    await query.answer()
+    ack(query)
     user = update.effective_user
     price, prod = _order_price(user.id, od["prod_key"], od["plan"])
     if price is None:
@@ -2352,7 +2478,7 @@ async def order_pay_binance_click(update: Update, context: ContextTypes.DEFAULT_
 
 async def def_pay_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    ack(query)
     context.user_data['deposit_method'] = "upi"
 
     def_data = context.user_data.get('pending_deficit')
@@ -2398,6 +2524,15 @@ async def spin_expiry_loop(app):
         await asyncio.sleep(30)
 
 async def post_init(app):
+    # The "Menu" list customers see when they type "/" in the chat
+    try:
+        await app.bot.set_my_commands([
+            BotCommand("start", "🚀 Start the bot"),
+            BotCommand("ping", "📡 Check speed / fix slowness"),
+        ])
+        await app.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+    except Exception:
+        logger.exception("Could not set the bot command menu")
     spawn(spin_expiry_loop(app))
 
 # ==========================================
@@ -2519,6 +2654,9 @@ def start_bot():
     app.add_handler(CallbackQueryHandler(referral_handler, pattern="^referral_menu$"))
     app.add_handler(CallbackQueryHandler(history_handler, pattern="^all_history$"))
     app.add_handler(CallbackQueryHandler(top_sellers_handler, pattern="^top_sellers$"))
+    app.add_handler(CommandHandler("ping", ping_command))
+    app.add_handler(CallbackQueryHandler(ping_again, pattern="^ping_again$"))
+    app.add_handler(CallbackQueryHandler(ping_restart, pattern="^ping_restart$"))
     app.add_handler(CallbackQueryHandler(shop_categories, pattern="^shop_key$"))
     app.add_handler(CallbackQueryHandler(shop_ff_categories, pattern="^shop_ff$"))
     app.add_handler(CallbackQueryHandler(list_category_products, pattern="^pcat_"))
