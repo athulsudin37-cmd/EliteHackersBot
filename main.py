@@ -1034,7 +1034,7 @@ init_db()
 # ==========================================
 # ✨ MESSAGE-REPLACEMENT NAVIGATION
 # ==========================================
-FAST_EDIT = os.environ.get("FAST_EDIT", "1") != "0"
+FAST_EDIT = os.environ.get("FAST_EDIT", "0") == "1"   # OFF = original "delete + send a fresh message" behaviour
 
 async def replace_callback_message(query, context, text, reply_markup=None, parse_mode="HTML"):
     """Delete the current callback message, then open the next screen as a fresh message.
@@ -1042,7 +1042,7 @@ async def replace_callback_message(query, context, text, reply_markup=None, pars
     """
     msg = query.message
     # Fast path: ONE Telegram call edits the screen in place (works for text messages).
-    # Set FAST_EDIT=0 in Render to go back to "delete + send a fresh message".
+    # Only used when FAST_EDIT=1 is set in Render (off by default).
     if FAST_EDIT and msg is not None and getattr(msg, "text", None) is not None:
         try:
             return await query.edit_message_text(text=text, parse_mode=parse_mode, reply_markup=reply_markup)
@@ -2156,6 +2156,7 @@ async def _ping_finish(context, chat_id, message_id, first_ms):
         f"🤖 Bot ↔ Telegram: <b>{tg_ms} ms</b>  {_grade(tg_ms, 500, 1000)}\n"
         f"🗄️ Database: <b>{'n/a' if db_ms >= 9999 else str(db_ms) + ' ms'}</b>  {_grade(db_ms, 150, 500)}\n"
         f"⚡ Total: <b>{total} ms</b>\n"
+        f"🔌 DB connection pool: <b>{'ON' if getattr(db, '_pool', None) is not None else 'OFF'}</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         f"{verdict}\n"
         "<i>Your own phone network adds a little on top of this.</i>"
