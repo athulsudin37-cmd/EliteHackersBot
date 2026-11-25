@@ -1370,21 +1370,8 @@ async def buy_reseller_action(update: Update, context: ContextTypes.DEFAULT_TYPE
 # 💰 4. ADD BALANCE & NUMPAD CALCULATOR
 # ==========================================
 async def add_balance_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    ack(query)
-
-    text = (
-        "💰 <b>ADD BALANCE</b>\n"
-        "_________________________\n\n"
-        "💳 Pay with any UPI app (GPay, PhonePe, Paytm...)\n"
-        "⏱️ Balance is added as soon as your payment is confirmed.\n"
-        "_________________________"
-    )
-    keyboard = [
-        [styled_button("💳 Pay via UPI", "pay_upi", callback_data="dep_method_upi")],
-        [styled_button("🔜 Back", "back", callback_data="main_menu")]
-    ]
-    await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
+    """Add Balance goes straight to the quick-amount / keypad screen (no UPI-method step)."""
+    await select_deposit_amount(update, context)
 
 async def select_deposit_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1405,7 +1392,7 @@ async def select_deposit_amount(update: Update, context: ContextTypes.DEFAULT_TY
         [styled_button("₹100", "preset_amount", callback_data="preset_dep_100"), styled_button("₹500", "preset_amount", callback_data="preset_dep_500")],
         [styled_button("₹1000", "preset_amount", callback_data="preset_dep_1000"), styled_button("₹2000", "preset_amount", callback_data="preset_dep_2000")],
         [styled_button("✏️ Custom Amount", "custom_amount", callback_data="numpad_open")],
-        [styled_button("👆 Back to Menu", "back", callback_data="add_balance")]
+        [styled_button("👆 Back to Menu", "back", callback_data="main_menu")]
     ]
     await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
 
@@ -1480,12 +1467,72 @@ async def handle_numpad_input(update: Update, context: ContextTypes.DEFAULT_TYPE
         ack(query)
         deposit_amt = float(val)
         context.user_data['numpad_val'] = ''
-        await generate_deposit_qr(update, context, deposit_amt)
+        await show_deposit_summary(query, context, deposit_amt)
+
+def _deposit_markup():
+    kb = [[styled_button("💳 UPI Payment (QR Code)", "pay_upi", callback_data="depay_upi")]]
+    try:
+        if db.get_binance_settings()["enabled"]:
+            kb.append([styled_button("🟡 Binance USDT Payment", "pay_binance", callback_data="depay_bin")])
+    except Exception:
+        pass
+    kb.append([styled_button("❌ Back", "back", callback_data="dep_method_upi")])
+    return InlineKeyboardMarkup(kb)
+
+async def show_deposit_summary(query, context, amount):
+    """ORDER SUMMARY for an Add Balance top-up: amount + UPI / Binance choice."""
+    context.user_data["deposit_amount"] = float(amount)
+    text = (
+        "📋 <b>ORDER SUMMARY</b>\n__________________________________\n\n"
+        "💰 Add Balance to Wallet\n"
+        f"💵 Amount: ₹{float(amount):,.2f}\n"
+        "__________________________________\n"
+        f"💰 <b>Final Total: ₹{float(amount):,.2f}</b>\n\n"
+        "Select payment method below:"
+    )
+    await replace_callback_message(query, context, text, _deposit_markup())
+
+async def deposit_pay_upi_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    amt = context.user_data.get("deposit_amount")
+    if not amt:
+        await query.answer("⚠️ Session expired. Choose the amount again.", show_alert=True)
+        return
+    ack(query)
+    context.user_data["deposit_method"] = "upi"
+    await generate_deposit_qr(update, context, float(amt))
+
+async def deposit_pay_binance_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    amt = context.user_data.get("deposit_amount")
+    bn = db.get_binance_settings()
+    if not amt or not bn["enabled"] or not bn["pay_id"]:
+        await query.answer("⚠️ Binance payment is not available right now.", show_alert=True)
+        return
+    ack(query)
+    user = update.effective_user
+    usdt = round(float(amt) / max(bn["rate"], 0.01), 2)
+    order_id = f"BIN{datetime.now(IST).strftime('%Y%m%d%H%M%S')}{os.urandom(4).hex().upper()}"
+    await asyncio.to_thread(
+        db.create_payment, user.id, order_id, float(amt), "binance", bn["pay_id"], get_ist_time(),
+        None, None, False, False)
+    text = (
+        "🟡 <b>BINANCE USDT PAYMENT</b>\n__________________________________\n\n"
+        f"💰 Add Balance: ₹{float(amt):,.2f}\n"
+        f"💵 Send exactly: <b>{usdt:,.2f} USDT</b>\n\n"
+        f"📨 Binance Pay ID: <code>{html.escape(bn['pay_id'])}</code>\n"
+        + (f"\n{html.escape(bn['note'])}\n" if bn["note"] else "") +
+        "\nAfter paying, tap <b>✅ I have paid</b>. Balance is added as soon as the admin confirms.\n"
+        f"🆔 <code>{order_id}</code>"
+    )
+    kb = [[styled_button("✅ I have paid", "paid", callback_data=f"paid_{order_id}")],
+          [styled_button("❌ Cancel Payment", "cancel_payment", callback_data=f"canceldep_{order_id}")]]
+    await replace_callback_message(query, context, text, InlineKeyboardMarkup(kb))
 
 async def preset_dep_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ack(update.callback_query)
     amt = float(update.callback_query.data.replace("preset_dep_", ""))
-    await generate_deposit_qr(update, context, amt)
+    await show_deposit_summary(update.callback_query, context, amt)
 
 # ----------------------------------------------------------------------
 # 🖼️ Clean UPI QR image (white background, big, UPI badge in the middle)
@@ -2423,7 +2470,7 @@ def _order_markup(prod_key):
     kb.append([styled_button("❌ Back", "back", callback_data=f"selprod_{prod_key}")])
     return InlineKeyboardMarkup(kb)
 
-def _order_text(prod, od, price, note=""):
+def _order_text(prod, od, price, note="", balance=None):
     discount = float(od.get("discount") or 0)
     final = round(price - discount, 2)
     lines = [
@@ -2435,6 +2482,8 @@ def _order_text(prod, od, price, note=""):
     if od.get("coupon"):
         lines.append(f"🎟️ Coupon <code>{html.escape(od['coupon'])}</code>: -₹{discount:,.2f}")
     lines += ["__________________________________", f"💰 <b>Final Total: ₹{final:,.2f}</b>"]
+    if balance is not None and balance < final:
+        lines += [f"💳 Wallet Balance: ₹{balance:,.2f}", f"⚠️ <b>To pay now: ₹{final - balance:,.2f}</b>"]
     if note:
         lines += ["", note]
     return "\n".join(lines)
@@ -2450,7 +2499,9 @@ async def show_order_summary(query, context, user_id, note=""):
         await replace_callback_message(query, context, "⚠️ This product is currently unavailable.", back_to_menu_markup())
         return
     od["discount"] = min(float(od.get("discount") or 0), price)
-    await replace_callback_message(query, context, _order_text(prod, od, price, note), _order_markup(od["prod_key"]))
+    u_data = db_get_user(user_id)
+    balance = float(u_data[4]) if u_data else 0.0
+    await replace_callback_message(query, context, _order_text(prod, od, price, note, balance), _order_markup(od["prod_key"]))
 
 async def process_plan_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Plan tapped -> order summary only. The key is delivered after a payment is confirmed."""
@@ -2462,7 +2513,39 @@ async def process_plan_purchase(update: Update, context: ContextTypes.DEFAULT_TY
         return
     context.user_data.pop("awaiting_coupon", None)
     context.user_data["order"] = {"prod_key": prod_key, "plan": plan_name, "coupon": None, "discount": 0.0}
-    await show_order_summary(query, context, update.effective_user.id)
+    user_id = update.effective_user.id
+    price, _prod = _order_price(user_id, prod_key, plan_name)
+    u_data = db_get_user(user_id)
+    balance = float(u_data[4]) if u_data else 0.0
+    if price is not None and balance >= price:
+        # Enough money in the wallet -> deliver the key directly, no summary / QR.
+        if await _deliver_from_wallet(query, context, user_id, prod_key, plan_name):
+            return
+    await show_order_summary(query, context, user_id)
+
+async def _deliver_from_wallet(query, context, user_id, prod_key, plan_name, discount=0.0, coupon=None):
+    """Charge the wallet and show the key card. Returns True if the customer was served (or told why not)."""
+    result = await asyncio.to_thread(purchase_with_wallet, user_id, prod_key, plan_name, False, "WALLET_PAY", discount)
+    status = result["status"]
+    if status == "ok":
+        if coupon:
+            try:
+                db.use_coupon(coupon)
+            except Exception:
+                logger.exception("Could not count coupon use")
+        context.user_data.pop("order", None)
+        await replace_callback_message(
+            query, context,
+            build_key_card(result["prod"]["name"], plan_name, result["key"], result["balance"]),
+            key_card_keyboard(result["prod"]))
+        return True
+    if status == "out_of_stock":
+        kb = [[styled_button("🔜 Back to Plans", "back", callback_data=f"selprod_{prod_key}")]]
+        await replace_callback_message(
+            query, context, "⚠️ <b>Out of Stock!</b> Keys will be restocked shortly. You were not charged.",
+            InlineKeyboardMarkup(kb))
+        return True
+    return False  # insufficient / unavailable -> caller shows the summary or an error
 
 async def order_coupon_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -2501,7 +2584,8 @@ async def coupon_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         disc = price * val / 100.0 if cp.get("discount_type") == "percent" else val
         od["coupon"], od["discount"] = cp["code"], round(min(disc, price), 2)
         note = "✅ Coupon applied!"
-    await update.message.reply_text(_order_text(prod, od, price, note), parse_mode="HTML",
+    _u = db_get_user(update.effective_user.id)
+    await update.message.reply_text(_order_text(prod, od, price, note, float(_u[4]) if _u else 0.0), parse_mode="HTML",
                                     reply_markup=_order_markup(od["prod_key"]))
 
 async def order_pay_upi_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2516,10 +2600,19 @@ async def order_pay_upi_click(update: Update, context: ContextTypes.DEFAULT_TYPE
         await replace_callback_message(query, context, "⚠️ This product is currently unavailable.", back_to_menu_markup())
         return
     discount = min(float(od.get("discount") or 0), price)
+    final = round(price - discount, 2)
+    u_data = db_get_user(update.effective_user.id)
+    balance = float(u_data[4]) if u_data else 0.0
+    if balance >= final:
+        # A coupon made the wallet enough -> no QR needed.
+        if await _deliver_from_wallet(query, context, update.effective_user.id, od["prod_key"], od["plan"],
+                                      discount, od.get("coupon")):
+            return
+    deficit = round(final - balance, 2) if balance < final else final
     context.user_data["deposit_method"] = "upi"
     await generate_deposit_qr(
-        update, context, round(price - discount, 2), is_deficit=True, prod_name=prod["name"],
-        plan_name=od["plan"], prod_key=od["prod_key"], full_price=True,
+        update, context, deficit, is_deficit=True, prod_name=prod["name"],
+        plan_name=od["plan"], prod_key=od["prod_key"], full_price=False,
         coupon_code=od.get("coupon"), discount=discount
     )
 
@@ -2727,6 +2820,8 @@ def start_bot():
     app.add_handler(CallbackQueryHandler(add_balance_menu, pattern="^add_balance$"))
     app.add_handler(CallbackQueryHandler(select_deposit_amount, pattern="^dep_method_"))
     app.add_handler(CallbackQueryHandler(numpad_open, pattern="^numpad_open$"))
+    app.add_handler(CallbackQueryHandler(deposit_pay_upi_click, pattern="^depay_upi$"))
+    app.add_handler(CallbackQueryHandler(deposit_pay_binance_click, pattern="^depay_bin$"))
     app.add_handler(CallbackQueryHandler(handle_numpad_input, pattern="^np_"))
     app.add_handler(CallbackQueryHandler(preset_dep_click, pattern="^preset_dep_"))
     app.add_handler(CallbackQueryHandler(payment_paid_click, pattern="^paid_"))
