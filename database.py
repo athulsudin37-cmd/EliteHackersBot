@@ -19,6 +19,11 @@ except ImportError:
     psycopg = None
     dict_row = None
 
+try:
+    from psycopg_pool import ConnectionPool
+except ImportError:  # optional: without it the old "new connection per query" mode is used
+    ConnectionPool = None
+
 logger = logging.getLogger(__name__)
 
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
@@ -140,8 +145,34 @@ class Database:
     # ------------------------------------------------------------------
     # Low-level helpers
     # ------------------------------------------------------------------
+    def _get_pool(self):
+        """One shared pool of ready connections. Opening a fresh connection for every query
+        (TLS + login to a remote database) is what made every button press slow."""
+        if ConnectionPool is None:
+            return None
+        pool = getattr(self, "_pool", None)
+        if pool is None:
+            pool = ConnectionPool(
+                self.database_url,
+                min_size=1,
+                max_size=int(os.getenv("DB_POOL_MAX", "6")),
+                kwargs={"connect_timeout": 15, "row_factory": dict_row, "prepare_threshold": None},
+                check=ConnectionPool.check_connection,   # drops connections the server closed while idle
+                max_idle=240,        # recycle before Neon's 5-minute idle limit
+                max_lifetime=1800,
+                timeout=20,
+                open=True,
+            )
+            self._pool = pool
+        return pool
+
     @contextmanager
     def connection(self):
+        pool = self._get_pool()
+        if pool is not None:
+            with pool.connection() as conn:   # commits on success, rolls back on error, returns it to the pool
+                yield conn
+            return
         conn = psycopg.connect(
             self.database_url,
             connect_timeout=15,
@@ -1372,6 +1403,7 @@ def init_db():
         )
     db.init_db()
     return db
+
 
 
 
