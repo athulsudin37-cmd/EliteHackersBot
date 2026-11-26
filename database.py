@@ -127,6 +127,80 @@ def parse_prices(raw):
     return result
 
 
+_pool_lock = threading.Lock()
+
+
+class _SimplePool:
+    """Small thread-safe pool of ready database connections (used when psycopg_pool is not installed).
+    Reusing connections instead of opening a new one for every query is the biggest speed-up."""
+
+    def __init__(self, url, size):
+        self.url, self.size = url, max(2, int(size))
+        self.idle = []                       # stack of (connection, last_used)
+        self.cond = threading.Condition()
+        self.open = 0
+
+    def _connect(self):
+        return psycopg.connect(self.url, connect_timeout=15, row_factory=dict_row)
+
+    def _drop(self, conn):
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        with self.cond:
+            self.open -= 1
+            self.cond.notify()
+
+    def get(self):
+        deadline = time.time() + 20
+        while True:
+            conn, ts, fresh = None, 0.0, False
+            with self.cond:
+                while True:
+                    if self.idle:
+                        conn, ts = self.idle.pop()
+                        break
+                    if self.open < self.size:
+                        self.open += 1
+                        fresh = True
+                        break
+                    left = deadline - time.time()
+                    if left <= 0:
+                        raise RuntimeError("Database busy: no free connection")
+                    self.cond.wait(left)
+            if fresh:
+                try:
+                    return self._connect()
+                except Exception:
+                    self._drop(None)
+                    raise
+            if conn.closed or getattr(conn, "broken", False) or time.time() - ts > 240:
+                self._drop(conn)
+                continue
+            if time.time() - ts > 15:        # idle for a while: make sure the server still answers
+                try:
+                    conn.execute("SELECT 1")
+                    conn.rollback()
+                except Exception:
+                    self._drop(conn)
+                    continue
+            return conn
+
+    def put(self, conn):
+        try:
+            if conn.closed or getattr(conn, "broken", False):
+                return self._drop(conn)
+            if conn.info.transaction_status != psycopg.pq.TransactionStatus.IDLE:
+                conn.rollback()
+        except Exception:
+            return self._drop(conn)
+        with self.cond:
+            self.idle.append((conn, time.time()))
+            self.cond.notify()
+
+
 class Database:
     def __init__(self, database_url=None):
         self.database_url = (database_url or DATABASE_URL).strip()
@@ -149,46 +223,49 @@ class Database:
     # Low-level helpers
     # ------------------------------------------------------------------
     def _get_pool(self):
-        """One shared pool of ready connections. Opening a fresh connection for every query
-        (TLS + login to a remote database) is what made every button press slow."""
-        if ConnectionPool is None:
-            return None
+        """One shared pool of ready connections (psycopg_pool if installed, otherwise our own)."""
         pool = getattr(self, "_pool", None)
-        if pool is None:
-            pool = ConnectionPool(
-                self.database_url,
-                min_size=1,
-                max_size=int(os.getenv("DB_POOL_MAX", "6")),
-                kwargs={"connect_timeout": 15, "row_factory": dict_row, "prepare_threshold": None},
-                check=ConnectionPool.check_connection,   # drops connections the server closed while idle
-                max_idle=240,        # recycle before Neon's 5-minute idle limit
-                max_lifetime=1800,
-                timeout=20,
-                open=True,
-            )
-            self._pool = pool
+        if pool is not None:
+            return pool
+        with _pool_lock:
+            pool = getattr(self, "_pool", None)
+            if pool is None:
+                if ConnectionPool is not None:
+                    pool = ConnectionPool(
+                        self.database_url,
+                        min_size=1,
+                        max_size=int(os.getenv("DB_POOL_MAX", "6")),
+                        kwargs={"connect_timeout": 15, "row_factory": dict_row, "prepare_threshold": None},
+                        check=ConnectionPool.check_connection,
+                        max_idle=240,
+                        max_lifetime=1800,
+                        timeout=20,
+                        open=True,
+                    )
+                else:
+                    pool = _SimplePool(self.database_url, int(os.getenv("DB_POOL_MAX", "8")))
+                self._pool = pool
         return pool
 
     @contextmanager
     def connection(self):
         pool = self._get_pool()
-        if pool is not None:
-            with pool.connection() as conn:   # commits on success, rolls back on error, returns it to the pool
+        if isinstance(pool, _SimplePool):
+            conn = pool.get()
+            try:
                 yield conn
+                conn.commit()
+            except BaseException:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise
+            finally:
+                pool.put(conn)
             return
-        conn = psycopg.connect(
-            self.database_url,
-            connect_timeout=15,
-            row_factory=dict_row,
-        )
-        try:
+        with pool.connection() as conn:       # psycopg_pool: commits on success, rolls back on error
             yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
 
     def execute(self, query, params=None):
         with self.connection() as conn:
@@ -1465,10 +1542,635 @@ def init_db():
             "DATABASE_URL is not configured. Set it in Render Environment Variables."
         )
     db.init_db()
+    try:
+        _x_start()
+        _x_ensure_triggers()      # tables exist now (first deploy): attach the change hooks
+    except Exception:
+        logger.exception("Change hooks could not be installed")
     return db
 
 
+# ======================================================================
+# LIVE EXTENSIONS - everything below works from this one file
+#   1. Change hook: every database write bumps a counter; each process checks it every 5 s
+#   2. Bot maintenance mode (switch in the admin panel, enforced inside the Telegram bot)
+#   3. Theme studio (crown button) + maintenance button injected into the web admin page
+#   4. Speed: gzip for every admin page / API answer
+# ======================================================================
+import sys
+import gzip
 
+_X_DEFAULT_TEXT = "🛠 The bot is under maintenance. Please try again later."
+_X = {"rev": 0, "maint": False, "notice": False, "text": _X_DEFAULT_TEXT, "theme": {}, "started": False}
+_x_hooks = []
+_x_notice_seen = {}
+
+_X_THEME_KEYS = {
+    "p": {"default", "ocean", "emerald", "sunset", "crimson", "gold", "neon", "cyber", "royal", "amoled", "forest"},
+    "b": {"gradient", "solid", "outline", "neon", "glass", "pill"},
+    "c": {"glass", "solid", "neon", "soft", "sharp"},
+    "bg": {"default", "aurora", "stars", "matrix", "bubbles", "pulse", "plain"},
+    "m": {"off", "robot", "rocket"},
+    "r": {"s", "m", "l"},
+    "f": {"s", "n", "l"},
+}
+
+
+def on_db_change(fn):
+    """Register fn(rev) - called (within ~5 s) whenever ANY process changed the database."""
+    _x_hooks.append(fn)
+
+
+def bot_maintenance_on():
+    return bool(_X["maint"])
+
+
+# ---------------------------------------------------------------- storage
+def _x_ensure_schema():
+    db.execute("CREATE TABLE IF NOT EXISTS x_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')")
+    db.execute("CREATE SEQUENCE IF NOT EXISTS x_rev_seq")
+    try:
+        db.execute(
+            "CREATE OR REPLACE FUNCTION x_bump_rev() RETURNS trigger AS $$ "
+            "BEGIN PERFORM nextval('x_rev_seq'); RETURN NULL; END; $$ LANGUAGE plpgsql"
+        )
+    except Exception:
+        logger.debug("x_bump_rev function already being created by another process")
+
+
+def _x_ensure_triggers():
+    """One tiny statement-level trigger per table: any insert/update/delete moves the change counter."""
+    rows = db.fetchall(
+        "SELECT c.relname AS t FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+        "WHERE n.nspname = 'public' AND c.relkind = 'r'"
+    )
+    have = {r["t"] for r in db.fetchall(
+        "SELECT c.relname AS t FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid "
+        "WHERE g.tgname = 'x_rev_trg' AND NOT g.tgisinternal"
+    )}
+    for r in rows:
+        t = r["t"]
+        if t == "x_settings" or t in have:
+            continue
+        ident = 'public."' + t.replace('"', '""') + '"'
+        for proc in ("FUNCTION", "PROCEDURE"):
+            try:
+                db.execute(f"CREATE TRIGGER x_rev_trg AFTER INSERT OR UPDATE OR DELETE ON {ident} "
+                           f"FOR EACH STATEMENT EXECUTE {proc} x_bump_rev()")
+                break
+            except Exception as e:
+                logger.debug("trigger on %s (%s) failed: %s", t, proc, e)
+
+
+def _x_set(key, value):
+    db.execute(
+        "INSERT INTO x_settings (key, value) VALUES (%s, %s) "
+        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", (key, value))
+
+
+def _x_load():
+    kv = {r["key"]: r["value"] for r in db.fetchall("SELECT key, value FROM x_settings")}
+    row = db.fetchone("SELECT last_value AS v FROM x_rev_seq") or {}
+    _X["maint"] = kv.get("maintenance", "0") == "1"
+    _X["notice"] = kv.get("maint_notice", "0") == "1"
+    _X["text"] = (kv.get("maint_text") or _X_DEFAULT_TEXT)[:200]
+    try:
+        th = json.loads(kv.get("theme") or "{}")
+        _X["theme"] = th if isinstance(th, dict) else {}
+    except ValueError:
+        _X["theme"] = {}
+    new_rev = int(row.get("v") or 0)
+    changed = new_rev != _X["rev"]
+    _X["rev"] = new_rev
+    return changed
+
+
+def _x_loop():
+    n = 0
+    while True:
+        time.sleep(5)
+        try:
+            if _x_load():
+                for fn in list(_x_hooks):
+                    try:
+                        fn(_X["rev"])
+                    except Exception:
+                        logger.exception("db change hook failed")
+            n += 1
+            if n % 24 == 0:          # every ~2 minutes: pick up tables created later
+                _x_ensure_triggers()
+        except Exception as e:
+            logger.debug("x-sync poll failed: %s", e)
+
+
+def _x_start():
+    if db is None or _X["started"]:
+        return
+    _X["started"] = True
+    try:
+        _x_ensure_schema()
+        _x_load()
+    except Exception:
+        logger.exception("Could not prepare live settings")
+    try:
+        _x_ensure_triggers()
+    except Exception:
+        logger.exception("Could not install change hooks")
+    threading.Thread(target=_x_loop, name="x-sync", daemon=True).start()
+
+
+def set_bot_maintenance(on, notice=None, text=None):
+    on = bool(on)
+    _x_set("maintenance", "1" if on else "0")
+    _X["maint"] = on
+    if notice is not None:
+        _x_set("maint_notice", "1" if notice else "0")
+        _X["notice"] = bool(notice)
+    if text is not None:
+        text = (str(text).strip() or _X_DEFAULT_TEXT)[:200]
+        _x_set("maint_text", text)
+        _X["text"] = text
+
+
+def _x_clean_theme(d):
+    out = {}
+    for k, allowed in _X_THEME_KEYS.items():
+        v = d.get(k)
+        if isinstance(v, str) and v in allowed:
+            out[k] = v
+    ac = d.get("ac")
+    if isinstance(ac, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", ac):
+        out["ac"] = ac.lower()
+    return out
+
+
+# ---------------------------------------------------------------- Telegram bot: maintenance guard
+def _patch_telegram():
+    try:
+        from telegram.ext import Application
+    except Exception:
+        return
+    if getattr(Application, "_x_patched", False):
+        return
+    original = Application.process_update
+
+    async def guarded(self, update):
+        if _X["maint"]:
+            await _x_maint_reply(update)
+            return                      # nothing else runs: no menu, no button, no purchase, no command
+        return await original(self, update)
+
+    Application.process_update = guarded
+    Application._x_patched = True
+
+
+async def _x_maint_reply(update):
+    """The bot never does any work while maintenance is ON. At most one short notice (only if enabled)."""
+    try:
+        text = _X["text"] if _X["notice"] else None
+        cq = getattr(update, "callback_query", None)
+        if cq is not None:
+            await cq.answer(text=text, show_alert=bool(text))   # stops the button spinner; shows a popup only if enabled
+            return
+        if not text:
+            return
+        chat = getattr(update, "effective_chat", None)
+        msg = getattr(update, "effective_message", None)
+        user = getattr(update, "effective_user", None)
+        if chat is None or msg is None or getattr(chat, "type", "") != "private":
+            return
+        uid = getattr(user, "id", 0)
+        now = time.time()
+        if now - _x_notice_seen.get(uid, 0) < 60:
+            return
+        _x_notice_seen[uid] = now
+        if len(_x_notice_seen) > 5000:
+            _x_notice_seen.clear()
+        await msg.reply_text(text)
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------- Web admin: routes + page injection
+def _x_admin_ok():
+    mod = sys.modules.get("web_admin") or sys.modules.get("__main__")
+    fn = getattr(mod, "admin_required", None)
+    try:
+        return bool(fn and fn())
+    except Exception:
+        return False
+
+
+def _x_install(app):
+    from flask import request, jsonify
+
+    def deny():
+        return jsonify({"message": "Unauthorized"}), 401
+
+    def maint_view():
+        if not _x_admin_ok():
+            return deny()
+        if request.method == "POST":
+            d = request.get_json(silent=True) or {}
+            set_bot_maintenance(bool(d.get("on")), bool(d.get("notice")), d.get("text"))
+        return jsonify({"on": _X["maint"], "notice": _X["notice"], "text": _X["text"]})
+
+    def theme_view():
+        if request.method == "POST":
+            if not _x_admin_ok():
+                return deny()
+            d = request.get_json(silent=True) or {}
+            clean = {} if d.get("reset") else _x_clean_theme(d)
+            _x_set("theme", json.dumps(clean))
+            _X["theme"] = clean
+        return jsonify(_X["theme"])
+
+    def rev_view():
+        if not _x_admin_ok():
+            return deny()
+        return jsonify({"rev": _X["rev"], "maint": 1 if _X["maint"] else 0})
+
+    app.add_url_rule("/_x/maintenance", "x_maintenance", maint_view, methods=["GET", "POST"])
+    app.add_url_rule("/_x/theme", "x_theme", theme_view, methods=["GET", "POST"])
+    app.add_url_rule("/_x/rev", "x_rev", rev_view, methods=["GET"])
+
+    def after(resp):
+        try:
+            if resp.status_code != 200 or resp.direct_passthrough:
+                return resp
+            if resp.mimetype == "text/html" and request.path != "/health":
+                dest = request.headers.get("Sec-Fetch-Dest", "document")
+                if dest in ("document", "iframe"):
+                    body = resp.get_data(as_text=True)
+                    if "</head>" in body:
+                        resp.set_data(body.replace("</head>", _x_snippet() + "</head>", 1))
+            if ("gzip" in request.headers.get("Accept-Encoding", "")
+                    and "Content-Encoding" not in resp.headers
+                    and resp.mimetype in ("text/html", "text/css", "application/json", "application/javascript", "text/javascript")):
+                data = resp.get_data()
+                if len(data) > 1200:
+                    packed = gzip.compress(data, 5)
+                    resp.set_data(packed)
+                    resp.headers["Content-Encoding"] = "gzip"
+                    resp.headers["Content-Length"] = str(len(packed))
+                    resp.headers.add("Vary", "Accept-Encoding")
+        except Exception:
+            logger.exception("admin page extension failed")
+        return resp
+
+    app.after_request(after)
+
+
+def _x_snippet():
+    cfg = {"theme": _X["theme"]}
+    if _x_admin_ok():
+        cfg["maint"] = {"on": _X["maint"], "notice": _X["notice"], "text": _X["text"]}
+    data = json.dumps(cfg).replace("</", "<\\/")
+    return "<script>window.__XCFG=" + data + ";</script><script>" + _X_JS + "</script>"
+
+
+def _patch_flask():
+    try:
+        import flask
+    except Exception:
+        return
+    if getattr(flask.Flask, "_x_patched", False):
+        return
+    original = flask.Flask.__init__
+
+    def init(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        try:
+            name = str(getattr(self, "import_name", "")).split(".")[0]
+            if name == "web_admin" or (name == "__main__" and os.path.basename(sys.argv[0]) == "web_admin.py"):
+                _x_install(self)
+        except Exception:
+            logger.exception("Could not attach admin extensions")
+
+    flask.Flask.__init__ = init
+    flask.Flask._x_patched = True
+
+
+_X_JS = r'''(function () {
+  if (window.__xtLoaded) return;
+  window.__xtLoaded = 1;
+  var CFG = window.__XCFG || {};
+
+  /* ---------- palettes ---------- */
+  var PRESETS = {
+    ocean:   {n: 'Ocean',   a: '#38bdf8', b: '#6366f1', bg: ['#04121f', '#071d33', '#020a14'], card: '#0a2236', txt: '#e8f6ff', soft: '#a9c4d9'},
+    emerald: {n: 'Emerald', a: '#10b981', b: '#14b8a6', bg: ['#03140f', '#06251c', '#020a07'], card: '#0a2a20', txt: '#eafff6', soft: '#a7d4c3'},
+    sunset:  {n: 'Sunset',  a: '#f97316', b: '#ec4899', bg: ['#1c0a06', '#331208', '#0d0503'], card: '#2c120c', txt: '#fff1ea', soft: '#e0b9a8'},
+    crimson: {n: 'Crimson', a: '#ef4444', b: '#f43f5e', bg: ['#1a0507', '#2e0a0f', '#0b0203'], card: '#2a0c10', txt: '#ffecee', soft: '#dba9ae'},
+    gold:    {n: 'Gold',    a: '#f59e0b', b: '#eab308', bg: ['#171004', '#2a1d08', '#0a0702'], card: '#261b08', txt: '#fff8e6', soft: '#d9c79a'},
+    neon:    {n: 'Neon pink', a: '#ec4899', b: '#a855f7', bg: ['#1a0516', '#2d0a28', '#0a020a'], card: '#280a24', txt: '#ffeefa', soft: '#dbaed0'},
+    cyber:   {n: 'Cyber',   a: '#22d3ee', b: '#a3e635', bg: ['#021417', '#052a30', '#010809'], card: '#062a30', txt: '#e6fdff', soft: '#9fd3d9'},
+    royal:   {n: 'Royal',   a: '#3b82f6', b: '#8b5cf6', bg: ['#060b24', '#0c1745', '#03051a'], card: '#0d1840', txt: '#eaf0ff', soft: '#adb9de'},
+    amoled:  {n: 'AMOLED black', a: '#a78bfa', b: '#60a5fa', bg: ['#000000', '#050505', '#000000'], card: '#0b0b0b', txt: '#f4f4f5', soft: '#a1a1aa'},
+    forest:  {n: 'Forest',  a: '#84cc16', b: '#22c55e', bg: ['#07120a', '#0d2412', '#030a05'], card: '#0e2615', txt: '#f0ffe8', soft: '#b3d4a6'}
+  };
+  var OPT = {
+    p:  [['default', 'Default']].concat(Object.keys(PRESETS).map(function (k) { return [k, PRESETS[k].n]; })),
+    b:  [['gradient', 'Gradient'], ['solid', 'Solid'], ['outline', 'Outline'], ['neon', 'Neon glow'], ['glass', 'Glass'], ['pill', 'Pill']],
+    c:  [['glass', 'Glass'], ['solid', 'Solid'], ['neon', 'Neon edge'], ['soft', 'Soft'], ['sharp', 'Sharp']],
+    bg: [['default', 'Default grid'], ['aurora', 'Aurora'], ['stars', 'Stars'], ['matrix', 'Matrix rain'], ['bubbles', 'Bubbles'], ['pulse', 'Moving grid'], ['plain', 'Plain']],
+    m:  [['off', 'None'], ['robot', 'Robot buddy'], ['rocket', 'Rocket']],
+    r:  [['s', 'Small'], ['m', 'Normal'], ['l', 'Round']],
+    f:  [['s', 'Small'], ['n', 'Normal'], ['l', 'Large']]
+  };
+  window.__xtOpt = OPT;
+  var DEF = {p: 'default', ac: '', b: 'gradient', c: 'glass', bg: 'default', m: 'off', r: 'm', f: 'n'};
+  var T = Object.assign({}, DEF, CFG.theme || {});
+  var saved = Object.assign({}, T);
+
+  function rgb(h) { h = h.replace('#', ''); return [parseInt(h.substr(0, 2), 16), parseInt(h.substr(2, 2), 16), parseInt(h.substr(4, 2), 16)]; }
+  function rgba(h, a) { var c = rgb(h); return 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',' + a + ')'; }
+  function shade(h, k) { var c = rgb(h).map(function (v) { return Math.max(0, Math.min(255, Math.round(v * k))); }); return '#' + c.map(function (v) { return ('0' + v.toString(16)).slice(-2); }).join(''); }
+  function light(h) { var c = rgb(h).map(function (v) { return Math.round(v + (255 - v) * 0.45); }); return '#' + c.map(function (v) { return ('0' + v.toString(16)).slice(-2); }).join(''); }
+
+  var BTN = '.btn-grad,.qa,.wp-btn';
+  var CARD = '.card,.gcard,.stat-card,.quick-box,.hero-card,.ins-box,.mc,.modal-card';
+
+  function buildCss(t) {
+    var P = PRESETS[t.p];
+    var a = t.ac || (P && P.a) || '#8b5cf6';
+    var b = t.ac ? shade(t.ac, 0.65) : ((P && P.b) || '#6366f1');
+    var o = [':root{--x-a:' + a + ';--x-b:' + b + ';--x-r:' + (t.r === 's' ? '8px' : (t.r === 'l' ? '34px' : '22px')) + ';}'];
+    if (P) {
+      o.push(':root{--bg-deep:' + P.bg[0] + ';--card-glass:' + rgba(P.card, 0.95) + ';--neon-border:' + rgba(a, 0.38) + ';--txt:' + P.txt + ';--txt-soft:' + P.soft + ';--bs-body-bg:' + P.bg[0] + ';--bs-body-color:' + P.txt + ';--bs-border-color:' + rgba(a, 0.38) + ';}');
+      o.push('body:not(.bg-live){background:radial-gradient(circle at top center,' + P.bg[1] + ' 0%,' + P.bg[0] + ' 60%,' + P.bg[2] + ' 100%) fixed!important}');
+      o.push('.sidebar{background:linear-gradient(180deg,' + P.bg[1] + ',' + P.bg[0] + ')!important}');
+      o.push('.hero-card{background:linear-gradient(135deg,' + rgba(a, 0.42) + ',' + P.bg[0] + ')!important}');
+      o.push('.form-control,.form-select{background-color:' + P.bg[0] + '!important}');
+    } else if (t.ac) {
+      o.push(':root{--neon-border:' + rgba(a, 0.38) + ';--bs-border-color:' + rgba(a, 0.38) + ';}');
+    }
+    if (P || t.ac) {
+      o.push('.qa{background:linear-gradient(135deg,' + rgba(a, 0.34) + ',' + rgba(b, 0.3) + ')!important;border-color:' + rgba(a, 0.6) + '!important}');
+      o.push('.btn-grad{background:linear-gradient(135deg,' + a + ',' + b + ')!important;box-shadow:0 6px 20px ' + rgba(a, 0.4) + '!important}');
+      o.push('.stat-card{border-left-color:' + a + '!important}.quick-box{border-top-color:' + a + '!important}.quick-box h5{color:' + light(a) + '!important}');
+      o.push('.gcard{--ac:' + a + '!important;border-top-color:' + a + '!important}');
+      o.push('.crown-ring{background:linear-gradient(135deg,' + a + ',' + b + ')!important}');
+      o.push('body::before{background-image:linear-gradient(' + rgba(a, 0.06) + ' 1px,transparent 1px),linear-gradient(90deg,' + rgba(a, 0.06) + ' 1px,transparent 1px)!important}');
+      o.push('.form-control:focus,.form-select:focus{border-color:' + a + '!important;box-shadow:0 0 0 3px ' + rgba(a, 0.2) + '!important}');
+    }
+    /* cards */
+    if (t.r !== 'm') o.push(CARD + '{border-radius:var(--x-r)!important}' + BTN + '{border-radius:calc(var(--x-r) * .6)!important}');
+    if (t.c === 'solid') o.push(CARD + '{background:' + (P ? P.card : '#150b32') + '!important;backdrop-filter:none!important}');
+    if (t.c === 'neon') o.push(CARD + '{border:1px solid ' + a + '!important;box-shadow:0 0 18px ' + rgba(a, 0.35) + ',inset 0 0 12px ' + rgba(a, 0.12) + '!important}');
+    if (t.c === 'soft') o.push(CARD + '{border-color:transparent!important;box-shadow:0 12px 34px rgba(0,0,0,.45)!important}');
+    if (t.c === 'sharp') o.push(CARD + '{border-radius:6px!important}');
+    /* buttons */
+    if (t.b === 'solid') o.push(BTN + '{background:' + a + '!important;box-shadow:none!important;border-color:' + a + '!important}');
+    if (t.b === 'outline') o.push(BTN + '{background:transparent!important;box-shadow:none!important;border:2px solid ' + a + '!important}');
+    if (t.b === 'neon') o.push(BTN + '{background:' + rgba(a, 0.14) + '!important;border:1px solid ' + a + '!important;box-shadow:0 0 14px ' + rgba(a, 0.7) + ',inset 0 0 8px ' + rgba(a, 0.3) + '!important}');
+    if (t.b === 'glass') o.push(BTN + '{background:rgba(255,255,255,.09)!important;backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.28)!important;box-shadow:none!important}');
+    if (t.b === 'pill') o.push(BTN + '{border-radius:999px!important}');
+    if (t.f === 's') o.push('html{font-size:14px!important}');
+    if (t.f === 'l') o.push('html{font-size:18px!important}');
+    if (t.bg === 'plain') o.push('body::before{display:none!important}');
+    return o.join('\n');
+  }
+
+  var STATIC = [
+    '@keyframes xtFloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-7px)}}',
+    '@keyframes xtBlink{0%,90%,100%{transform:scaleY(1)}94%{transform:scaleY(.1)}}',
+    '@keyframes xtGlow{0%,100%{opacity:.45}50%{opacity:1}}',
+    '@keyframes xtWave{0%,100%{transform:rotate(0)}50%{transform:rotate(-28deg)}}',
+    '@keyframes xtFlame{0%,100%{transform:scaleY(1)}50%{transform:scaleY(1.45)}}',
+    '@keyframes xtRise{0%{transform:translateY(0) scale(.6);opacity:0}15%{opacity:.5}100%{transform:translateY(-110vh) scale(1.1);opacity:0}}',
+    '@keyframes xtDrift{0%{transform:translate(-8%,-6%) scale(1)}50%{transform:translate(10%,8%) scale(1.25)}100%{transform:translate(-8%,-6%) scale(1)}}',
+    '@keyframes xtGrid{from{background-position:0 0}to{background-position:0 54px}}',
+    '#xt-mascot{position:fixed;right:10px;bottom:12px;z-index:30;pointer-events:none;opacity:.95;filter:drop-shadow(0 6px 14px rgba(0,0,0,.5))}',
+    '#xt-mascot .fl{animation:xtFloat 3.2s ease-in-out infinite}',
+    '#xt-mascot .eye{transform-box:fill-box;transform-origin:center;animation:xtBlink 4.5s infinite}',
+    '#xt-mascot .gl{animation:xtGlow 1.6s ease-in-out infinite}',
+    '#xt-mascot .arm{transform-box:fill-box;transform-origin:left center;animation:xtWave 1.8s ease-in-out infinite}',
+    '#xt-mascot .fire{transform-box:fill-box;transform-origin:top center;animation:xtFlame .35s ease-in-out infinite}',
+    '.xt-bub{position:absolute;bottom:-60px;border-radius:50%;border:1px solid var(--x-a);background:radial-gradient(circle at 30% 30%,rgba(255,255,255,.22),transparent 60%);animation:xtRise linear infinite}',
+    '.xt-blob{position:absolute;width:55vmax;height:55vmax;border-radius:50%;filter:blur(70px);opacity:.38;animation:xtDrift 18s ease-in-out infinite}',
+    '#xt-ov,#xm-ov{position:fixed;inset:0;z-index:5000;background:rgba(3,1,12,.72);display:none;align-items:center;justify-content:center;padding:14px}',
+    '.xt-box{width:100%;max-width:520px;max-height:90vh;overflow:auto;background:#120a2c;border:1px solid var(--x-a);border-radius:22px;padding:18px 16px;color:#eef2ff;box-shadow:0 20px 60px rgba(0,0,0,.6)}',
+    '.xt-box h5{font-weight:800;margin:0 0 4px}.xt-sub{font-size:.8rem;color:#b4bdd9;margin-bottom:10px}',
+    '.xt-g{margin-top:12px}.xt-g>b{display:block;font-size:.78rem;letter-spacing:.05em;text-transform:uppercase;color:#c4b5fd;margin-bottom:6px}',
+    '.xt-chips{display:flex;flex-wrap:wrap;gap:6px}',
+    '.xt-chip{border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.05);color:#fff;border-radius:999px;padding:6px 12px;font-size:.82rem;font-weight:600;display:inline-flex;align-items:center;gap:6px}',
+    '.xt-chip.on{border-color:var(--x-a);background:rgba(255,255,255,.16);box-shadow:0 0 0 2px var(--x-a) inset}',
+    '.xt-dot{width:14px;height:14px;border-radius:50%;display:inline-block}',
+    '.xt-row{display:flex;gap:8px;margin-top:16px;flex-wrap:wrap}.xt-row button{flex:1;min-width:120px}',
+    '.xt-btn{border:0;border-radius:14px;padding:11px 14px;font-weight:700;color:#fff;background:linear-gradient(135deg,var(--x-a),var(--x-b))}',
+    '.xt-btn.alt{background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.25)}',
+    '.xm-sw{position:relative;display:inline-block;width:64px;height:34px;flex:none}.xm-sw input{opacity:0;width:0;height:0}',
+    '.xm-sw span{position:absolute;inset:0;background:#3b3b55;border-radius:34px;transition:.2s}',
+    '.xm-sw span:before{content:"";position:absolute;height:26px;width:26px;left:4px;top:4px;background:#fff;border-radius:50%;transition:.2s}',
+    '.xm-sw input:checked+span{background:#ef4444}.xm-sw input:checked+span:before{transform:translateX(30px)}',
+    '#xm-banner{position:fixed;top:0;left:0;right:0;z-index:4000;background:#b91c1c;color:#fff;text-align:center;font-weight:800;font-size:.8rem;padding:6px 8px;display:none}',
+    'body.xm-on{padding-top:30px}body.xm-on #xm-banner{display:block}',
+    '.xm-badge{margin-left:auto;font-size:.72rem;font-weight:800;border-radius:999px;padding:3px 10px;background:#16a34a;color:#fff}.xm-badge.on{background:#dc2626}'
+  ].join('\n');
+
+  function el(tag, attrs, html) { var e = document.createElement(tag); if (attrs) for (var k in attrs) e.setAttribute(k, attrs[k]); if (html != null) e.innerHTML = html; return e; }
+  function toastMsg(m, ok) { try { if (typeof window.toast === 'function') { window.toast(m, ok !== false); return; } } catch (e) {} alert(m); }
+  function post(url, body) {
+    return fetch(url, {method: 'POST', credentials: 'same-origin', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})
+      .then(function (r) { return r.json(); }).catch(function () { return {message: 'Network error'}; });
+  }
+
+  /* ---------- theme apply ---------- */
+  var styleEl = null;
+  function applyCss() {
+    if (!styleEl) { styleEl = el('style', {id: 'xt-style'}); document.head.appendChild(styleEl); }
+    styleEl.textContent = buildCss(T);
+  }
+  var bgEl = null, raf = 0, resizeFn = null;
+  function clearBg() {
+    if (raf) cancelAnimationFrame(raf); raf = 0;
+    if (resizeFn) { window.removeEventListener('resize', resizeFn); resizeFn = null; }
+    if (bgEl) { bgEl.remove(); bgEl = null; }
+  }
+  function canvasBg(draw) {
+    var cv = el('canvas'); bgEl.appendChild(cv);
+    var ctx = cv.getContext('2d'), W = 0, H = 0;
+    resizeFn = function () { W = cv.width = window.innerWidth; H = cv.height = window.innerHeight; };
+    resizeFn(); window.addEventListener('resize', resizeFn);
+    var st = {}, last = 0;
+    (function loop(ts) { raf = requestAnimationFrame(loop); if (ts - last < 45) return; last = ts; draw(ctx, W, H, st, ts); })(0);
+  }
+  function applyBg() {
+    clearBg();
+    var k = T.bg;
+    if (k === 'default' || k === 'plain') return;
+    bgEl = el('div', {id: 'xt-bg'});
+    bgEl.style.cssText = 'position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden';
+    document.body.appendChild(bgEl);
+    var a = getComputedStyle(document.documentElement).getPropertyValue('--x-a').trim() || '#8b5cf6';
+    var b = getComputedStyle(document.documentElement).getPropertyValue('--x-b').trim() || '#6366f1';
+    if (k === 'aurora') {
+      bgEl.innerHTML = '<div class="xt-blob" style="left:-10vmax;top:-12vmax;background:' + a + '"></div><div class="xt-blob" style="right:-14vmax;top:20vh;background:' + b + ';animation-delay:-6s"></div><div class="xt-blob" style="left:12vw;bottom:-22vmax;background:#22d3ee;animation-delay:-11s;opacity:.25"></div>';
+    } else if (k === 'bubbles') {
+      var h = '';
+      for (var i = 0; i < 16; i++) { var s = 14 + Math.random() * 46; h += '<i class="xt-bub" style="left:' + (Math.random() * 100).toFixed(1) + '%;width:' + s.toFixed(0) + 'px;height:' + s.toFixed(0) + 'px;animation-duration:' + (9 + Math.random() * 12).toFixed(1) + 's;animation-delay:-' + (Math.random() * 14).toFixed(1) + 's"></i>'; }
+      bgEl.innerHTML = h;
+    } else if (k === 'pulse') {
+      bgEl.style.backgroundImage = 'linear-gradient(' + rgba(a, 0.22) + ' 2px,transparent 2px),linear-gradient(90deg,' + rgba(a, 0.22) + ' 2px,transparent 2px)';
+      bgEl.style.backgroundSize = '54px 54px'; bgEl.style.animation = 'xtGrid 2.4s linear infinite';
+    } else if (k === 'stars') {
+      canvasBg(function (c, W, H, s, ts) {
+        if (!s.p) { s.p = []; for (var i = 0; i < 90; i++) s.p.push({x: Math.random(), y: Math.random(), r: 0.6 + Math.random() * 1.6, o: Math.random() * 6.28, v: 0.8 + Math.random() * 2}); }
+        c.clearRect(0, 0, W, H);
+        s.p.forEach(function (p) { c.globalAlpha = 0.25 + 0.75 * Math.abs(Math.sin(p.o + ts / 1000 * p.v)); c.fillStyle = '#fff'; c.beginPath(); c.arc(p.x * W, p.y * H, p.r, 0, 6.28); c.fill(); });
+        c.globalAlpha = 1;
+      });
+    } else if (k === 'matrix') {
+      canvasBg(function (c, W, H, s) {
+        var fs = 15, cols = Math.ceil(W / fs);
+        if (!s.d || s.d.length !== cols) { s.d = []; for (var i = 0; i < cols; i++) s.d.push(Math.random() * H / fs); }
+        c.globalCompositeOperation = 'destination-out'; c.fillStyle = 'rgba(0,0,0,.14)'; c.fillRect(0, 0, W, H);
+        c.globalCompositeOperation = 'source-over'; c.fillStyle = a; c.font = fs + 'px monospace';
+        for (var j = 0; j < cols; j++) {
+          c.fillText(String.fromCharCode(0x30A0 + Math.floor(Math.random() * 60)), j * fs, s.d[j] * fs);
+          if (s.d[j] * fs > H && Math.random() > 0.97) s.d[j] = 0; else s.d[j] += 1;
+        }
+      });
+    }
+  }
+  var ROBOT = '<svg viewBox="0 0 100 124" width="86" height="106"><g class="fl"><line x1="50" y1="9" x2="50" y2="22" stroke="var(--x-a)" stroke-width="3"/><circle class="gl" cx="50" cy="7" r="5" fill="var(--x-b)"/><rect x="22" y="22" width="56" height="44" rx="14" fill="#1b1340" stroke="var(--x-a)" stroke-width="3"/><g class="eye"><circle cx="39" cy="43" r="7" fill="#fff"/><circle cx="61" cy="43" r="7" fill="#fff"/><circle cx="40" cy="44" r="3" fill="#111"/><circle cx="62" cy="44" r="3" fill="#111"/></g><rect x="40" y="56" width="20" height="4" rx="2" fill="var(--x-a)"/><rect x="28" y="70" width="44" height="34" rx="12" fill="#1b1340" stroke="var(--x-b)" stroke-width="3"/><circle class="gl" cx="50" cy="87" r="6" fill="var(--x-a)"/><rect class="arm" x="72" y="74" width="16" height="8" rx="4" fill="var(--x-b)"/><rect x="12" y="74" width="16" height="8" rx="4" fill="var(--x-b)"/><rect x="34" y="106" width="11" height="9" rx="3" fill="var(--x-a)"/><rect x="55" y="106" width="11" height="9" rx="3" fill="var(--x-a)"/></g></svg>';
+  var ROCKET = '<svg viewBox="0 0 80 124" width="62" height="106"><g class="fl"><path d="M40 6 C58 24 60 52 52 78 L28 78 C20 52 22 24 40 6Z" fill="#e5e7ff" stroke="var(--x-a)" stroke-width="3"/><circle cx="40" cy="42" r="9" fill="var(--x-b)" stroke="#fff" stroke-width="2"/><path d="M28 62 L12 84 L28 80Z M52 62 L68 84 L52 80Z" fill="var(--x-a)"/><path class="fire" d="M32 80 L40 112 L48 80Z" fill="#f59e0b"/><path class="fire" d="M36 80 L40 100 L44 80Z" fill="#fde047"/></g></svg>';
+  function applyMascot() {
+    var old = document.getElementById('xt-mascot'); if (old) old.remove();
+    if (T.m === 'off') return;
+    document.body.appendChild(el('div', {id: 'xt-mascot'}, T.m === 'rocket' ? ROCKET : ROBOT));
+  }
+  function applyAll() { applyCss(); applyBg(); applyMascot(); }
+
+  /* ---------- theme panel (crown) ---------- */
+  var ov = null;
+  function chips(key) {
+    return OPT[key].map(function (o) {
+      var dot = '';
+      if (key === 'p') { var P = PRESETS[o[0]]; dot = '<span class="xt-dot" style="background:' + (P ? 'linear-gradient(135deg,' + P.a + ',' + P.b + ')' : 'linear-gradient(135deg,#8b5cf6,#6366f1)') + '"></span>'; }
+      return '<button type="button" class="xt-chip' + (T[key] === o[0] ? ' on' : '') + '" data-k="' + key + '" data-v="' + o[0] + '">' + dot + o[1] + '</button>';
+    }).join('');
+  }
+  function renderPanel() {
+    var G = [['p', '🎨 Colour theme'], ['b', '🔘 Buttons'], ['c', '🗂 Cards'], ['bg', '✨ Animated background'], ['m', '🤖 Animated mascot'], ['r', '◻ Roundness'], ['f', '🔤 Text size']];
+    var h = '<div class="xt-box"><h5>🎨 Theme studio</h5><div class="xt-sub">Tap anything to preview it instantly. Press <b>Save</b> to keep it on every device.</div>';
+    G.forEach(function (g) { h += '<div class="xt-g"><b>' + g[1] + '</b><div class="xt-chips">' + chips(g[0]) + '</div></div>'; });
+    h += '<div class="xt-g"><b>🌈 Your own accent colour</b><div class="xt-chips"><input type="color" id="xt-ac" value="' + (T.ac || '#8b5cf6') + '" style="width:56px;height:38px;border:0;background:none"><button type="button" class="xt-chip" id="xt-acx">Clear custom colour</button></div></div>';
+    h += '<div class="xt-row"><button type="button" class="xt-btn" id="xt-save">💾 Save</button><button type="button" class="xt-btn alt" id="xt-reset">↺ Reset</button><button type="button" class="xt-btn alt" id="xt-close">Close</button></div></div>';
+    ov.innerHTML = h;
+  }
+  function openTheme() {
+    if (!ov) {
+      ov = el('div', {id: 'xt-ov'}); document.body.appendChild(ov);
+      ov.addEventListener('click', function (e) {
+        var t = e.target;
+        if (t === ov || t.id === 'xt-close') { T = Object.assign({}, saved); applyAll(); ov.style.display = 'none'; return; }
+        var c = t.closest ? t.closest('.xt-chip[data-k]') : null;
+        if (c) { T[c.getAttribute('data-k')] = c.getAttribute('data-v'); applyAll(); var sc = ov.firstChild.scrollTop; renderPanel(); ov.firstChild.scrollTop = sc; return; }
+        if (t.id === 'xt-acx') { T.ac = ''; applyAll(); renderPanel(); return; }
+        if (t.id === 'xt-save') { post('/_x/theme', T).then(function (d) { saved = Object.assign({}, T); toastMsg(d.message && d.message === 'Unauthorized' ? 'Please log in again' : 'Theme saved ✔', d.message !== 'Unauthorized'); ov.style.display = 'none'; }); return; }
+        if (t.id === 'xt-reset') { T = Object.assign({}, DEF); applyAll(); post('/_x/theme', {reset: true}).then(function () { saved = Object.assign({}, DEF); toastMsg('Theme reset to default', true); }); renderPanel(); return; }
+      });
+      ov.addEventListener('input', function (e) { if (e.target.id === 'xt-ac') { T.ac = e.target.value; applyAll(); } });
+    }
+    renderPanel(); ov.style.display = 'flex';
+  }
+
+  /* ---------- maintenance ---------- */
+  var M = CFG.maint || null, mov = null;
+  function setMaint(on) {
+    if (!M) return;
+    M.on = !!on;
+    document.body.classList.toggle('xm-on', M.on);
+    var b = document.getElementById('xm-badge'); if (b) { b.textContent = M.on ? 'ON' : 'OFF'; b.className = 'xm-badge' + (M.on ? ' on' : ''); }
+  }
+  function renderMaint() {
+    mov.innerHTML = '<div class="xt-box"><h5>🛠 Bot maintenance</h5><div class="xt-sub">While ON the Telegram bot does <b>nothing</b> for anyone: no menu, no buttons, no purchases, no replies. Turn it OFF here when your update is finished.</div>'
+      + '<div style="display:flex;align-items:center;gap:14px;margin:14px 0"><label class="xm-sw"><input type="checkbox" id="xm-on"' + (M.on ? ' checked' : '') + '><span></span></label><b id="xm-lbl">' + (M.on ? 'Maintenance is ON' : 'Maintenance is OFF') + '</b></div>'
+      + '<label style="display:flex;gap:8px;align-items:center;font-size:.9rem"><input type="checkbox" id="xm-notice"' + (M.notice ? ' checked' : '') + '> Also send users one short notice (off = bot stays completely silent)</label>'
+      + '<input type="text" id="xm-text" maxlength="200" class="form-control" style="margin-top:8px" value="' + String(M.text || '').replace(/"/g, '&quot;') + '">'
+      + '<div class="xt-row"><button type="button" class="xt-btn" id="xm-save">Save</button><button type="button" class="xt-btn alt" id="xm-close">Close</button></div></div>';
+  }
+  function openMaint() {
+    if (!M) return;
+    if (!mov) {
+      mov = el('div', {id: 'xm-ov'}); document.body.appendChild(mov);
+      mov.addEventListener('click', function (e) {
+        var t = e.target;
+        if (t === mov || t.id === 'xm-close') { mov.style.display = 'none'; return; }
+        if (t.id === 'xm-save') {
+          var on = document.getElementById('xm-on').checked;
+          if (on && !confirm('Turn maintenance ON? The bot will stop answering EVERYONE until you turn it off.')) return;
+          post('/_x/maintenance', {on: on, notice: document.getElementById('xm-notice').checked, text: document.getElementById('xm-text').value}).then(function (d) {
+            if (d.on === undefined) { toastMsg(d.message || 'Could not save', false); return; }
+            M.notice = d.notice; M.text = d.text; setMaint(d.on); mov.style.display = 'none';
+            toastMsg(d.on ? 'Bot maintenance is ON - the bot is silent' : 'Bot maintenance OFF - bot is live again', true);
+          });
+        }
+      });
+      mov.addEventListener('change', function (e) { if (e.target.id === 'xm-on') document.getElementById('xm-lbl').textContent = e.target.checked ? 'Maintenance will be ON' : 'Maintenance will be OFF'; });
+    }
+    renderMaint(); mov.style.display = 'flex';
+  }
+
+  /* ---------- live sync (5 s) ---------- */
+  function startSync() {
+    var origRefresh = typeof window.liveRefresh === 'function' ? window.liveRefresh : null;
+    var lastRef = Date.now(), dirty = false, lastRev = null;
+    if (origRefresh) {
+      window.liveRefresh = function (force) {
+        if (force) { lastRef = Date.now(); return origRefresh(force); }
+        if (dirty || Date.now() - lastRef > 60000) { dirty = false; lastRef = Date.now(); return origRefresh(false); }
+      };
+      var chip = document.getElementById('liveChip');
+      if (chip) chip.innerHTML = '<i></i> Live &middot; synced every 5s';
+    }
+    function poll() {
+      fetch('/_x/rev', {credentials: 'same-origin', cache: 'no-store'}).then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
+        if (!d) return;
+        setMaint(d.maint === 1);
+        if (lastRev === null) { lastRev = d.rev; return; }
+        if (d.rev !== lastRev) {
+          lastRev = d.rev;
+          if (origRefresh && !document.hidden && Date.now() - lastRef > 8000) { lastRef = Date.now(); origRefresh(false); } else { dirty = true; }
+        }
+      }).catch(function () {});
+    }
+    setInterval(poll, 5000); poll();
+  }
+
+  /* ---------- boot ---------- */
+  function boot() {
+    document.head.appendChild(el('style', {id: 'xt-static'})).textContent = STATIC;
+    applyAll();
+    var crown = document.querySelector('.crown-ring');
+    if (!crown) return;                                  /* login page: theme only */
+    crown.setAttribute('title', 'Theme studio');
+    document.addEventListener('click', function (e) {
+      var c = e.target.closest ? e.target.closest('.crown-ring') : null;
+      if (c) { e.preventDefault(); e.stopPropagation(); openTheme(); }
+    }, true);
+    if (M) {
+      document.body.appendChild(el('div', {id: 'xm-banner'}, '🛠 BOT MAINTENANCE IS ON - the bot is not answering anyone. Tap to manage')).addEventListener('click', openMaint);
+      var box = document.querySelector('.quick-box');
+      if (box) {
+        var btn = el('button', {'class': 'qa', id: 'xm-btn', type: 'button'}, '<span class="qi">🛠</span> Bot Maintenance <span class="xm-badge" id="xm-badge">OFF</span>');
+        btn.addEventListener('click', openMaint);
+        var anchor = box.querySelector('.bot-link');
+        if (anchor) box.insertBefore(btn, anchor); else box.appendChild(btn);
+      }
+      setMaint(M.on);
+      startSync();
+    }
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+})();
+'''
+
+_patch_telegram()
+_patch_flask()
+_x_start()
 
 
 
