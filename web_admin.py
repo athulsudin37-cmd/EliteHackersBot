@@ -688,6 +688,18 @@ ADMIN_HTML = """
                 </div>
                 <label class="small mb-1">Channel / Download Link (optional)</label>
                 <input type="text" id="pm_link" class="form-control mb-3" placeholder="e.g. https://t.me/yourchannel">
+                <div class="small text-muted mb-3">This link becomes the <b>Preview Video</b> button at the bottom of the product page.</div>
+                <hr style="border-color:rgba(147,51,234,.4);">
+                <div class="fw-bold mb-2" style="color:#c4b5fd;">&#128444;&#65039; Product page (what the customer sees)</div>
+                <label class="small mb-1">Banner image (optional)</label>
+                <input type="file" id="pm_img" accept="image/*" class="form-control mb-1" onchange="pmPickImg(this)">
+                <div id="pm_img_note" class="small text-muted mb-1"></div>
+                <img id="pm_img_prev" class="mb-2" style="max-width:100%;max-height:150px;border-radius:10px;display:none">
+                <button type="button" class="btn btn-sm btn-outline-danger mb-2" id="pm_img_rm" style="display:none" onclick="pmRemoveImg()">&#128465; Remove image</button>
+                <label class="small mb-1">Title under the image (empty = product name)</label>
+                <input type="text" id="pm_ptitle" class="form-control mb-2" placeholder="e.g. HG CHEATS APK MOD">
+                <label class="small mb-1">Features - one per line (shown in a quote box)</label>
+                <textarea id="pm_feat" rows="4" class="form-control mb-3" placeholder="Silent Aim&#10;ESP Location&#10;Non Root Working"></textarea>
                 <hr style="border-color:rgba(147,51,234,.4);">
                 <div class="fw-bold mb-2" style="color:#c4b5fd;">＋ Plans</div>
                 <div id="pm_plans"></div>
@@ -1052,24 +1064,6 @@ ADMIN_HTML = """
                         </div>
                     </div>
                 </div>
-            </div>
-
-            <!-- 2b. BINANCE USDT -->
-            <div class="gcard amber">
-                <div class="sec-head"><span class="sec-no">₮</span><div><h5>Binance USDT payment</h5><p>Controls the <b>Binance USDT Payment</b> button in the bot. Turn it OFF to hide it. You approve each payment in Telegram.</p></div></div>
-                <div class="ins-box mb-3">
-                    <div class="form-check form-switch">
-                        <input class="form-check-input" type="checkbox" id="bn_enabled" {% if bn_cfg.enabled %}checked{% endif %}>
-                        <label class="form-check-label fw-bold" for="bn_enabled">🟡 Show Binance USDT button</label>
-                    </div>
-                </div>
-                <label class="small mb-1">Binance Pay ID / wallet address (customers send here)</label>
-                <input type="text" id="bn_pay_id" class="form-control mb-3" value="{{ bn_cfg.pay_id }}" placeholder="Binance Pay ID">
-                <label class="small mb-1">Rate: &#8377; per 1 USDT</label>
-                <input type="number" step="0.01" id="bn_rate" class="form-control mb-3" value="{{ bn_cfg.rate }}">
-                <label class="small mb-1">Extra note shown to customer (optional)</label>
-                <input type="text" id="bn_note" class="form-control mb-3" value="{{ bn_cfg.note }}" placeholder="e.g. Network: BEP20">
-                <button class="btn-grad w-100" onclick="saveBinance()"><i class="fas fa-save me-1"></i> Save Binance settings</button>
             </div>
 
             <!-- 3. GMAIL -->
@@ -1738,6 +1732,36 @@ ADMIN_HTML = """
             }
             wrap.appendChild(row);
         }
+        let PM_IMG = '', PM_IMG_RM = false;
+        function pmShowImg(src, note, has) {
+            const im = document.getElementById('pm_img_prev');
+            im.src = src || ''; im.style.display = src ? 'block' : 'none';
+            document.getElementById('pm_img_note').innerText = note || '';
+            document.getElementById('pm_img_rm').style.display = (src || has) ? 'inline-block' : 'none';
+        }
+        function pmPickImg(inp) {
+            const f = inp.files[0]; if (!f) return;
+            const rd = new FileReader();
+            rd.onload = () => {
+                const im = new Image();
+                im.onload = () => {
+                    const k = Math.min(1, 1280 / Math.max(im.width, im.height));
+                    const c = document.createElement('canvas');
+                    c.width = Math.round(im.width * k); c.height = Math.round(im.height * k);
+                    const cx = c.getContext('2d'); cx.fillStyle = '#fff'; cx.fillRect(0, 0, c.width, c.height);
+                    cx.drawImage(im, 0, 0, c.width, c.height);
+                    PM_IMG = c.toDataURL('image/jpeg', 0.88); PM_IMG_RM = false;
+                    pmShowImg(PM_IMG, 'New image ready - press Save.');
+                };
+                im.src = rd.result;
+            };
+            rd.readAsDataURL(f);
+        }
+        function pmRemoveImg() {
+            PM_IMG = ''; PM_IMG_RM = true; document.getElementById('pm_img').value = '';
+            pmShowImg('', 'Image will be removed when you press Save.');
+            document.getElementById('pm_img_rm').style.display = 'none';
+        }
         function openProductModal(idx) {
             const isEdit = (idx !== undefined && idx !== null);
             const p = isEdit ? PRODUCTS[idx] : null;
@@ -1748,6 +1772,17 @@ ADMIN_HTML = """
             document.getElementById('pm_cat').value = isEdit ? (p.category || 'non_root') : 'non_root';
             document.getElementById('pm_icon').value = isEdit ? (p.icon || '') : '';
             document.getElementById('pm_link').value = isEdit ? (p.download_link || '') : '';
+            PM_IMG = ''; PM_IMG_RM = false; pmShowImg('', '');
+            document.getElementById('pm_img').value = '';
+            document.getElementById('pm_ptitle').value = '';
+            document.getElementById('pm_feat').value = '';
+            if (isEdit) {
+                fetch('/api/product/details?k=' + encodeURIComponent(p.prod_key)).then(r => r.json()).then(d => {
+                    document.getElementById('pm_ptitle').value = d.title || '';
+                    document.getElementById('pm_feat').value = d.features || '';
+                    if (d.has_image) pmShowImg('', 'This product already has a banner image. Choose a file to replace it.', true);
+                }).catch(() => {});
+            }
             document.getElementById('pm_plans').innerHTML = '';
             if (isEdit && p.prices.length) {
                 p.prices.forEach(pl => addPlanRow({name: pl[0], price: pl[1], stock: (p.stock || {})[pl[0]] || 0}));
@@ -1775,6 +1810,9 @@ ADMIN_HTML = """
                 category: document.getElementById('pm_cat').value,
                 icon: document.getElementById('pm_icon').value.trim(),
                 download_link: document.getElementById('pm_link').value.trim(),
+                pd_title: document.getElementById('pm_ptitle').value.trim(),
+                pd_features: document.getElementById('pm_feat').value,
+                pd_image: PM_IMG, pd_remove_image: PM_IMG_RM,
                 plans: plans
             };
             fetch(editingKey ? '/api/product/update' : '/api/product/save', {
@@ -1895,14 +1933,6 @@ ADMIN_HTML = """
             let name = document.getElementById('upi_name').value.trim();
             let auto = document.getElementById('auto_verify').checked;
             fetch('/api/payment/save', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({upi_id: upi, payee_name: name, auto_verify: auto}) })
-            .then(r => r.json()).then(d => toast(d.message));
-        }
-        function saveBinance() {
-            let body = {enabled: document.getElementById('bn_enabled').checked,
-                        pay_id: document.getElementById('bn_pay_id').value.trim(),
-                        rate: document.getElementById('bn_rate').value,
-                        note: document.getElementById('bn_note').value.trim()};
-            fetch('/api/binance/save', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) })
             .then(r => r.json()).then(d => toast(d.message));
         }
         function saveGmail() {
@@ -2866,7 +2896,6 @@ def dashboard():
     pay_cfg = {
         "upi_id": pay["upi_id"], "payee_name": pay["payee_name"], "auto_verify": bool(pay["auto_verify"]),
     }
-    bn_cfg = db.get_binance_settings()
     gm = db.get_gmail_config()
     gm_state = (gmail_status() if gmail_status else None) or {}
     gmail_cfg = {
@@ -2938,7 +2967,7 @@ def dashboard():
                "orders": tot_orders, "revenue": f"{tot_rev:,.2f}", "key_stock": tot_keys,
                "today_deposit": f"{today_dep:,.2f}", "awaiting": awaiting},
         products=prods, all_orders=all_orders, pending_orders=pending, users_list=users_list,
-        pay_cfg=pay_cfg, bn_cfg=bn_cfg, gmail=gmail_cfg, alerts=alerts, store=st, pay_stats=pay_stats
+        pay_cfg=pay_cfg, gmail=gmail_cfg, alerts=alerts, store=st, pay_stats=pay_stats
     )
 
 UPI_RE = re.compile(r'^[a-zA-Z0-9.\-_]{2,64}@[a-zA-Z0-9]{2,32}$')
@@ -2955,23 +2984,6 @@ def api_payment_save():
     db.set_payment_settings(upi_id, payee, auto)
     mode = "AUTOMATIC verification is ON." if auto else "Manual approval mode (you approve in Telegram)."
     return jsonify({"message": f"UPI settings saved! New payments use this QR immediately. {mode}"})
-
-@app.route('/api/binance/save', methods=['POST'])
-def api_binance_save():
-    if not admin_required(): return unauthorized()
-    d = request.json or {}
-    pay_id = (d.get('pay_id') or '').strip()[:120]
-    note = (d.get('note') or '').strip()[:200]
-    try:
-        rate = float(d.get('rate'))
-        if rate <= 0: raise ValueError
-    except (TypeError, ValueError):
-        return jsonify({"message": "Enter a valid USDT rate!"}), 400
-    enabled = bool(d.get('enabled'))
-    if enabled and not pay_id:
-        return jsonify({"message": "Enter your Binance Pay ID before turning it ON!"}), 400
-    db.set_binance_settings(enabled, pay_id, rate, note)
-    return jsonify({"message": "Binance USDT is ON — button visible in the bot." if enabled else "Binance USDT is OFF — button hidden."})
 
 @app.route('/api/payment/test_parse', methods=['POST'])
 def api_test_parse():
@@ -3267,15 +3279,81 @@ def _save_product(d, is_update):
                 cur.executemany('INSERT INTO keys_inventory (prod_key, plan, item_key, is_used) VALUES (%s, %s, %s, 0)', rows)
     return jsonify({"message": "Product updated!" if is_update else "Product added!"})
 
+def _details_table():
+    db.execute("CREATE TABLE IF NOT EXISTS product_details (prod_key TEXT PRIMARY KEY, image_id TEXT, title TEXT, features TEXT)")
+
+def _get_details(prod_key):
+    try:
+        _details_table()
+        return db.fetchone("SELECT image_id, title, features FROM product_details WHERE prod_key = %s", (prod_key,))
+    except Exception:
+        return None
+
+def _tg_photo_file_id(data_url):
+    """Upload the banner once (to the admin chat), keep Telegram's file_id, delete the upload message."""
+    import base64, uuid
+    raw = base64.b64decode(data_url.split(',', 1)[1])
+    admin_id = os.environ.get("ADMIN_ID", "7616127905")
+    b = uuid.uuid4().hex
+    body = b""
+    for n, v in (("chat_id", admin_id), ("disable_notification", "true")):
+        body += ('--%s\r\nContent-Disposition: form-data; name="%s"\r\n\r\n%s\r\n' % (b, n, v)).encode()
+    body += ('--%s\r\nContent-Disposition: form-data; name="photo"; filename="banner.jpg"\r\nContent-Type: image/jpeg\r\n\r\n' % b).encode()
+    body += raw + ('\r\n--%s--\r\n' % b).encode()
+    req = urllib.request.Request("https://api.telegram.org/bot%s/sendPhoto" % BOT_TOKEN, data=body,
+                                 headers={"Content-Type": "multipart/form-data; boundary=" + b})
+    with urllib.request.urlopen(req, timeout=40) as r:
+        res = json.loads(r.read().decode())["result"]
+    try:
+        dreq = urllib.request.Request("https://api.telegram.org/bot%s/deleteMessage" % BOT_TOKEN,
+                                      data=json.dumps({"chat_id": admin_id, "message_id": res["message_id"]}).encode(),
+                                      headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(dreq, timeout=10).read()
+    except Exception:
+        pass
+    return res["photo"][-1]["file_id"]
+
+def _store_details(d, k):
+    _details_table()
+    old = db.fetchone("SELECT image_id FROM product_details WHERE prod_key = %s", (k,)) or {}
+    image_id = old.get("image_id")
+    if d.get("pd_remove_image"):
+        image_id = None
+    if d.get("pd_image"):
+        image_id = _tg_photo_file_id(d["pd_image"])
+    db.execute("""INSERT INTO product_details (prod_key, image_id, title, features) VALUES (%s, %s, %s, %s)
+                  ON CONFLICT (prod_key) DO UPDATE SET image_id = EXCLUDED.image_id, title = EXCLUDED.title, features = EXCLUDED.features""",
+               (k, image_id, (d.get("pd_title") or "").strip()[:200], (d.get("pd_features") or "").strip()[:700]))
+
+def _save_with_details(is_update):
+    d = request.json or {}
+    resp = _save_product(d, is_update=is_update)
+    code = resp[1] if isinstance(resp, tuple) else getattr(resp, "status_code", 200)
+    if code < 400:
+        k = (d.get('prod_key') or '').strip() if is_update else re.sub(r'[^a-zA-Z0-9]', '_', (d.get('name') or '').strip()).strip('_').lower()[:32]
+        try:
+            _store_details(d, k)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("Could not save product page details")
+            return jsonify({"message": "Product saved, but the banner image could not be uploaded to Telegram. Try again."})
+    return resp
+
+@app.route('/api/product/details')
+def api_product_details():
+    if not admin_required(): return unauthorized()
+    r = _get_details(request.args.get('k', '')) or {}
+    return jsonify({"title": r.get("title") or "", "features": r.get("features") or "", "has_image": bool(r.get("image_id"))})
+
 @app.route('/api/product/save', methods=['POST'])
 def api_save_p():
     if not admin_required(): return unauthorized()
-    return _save_product(request.json or {}, is_update=False)
+    return _save_with_details(False)
 
 @app.route('/api/product/update', methods=['POST'])
 def api_update_p():
     if not admin_required(): return unauthorized()
-    return _save_product(request.json or {}, is_update=True)
+    return _save_with_details(True)
 
 @app.route('/api/product/toggle', methods=['POST'])
 def api_toggle_p():
@@ -3302,6 +3380,11 @@ def api_toggle_p():
 def api_del_p():
     if not admin_required(): return unauthorized()
     db.execute('DELETE FROM products WHERE prod_key = %s', ((request.json or {}).get('prod_key'),))
+    try:
+        _details_table()
+        db.execute('DELETE FROM product_details WHERE prod_key = %s', ((request.json or {}).get('prod_key'),))
+    except Exception:
+        pass
     return jsonify({"message": "Product deleted!"})
 
 @app.route('/api/keys/add', methods=['POST'])
@@ -3320,6 +3403,115 @@ def api_keys_add():
             cur.executemany('INSERT INTO keys_inventory (prod_key, plan, item_key, is_used) VALUES (%s, %s, %s, 0)',
                             [(d['prod_key'], plan, x) for x in keys])
     return jsonify({"message": f"{len(keys)} key(s) added to {prod['name']} — {plan}."})
+
+def _main_mod():
+    import sys
+    me = sys.modules.get(__name__)
+    for name in ("__main__", "main"):
+        m = sys.modules.get(name)
+        if m is not None and m is not me and hasattr(m, "build_plans_view"):
+            return m
+    return None
+
+def _esc_html(t):
+    return _html.escape(str(t or ""), quote=False)
+
+def _wrap_build_view(fn):
+    """Product page text = title + features from the admin panel (no fixed Aim/Headshot lines)."""
+    import functools
+    @functools.wraps(fn)
+    def wrapper(user_id, prod_key, *a, **k):
+        res = fn(user_id, prod_key, *a, **k)
+        try:
+            if not res:
+                return res
+            row = db.fetchone("SELECT name, icon FROM products WHERE prod_key = %s", (prod_key,)) or {}
+            det = _get_details(prod_key) or {}
+            title = (det.get("title") or "").strip() or ("%s %s" % (row.get("icon") or "", row.get("name") or "")).strip()
+            lines = [x.strip() for x in (det.get("features") or "").splitlines() if x.strip()]
+            text = "<b>%s</b>" % _esc_html(title)
+            if lines:
+                text += "\n\n<blockquote>%s</blockquote>" % "\n".join(_esc_html(x) for x in lines)
+            text += "\n\nSelect duration:"
+            return text, res[1]
+        except Exception:
+            return res
+    wrapper._pp_hooked = True
+    return wrapper
+
+def _wrap_show_plans(orig):
+    """Product page with the banner image on top (falls back to the normal text page)."""
+    import asyncio
+    async def show_product_plans_hooked(update, context):
+        try:
+            q = update.callback_query
+            pk = (q.data or "").replace("selprod_", "", 1)
+            det = await asyncio.to_thread(_get_details, pk)
+            m = _main_mod()
+            if det and det.get("image_id") and m is not None:
+                prod = m.get_product_by_key(pk)
+                if prod and not prod.get("maintenance"):
+                    view = m.build_plans_view(update.effective_user.id, pk)
+                    if view and len(view[0]) <= 1000:
+                        await context.bot.send_photo(chat_id=q.message.chat_id, photo=det["image_id"], caption=view[0],
+                                                     parse_mode="HTML", reply_markup=view[1])
+                        try:
+                            await q.message.delete()
+                        except Exception:
+                            pass
+                        try:
+                            await q.answer()
+                        except Exception:
+                            pass
+                        return
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("Product page with image failed - using text page")
+        return await orig(update, context)
+    show_product_plans_hooked._pp_hooked = True
+    return show_product_plans_hooked
+
+def _install_product_page_hook():
+    # (a) swap the handler of the product page before the bot registers it
+    try:
+        from telegram.ext import Application
+        if not getattr(Application.add_handler, "_pp_hooked", False):
+            _orig_add = Application.add_handler
+            def add_handler(self, handler, group=0):
+                cb = getattr(handler, "callback", None)
+                if getattr(cb, "__name__", "") == "show_product_plans" and not getattr(cb, "_pp_hooked", False):
+                    handler.callback = _wrap_show_plans(cb)
+                return _orig_add(self, handler, group)
+            add_handler._pp_hooked = True
+            Application.add_handler = add_handler
+    except Exception:
+        pass
+    # (b) swap the text builder once main.py has loaded
+    import sys, time
+    for _ in range(240):
+        m = _main_mod()
+        if m is not None:
+            if not getattr(m.build_plans_view, "_pp_hooked", False):
+                m.build_plans_view = _wrap_build_view(m.build_plans_view)
+            return
+        time.sleep(0.5)
+
+_install_product_page_hook_thread = None
+try:
+    from telegram.ext import Application as _PTBApp
+    _pp_orig = _PTBApp.add_handler
+    if not getattr(_pp_orig, "_pp_hooked", False):
+        def _pp_add_handler(self, handler, group=0):
+            cb = getattr(handler, "callback", None)
+            if getattr(cb, "__name__", "") == "show_product_plans" and not getattr(cb, "_pp_hooked", False):
+                handler.callback = _wrap_show_plans(cb)
+            return _pp_orig(self, handler, group)
+        _pp_add_handler._pp_hooked = True
+        _PTBApp.add_handler = _pp_add_handler
+except Exception:
+    pass
+import threading as _pp_threading
+_pp_threading.Thread(target=_install_product_page_hook, daemon=True).start()
 
 _DEMAND_READY = False
 def _demand_table():
@@ -4041,6 +4233,7 @@ def run_web():
 if __name__ == "__main__":
     init_db()
     run_web()
+
 
 
 
