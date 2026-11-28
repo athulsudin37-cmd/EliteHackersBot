@@ -3,7 +3,6 @@ import json
 import re
 import time
 import hashlib
-import hmac
 import csv
 import io
 import urllib.request
@@ -12,7 +11,7 @@ import mimetypes
 import html as _html
 from datetime import datetime, timedelta, timezone
 from threading import Thread
-from flask import Flask, render_template_string, request, jsonify, redirect, session, Response
+from flask import Flask, request, jsonify, redirect, session, Response
 
 from database import db, init_db, parse_prices, MENU_BUTTONS, BUTTON_GROUPS, BUTTON_COLORS
 import supplier_api
@@ -49,7 +48,16 @@ def q_one(sql, params=None):
 TODAY_SQL = ("((o.created_ts AT TIME ZONE 'Asia/Kolkata')::date = (now() AT TIME ZONE 'Asia/Kolkata')::date "
              "OR o.timestamp LIKE %s)")
 
+# Filled in by main.py when both run in one process (otherwise these stay harmless no-ops)
+send_test_alert = lambda: False
+translate_hook = None
+
 def tg_send(chat_id, text):
+    try:
+        if translate_hook and int(chat_id) != ADMIN_ID:
+            text = translate_hook(text, db.get_user_lang(int(chat_id)))
+    except Exception:
+        pass
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = json.dumps({"chat_id": chat_id, "text": text, "parse_mode": "HTML"}).encode()
     urllib.request.urlopen(
@@ -226,6 +234,14 @@ ADMIN_HTML = """
         .bc-all { display: flex; align-items: center; gap: 10px; padding: 12px 18px; background: rgba(0,0,0,.18); border-bottom: 1px solid rgba(147,51,234,.2); color: var(--txt-soft); font-size: .85rem; }
         .bc-row { padding: 14px 18px; border-bottom: 1px solid rgba(147,51,234,.15); }
         .bc-row:last-child { border-bottom: none; }
+        .bc-emo { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+        .bc-ico img, .emo-cell img { width: 22px; height: 22px; object-fit: contain; vertical-align: middle; margin-right: 6px; }
+        .emo-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(52px, 1fr)); gap: 8px; max-height: 52vh; overflow-y: auto; padding: 4px; }
+        .emo-cell { position: relative; height: 52px; border-radius: 12px; background: #0d0622; border: 1px solid var(--neon-border); color: #fff; font-size: 24px; padding: 0; }
+        .emo-cell img { position: absolute; inset: 8px; width: 36px; height: 36px; margin: 0; background: #0d0622; }
+        .emo-cell:hover { border-color: #a855f7; }
+        .hint-box { background: rgba(251,191,36,.08); border: 1px solid rgba(251,191,36,.35); border-radius: 12px; padding: 10px 12px; font-size: .82rem; color: #e5dcc0; margin-bottom: 12px; }
+        .pv-box { background: #0d0622; border: 1px solid var(--neon-border); border-radius: 14px; padding: 12px; font-size: .9rem; white-space: pre-wrap; word-break: break-word; min-height: 48px; }
         .bc-prev { display: block; text-align: center; padding: 11px 12px; border-radius: 10px; font-weight: 700; color: #fff; margin-bottom: 10px; }
         .s-none { background: #3a4052; } .s-primary { background: #2f7de1; } .s-success { background: #2e9b44; } .s-danger { background: #c9424a; }
         .sw-wrap { display: flex; gap: 10px; align-items: center; }
@@ -457,6 +473,7 @@ ADMIN_HTML = """
         <a class="sb-link" data-tab="broadcast" onclick="showTab('broadcast', this)"><span class="sb-ic g8">📢</span> Broadcast</a>
         <a class="sb-link" data-tab="coupons" onclick="showTab('coupons', this)"><span class="sb-ic g4">🎟️</span> Coupon Manager</a>
         <a class="sb-link" data-tab="btncolors" onclick="showTab('btncolors', this)"><span class="sb-ic g1">🎨</span> Button Colors</a>
+        <a class="sb-link" data-tab="botscreens" onclick="showTab('botscreens', this)"><span class="sb-ic g6">👋</span> Welcome &amp; Alerts</a>
         <a class="sb-link" data-tab="store" onclick="showTab('store', this)"><span class="sb-ic g7">⚙️</span> Store Settings</a>
         <a class="sb-link" data-tab="security" onclick="showTab('security', this)"><span class="sb-ic g7">👤</span> My Profile</a>
         <a href="/logout" class="sb-link" style="color:#fca5a5;margin-top:10px;"><span class="sb-ic g8">🔒</span> Logout</a>
@@ -890,6 +907,28 @@ ADMIN_HTML = """
 
         <!-- 7️⃣ 🤝 TAB: RESELLERS -->
         <div class="tab-pane-content" id="tab-resellers" style="display:none;">
+            <div class="gcard amber">
+                <div class="sec-head"><span class="sec-no">👑</span><div><h5>Reseller plan screen</h5><p>The bot shows exactly what you write here. Placeholders: {min_balance} {fee} {rest} {balance}.</p></div></div>
+                <div class="form-check form-switch mb-3">
+                    <input class="form-check-input" type="checkbox" id="rs_on" {% if ui.r_enabled not in ('0','false','False','') %}checked{% endif %}>
+                    <label class="form-check-label" for="rs_on">Reseller plan is on</label>
+                </div>
+                <div class="row g-2 mb-2">
+                    <div class="col-4"><label class="small mb-1">Min balance ₹</label><input type="number" min="0" id="rs_min" class="form-control" value="{{ ui.r_min }}" oninput="rsPrev()"></div>
+                    <div class="col-4"><label class="small mb-1">Fee ₹</label><input type="number" min="0" id="rs_fee" class="form-control" value="{{ ui.r_fee }}" oninput="rsPrev()"></div>
+                    <div class="col-4"><label class="small mb-1">Price factor</label><input type="number" min="0" step="0.01" id="rs_factor" class="form-control" value="{{ ui.r_factor }}"></div>
+                </div>
+                <label class="small mb-1">Plan screen text</label>
+                <textarea id="rs_text" class="form-control mb-2" rows="6" oninput="rsPrev()">{{ ui.r_text }}</textarea>
+                <div class="pv-box mb-3" id="rs_prev"></div>
+                <label class="small mb-1">Buy button text</label>
+                <input type="text" id="rs_buy" class="form-control mb-2" maxlength="60" value="{{ ui.r_buy }}">
+                <label class="small mb-1">Success message</label>
+                <textarea id="rs_ok" class="form-control mb-2" rows="3">{{ ui.r_success }}</textarea>
+                <label class="small mb-1">Not-enough-balance message</label>
+                <textarea id="rs_low" class="form-control mb-3" rows="3">{{ ui.r_low }}</textarea>
+                <button class="btn-grad" onclick="saveReseller()">💾 Save reseller settings</button>
+            </div>
             <div class="card p-4">
                 <h5>🤝 Resellers Management</h5>
                 <div class="table-responsive mt-3">
@@ -1538,6 +1577,12 @@ ADMIN_HTML = """
                 <div class="ph-ic">🎨</div>
                 <div><h3>Button Colors</h3><p>Pick a color for every bot button. Tap a group to open it.</p></div>
             </div>
+            <div class="hint-box">⭐ <b>Premium icons:</b> the bot's owner account needs <b>Telegram Premium</b> for button icons to show. If Telegram refuses an icon the bot simply sends the button without it (nothing breaks).
+                Paste your emoji pack link here, press <b>Load pack</b>, then tap <b>😀 Icon</b> on any button.</div>
+            <div class="d-flex gap-2 mb-3 flex-wrap">
+                <input type="text" id="emoPackName" class="form-control" style="max-width:340px" placeholder="t.me/addemoji/YourPack" value="{{ ui.emoji_pack_name }}">
+                <button class="pa" style="margin:0;" onclick="emoLoadPack()">⬇️ Load pack</button>
+            </div>
             <div class="d-flex gap-2 mb-3 flex-wrap">
                 <button class="btn-grad" onclick="saveButtonColors()">💾 Save Colors</button>
                 <button class="pa" style="margin:0;" onclick="resetButtonColors()">↩️ Reset all to default</button>
@@ -1555,19 +1600,93 @@ ADMIN_HTML = """
                     </div>
                 </div>
                 {% for b in g['items'] %}
-                <div class="bc-row" data-key="{{ b.key }}" data-style="{{ b.style }}" data-default="{{ b.default }}">
-                    <span class="bc-prev s-{{ b.style }}">{{ b.label }}</span>
+                <div class="bc-row" data-key="{{ b.key }}" data-style="{{ b.style }}" data-ostyle="{{ b.style }}" data-emoji="{{ b.emoji }}" data-oemoji="{{ b.emoji }}" data-default="{{ b.default }}">
+                    <span class="bc-prev s-{{ b.style }}"><span class="bc-ico"></span>{{ b.label }}</span>
                     <div class="sw-wrap">
                         <span class="sw s-none {% if b.style == 'none' %}on{% endif %}" onclick="pickColor(this, 'none')" title="Grey"></span>
                         <span class="sw s-primary {% if b.style == 'primary' %}on{% endif %}" onclick="pickColor(this, 'primary')" title="Blue"></span>
                         <span class="sw s-success {% if b.style == 'success' %}on{% endif %}" onclick="pickColor(this, 'success')" title="Green"></span>
                         <span class="sw s-danger {% if b.style == 'danger' %}on{% endif %}" onclick="pickColor(this, 'danger')" title="Red"></span>
                     </div>
+                    <div class="bc-emo">
+                        <button type="button" class="chip-btn" onclick="emoOpen(this)">😀 Icon</button>
+                        <button type="button" class="chip-btn bc-emoclear" style="display:none" onclick="emoSet(this.closest('.bc-row'), '')">✖ Remove icon</button>
+                    </div>
                 </div>
                 {% endfor %}
             </details>
             {% endfor %}
             <button class="btn-grad w-100 py-3 mt-2" onclick="saveButtonColors()">💾 Save Colors</button>
+        </div>
+
+        <!-- 😀 emoji picker -->
+        <div class="modal-bg" id="emoModal">
+            <div class="modal-card">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h5 class="m-0">😀 Choose a premium icon</h5>
+                    <button class="btn-close btn-close-white" onclick="document.getElementById('emoModal').style.display='none'"></button>
+                </div>
+                <div class="emo-grid" id="emoGrid"></div>
+                <label class="small mt-3 mb-1">Or type an emoji ID</label>
+                <div class="d-flex gap-2">
+                    <input type="text" id="emoManual" class="form-control" inputmode="numeric" placeholder="e.g. 5368324170671202286">
+                    <button class="btn-grad" onclick="emoManualUse()">Use</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 👋 TAB: WELCOME / ALERTS / LANGUAGE -->
+        <div class="tab-pane-content" id="tab-botscreens" style="display:none;">
+            <div class="page-head">
+                <div class="ph-ic">👋</div>
+                <div><h3>Welcome &amp; Alerts</h3><p>What new users see, error alerts to your Telegram, and the language button.</p></div>
+            </div>
+
+            <div class="gcard green">
+                <div class="sec-head"><span class="sec-no">1</span><div><h5>Welcome message (after /start)</h5><p>Leave the text empty to keep the bot's normal welcome. Use {name} {user_id} {balance} {shop_name}.</p></div></div>
+                <textarea id="wc_text" class="form-control mb-2" rows="5" oninput="wcPrev()" placeholder="Welcome {name}! ...">{{ ui.welcome_text }}</textarea>
+                <div class="pv-box mb-3" id="wc_prev"></div>
+                <div class="form-check form-switch mb-2">
+                    <input class="form-check-input" type="checkbox" id="wc_img_on" {% if ui.welcome_image_on == '1' %}checked{% endif %}>
+                    <label class="form-check-label" for="wc_img_on">Send a picture with the welcome message</label>
+                </div>
+                <div id="wc_img_box" class="mb-2"></div>
+                <div class="d-flex gap-2 flex-wrap mb-2">
+                    <input type="file" id="wc_file" accept="image/*" style="display:none" onchange="wcUpload(this)">
+                    <button class="pa" style="margin:0;" onclick="document.getElementById('wc_file').click()">🖼️ Upload picture</button>
+                    <button class="pa" style="margin:0;" onclick="wcRemoveImg()">🗑️ Remove picture</button>
+                </div>
+                <input type="text" id="wc_url" class="form-control mb-3" placeholder="…or paste a picture link (https://…)" oninput="wcUrl(this.value)">
+                <label class="small mb-1">Bot description <span class="text-muted">(shown before pressing Start, max 512)</span></label>
+                <textarea id="wc_desc" class="form-control mb-2" rows="3" maxlength="512">{{ ui.bot_description }}</textarea>
+                <label class="small mb-1">Short description <span class="text-muted">(bot profile, max 120)</span></label>
+                <input type="text" id="wc_short" class="form-control mb-2" maxlength="120" value="{{ ui.bot_short_description }}">
+                <div class="hint-box">ℹ️ The <b>picture</b> shown on the pre-Start screen cannot be set from code — Telegram allows it only in BotFather: <code>/setdescriptionpic</code>. The text above is set automatically.</div>
+                <button class="btn-grad" onclick="saveWelcome()">💾 Save welcome</button>
+            </div>
+
+            <div class="gcard red">
+                <div class="sec-head"><span class="sec-no">2</span><div><h5>Error alerts</h5><p>Errors (payments etc.) are sent to your Telegram with the reason.</p></div></div>
+                <div class="form-check form-switch mb-2">
+                    <input class="form-check-input" type="checkbox" id="al_on" {% if ui.alert_on != '0' %}checked{% endif %}>
+                    <label class="form-check-label" for="al_on">Send error alerts</label>
+                </div>
+                <label class="small mb-1">Send to Telegram ID</label>
+                <input type="text" id="al_chat" class="form-control mb-3" inputmode="numeric" value="{{ ui.alert_chat }}">
+                <div class="d-flex gap-2 flex-wrap">
+                    <button class="btn-grad" onclick="saveAlerts()">💾 Save</button>
+                    <button class="pa" style="margin:0;" onclick="testAlert()">🔔 Send test alert</button>
+                </div>
+                <div class="hint-box mt-3 mb-0">If the whole bot is down it cannot message you. Add a free uptime monitor (e.g. UptimeRobot) on <code>/health</code> for that.</div>
+            </div>
+
+            <div class="gcard blue">
+                <div class="sec-head"><span class="sec-no">3</span><div><h5>Language button</h5><p>Shows 🌐 Language on the start menu (English, हिन्दी, తెలుగు, தமிழ், മലയാളം).</p></div></div>
+                <div class="form-check form-switch mb-3">
+                    <input class="form-check-input" type="checkbox" id="lg_on" {% if ui.lang_on != '0' %}checked{% endif %} onchange="saveLang()">
+                    <label class="form-check-label" for="lg_on">Show the Language button</label>
+                </div>
+            </div>
         </div>
     </div>
     {% endif %}
@@ -1706,6 +1825,7 @@ ADMIN_HTML = """
             if (t === 'keystock' && typeof lkLoad === 'function') lkLoad();
             if (t === 'broadcast' && typeof bcHistLoad === 'function') bcHistLoad();
             if (t === 'supplier' && typeof supLoad === 'function') supLoad();
+            if (t === 'btncolors' && !EMO_LOADED) emoLoad();
         }
         function filterTable(inputId, tableId) {
             let filter = document.getElementById(inputId).value.toLowerCase();
@@ -1794,17 +1914,17 @@ ADMIN_HTML = """
         function closeProductModal() { document.getElementById('prodModal').style.display = 'none'; }
         function submitProduct() {
             const name = document.getElementById('pm_name').value.trim();
-            if (!name) return alert('Enter the product name!');
+            if (!name) return toast('Enter the product name!', false);
             const plans = [];
             for (const r of document.querySelectorAll('#pm_plans .plan-row')) {
                 const pn = r.querySelector('.pl-name').value.trim();
                 const pr = parseFloat(r.querySelector('.pl-price').value);
                 const keys = r.querySelector('.pl-keys').value;
                 if (!pn && isNaN(pr) && !keys.trim()) continue;
-                if (!pn || isNaN(pr) || pr < 0) return alert('Every plan needs a name and a price!');
+                if (!pn || isNaN(pr) || pr < 0) return toast('Every plan needs a name and a price!', false);
                 plans.push({old: r.dataset.old || '', name: pn, price: pr, keys: keys});
             }
-            if (!plans.length) return alert('Add at least one plan!');
+            if (!plans.length) return toast('Add at least one plan!', false);
             const body = {
                 prod_key: editingKey, name: name,
                 category: document.getElementById('pm_cat').value,
@@ -1815,18 +1935,14 @@ ADMIN_HTML = """
                 pd_image: PM_IMG, pd_remove_image: PM_IMG_RM,
                 plans: plans
             };
-            fetch(editingKey ? '/api/product/update' : '/api/product/save', {
-                method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
-            }).then(r => r.json()).then(d => { alert(d.message); if (!d.error) location.reload(); });
+            act(editingKey ? '/api/product/update' : '/api/product/save', body, () => { closeProductModal(); });
         }
         function toggleProduct(k, field) {
-            fetch('/api/product/toggle', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({prod_key: k, field: field}) })
-            .then(r => r.json()).then(d => { alert(d.message); location.reload(); });
+            act('/api/product/toggle', {prod_key: k, field: field});
         }
         function deleteProduct(k) {
             if(!confirm('Delete this product?')) return;
-            fetch('/api/product/delete', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({prod_key: k}) })
-            .then(r => r.json()).then(d => { alert(d.message); location.reload(); });
+            act('/api/product/delete', {prod_key: k});
         }
         function fillKeyPlans() {
             const sel = document.getElementById('ks_prod');
@@ -1850,9 +1966,8 @@ ADMIN_HTML = """
             const prod = document.getElementById('ks_prod').value;
             const plan = document.getElementById('ks_plan').value;
             const keys = document.getElementById('ks_keys').value;
-            if (!prod || !plan || !keys.trim()) return alert('Choose a product, a plan and paste the keys!');
-            fetch('/api/keys/add', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({prod_key: prod, plan: plan, keys: keys}) })
-            .then(r => r.json()).then(d => { alert(d.message); if (!d.error) location.reload(); });
+            if (!prod || !plan || !keys.trim()) return toast('Choose a product, a plan and paste the keys!', false);
+            act('/api/keys/add', {prod_key: prod, plan: plan, keys: keys}, () => { document.getElementById('ks_keys').value = ''; });
         }
         /* ===== Out-of-stock demand board ===== */
         let DM_LAST = '';
@@ -1911,9 +2026,8 @@ ADMIN_HTML = """
 
         function dispatchKey(oid, uid) {
             let key = document.getElementById('key_disp_' + oid).value;
-            if(!key) return alert('Enter key!');
-            fetch('/api/pending/dispatch', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({order_id: oid, user_id: uid, key: key}) })
-            .then(r => r.json()).then(d => { alert(d.message); location.reload(); });
+            if(!key) return toast('Enter key!', false);
+            act('/api/pending/dispatch', {order_id: oid, user_id: uid, key: key}, () => { const e = document.getElementById('key_disp_' + oid); if (e) { const row = e.closest('tr'); if (row) row.remove(); } });
         }
         function updateUpiPreview() {
             let up = document.getElementById('upi_id');
@@ -2246,21 +2360,18 @@ ADMIN_HTML = """
             let cat = document.getElementById('id_cat').value;
             let pr = document.getElementById('id_price').value;
             let cred = document.getElementById('id_cred').value;
-            if(!pr || !cred) return alert('Fill fields!');
-            fetch('/api/id_stock/add', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({category: cat, price: parseFloat(pr), credentials: cred}) })
-            .then(r => r.json()).then(d => { alert(d.message); location.reload(); });
+            if(!pr || !cred) return toast('Fill fields!', false);
+            act('/api/id_stock/add', {category: cat, price: parseFloat(pr), credentials: cred}, () => { document.getElementById('id_cred').value = ''; document.getElementById('id_price').value = ''; });
         }
         function saveCoupon() {
             let c = document.getElementById('cp_code').value;
             let v = document.getElementById('cp_val').value;
             let l = document.getElementById('cp_limit').value;
-            if(!c || !v) return alert('Fill fields!');
-            fetch('/api/coupon/save', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({code: c, val: parseFloat(v), limit: parseInt(l||100)}) })
-            .then(r => r.json()).then(d => { alert(d.message); location.reload(); });
+            if(!c || !v) return toast('Fill fields!', false);
+            act('/api/coupon/save', {code: c, val: parseFloat(v), limit: parseInt(l||100)}, () => { document.getElementById('cp_code').value = ''; document.getElementById('cp_val').value = ''; });
         }
         function toggleResellerRole(uid, role) {
-            fetch('/api/user/set_role', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({user_id: uid, role: role}) })
-            .then(r => r.json()).then(d => { alert(d.message); location.reload(); });
+            act('/api/user/set_role', {user_id: uid, role: role});
         }
         function applyColor(row, style) {
             row.dataset.style = style;
@@ -2276,10 +2387,16 @@ ADMIN_HTML = """
             document.querySelectorAll('.bc-row').forEach(r => applyColor(r, r.dataset.default || 'none'));
         }
         function saveButtonColors() {
-            let styles = {};
-            document.querySelectorAll('.bc-row').forEach(r => { styles[r.dataset.key] = r.dataset.style; });
-            fetch('/api/buttons/save', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({styles: styles}) })
-            .then(r => r.json()).then(d => alert(d.message));
+            const styles = {}, emojis = {}; let n = 0;
+            document.querySelectorAll('.bc-row').forEach(r => {
+                if (r.dataset.style !== r.dataset.ostyle || (r.dataset.emoji || '') !== (r.dataset.oemoji || '')) {
+                    styles[r.dataset.key] = r.dataset.style; emojis[r.dataset.key] = r.dataset.emoji || ''; n++;
+                }
+            });
+            if (!n) { toast('Nothing changed'); return; }
+            act('/api/buttons/save', {styles: styles, emojis: emojis}, () => {
+                document.querySelectorAll('.bc-row').forEach(r => { r.dataset.ostyle = r.dataset.style; r.dataset.oemoji = r.dataset.emoji || ''; });
+            }, false);
         }
         /* ===== Upgrade JS: toast, live key status, store settings, broadcast, profile ===== */
         function toast(msg, ok) {
@@ -2767,6 +2884,121 @@ ADMIN_HTML = """
             });
         }
 
+
+        /* ===== Instant save: fetch, green toast (red on failure), refresh only the changed tables - the page never reloads ===== */
+        function act(url, body, after, refresh) {
+            return postJSON(url, body).then(d => {
+                const good = d._ok && !d.error;
+                toast(d.message || (good ? 'Saved ✔' : 'Failed'), good);
+                if (good) { if (after) after(d); if (refresh !== false) softRefresh(); }
+                return d;
+            }).catch(() => { toast('Network error - please try again', false); });
+        }
+        async function softRefresh() {
+            for (let i = 0; i < 30 && liveBusy; i++) await new Promise(r => setTimeout(r, 100));
+            await liveRefresh(true);
+        }
+        function val(id) { const e = document.getElementById(id); return e ? e.value : ''; }
+        function chk(id) { const e = document.getElementById(id); return !!(e && e.checked); }
+        function prevHtml(t) {
+            return esc(t).replace(new RegExp('&lt;(/?)(b|i|u|s|code|pre|strong|em)&gt;', 'g'), '<$1$2>');
+        }
+        /* ---- Reseller ---- */
+        function rsPrev() {
+            const mn = parseFloat(val('rs_min')) || 0, fee = parseFloat(val('rs_fee')) || 0;
+            const t = val('rs_text');
+            const fmt = n => String(Math.round(n * 100) / 100);
+            document.getElementById('rs_prev').innerHTML = t.trim()
+                ? prevHtml(t).split('{min_balance}').join(fmt(mn)).split('{fee}').join(fmt(fee)).split('{rest}').join(fmt(Math.max(0, mn - fee)))
+                : '<span class="text-muted">(empty: the bot shows only "👑 Reseller Plan")</span>';
+        }
+        function saveReseller() {
+            act('/api/reseller/save', {enabled: chk('rs_on'), min_balance: val('rs_min'), fee: val('rs_fee'), factor: val('rs_factor'),
+                text: val('rs_text'), buy_label: val('rs_buy'), success_text: val('rs_ok'), lowbal_text: val('rs_low')}, null, false);
+        }
+        /* ---- Welcome / alerts / language ---- */
+        let wcImg = {{ ui.welcome_image|tojson }};
+        function wcPrev() {
+            const t = val('wc_text');
+            document.getElementById('wc_prev').innerHTML = t.trim() ? prevHtml(t) : '<span class="text-muted">(empty: the normal welcome of the bot is used)</span>';
+        }
+        function wcShowImg() {
+            const box = document.getElementById('wc_img_box');
+            if (!box) return;
+            if (!wcImg) { box.innerHTML = ''; return; }
+            const src = /^https?:/.test(wcImg) ? wcImg : '/api/tgfile/' + encodeURIComponent(wcImg);
+            box.innerHTML = '<img src="' + esc(src) + '" alt="" style="max-width:100%;max-height:200px;border-radius:12px;border:1px solid var(--neon-border)">';
+        }
+        function wcUrl(v) { wcImg = v.trim(); wcShowImg(); }
+        function wcUpload(inp) {
+            const f = inp.files && inp.files[0];
+            if (!f) return;
+            const rd = new FileReader();
+            rd.onload = () => {
+                const im = new Image();
+                im.onload = () => {
+                    const sc = Math.min(1, 1280 / Math.max(im.width, im.height));
+                    const c = document.createElement('canvas');
+                    c.width = Math.round(im.width * sc); c.height = Math.round(im.height * sc);
+                    c.getContext('2d').drawImage(im, 0, 0, c.width, c.height);
+                    toast('Uploading picture...');
+                    act('/api/welcome/image', {data: c.toDataURL('image/jpeg', 0.85)}, d => {
+                        wcImg = d.file_id; document.getElementById('wc_img_on').checked = true; wcShowImg();
+                    }, false);
+                };
+                im.onerror = () => toast('Could not read that picture', false);
+                im.src = rd.result;
+            };
+            rd.readAsDataURL(f);
+            inp.value = '';
+        }
+        function wcRemoveImg() {
+            act('/api/welcome/image', {clear: true}, () => { wcImg = ''; document.getElementById('wc_img_on').checked = false; document.getElementById('wc_url').value = ''; wcShowImg(); }, false);
+        }
+        function saveWelcome() {
+            act('/api/welcome/save', {welcome_text: val('wc_text'), image_on: chk('wc_img_on'), welcome_image: wcImg,
+                bot_description: val('wc_desc'), bot_short_description: val('wc_short')}, null, false);
+        }
+        function saveAlerts() { act('/api/alerts/save', {on: chk('al_on'), chat: val('al_chat')}, null, false); }
+        function testAlert() { act('/api/alerts/test', {}, null, false); }
+        function saveLang() { act('/api/lang/save', {on: chk('lg_on')}, null, false); }
+        wcPrev(); rsPrev(); wcShowImg();
+        /* ---- Premium emoji picker ---- */
+        let EMO_PACK = [], EMO_BY_ID = {}, EMO_LOADED = false, emoRow = null;
+        function emoThumb(e) { return e && e.thumb ? '/api/tgfile/' + encodeURIComponent(e.thumb) : ''; }
+        function emoIndex(pack) { EMO_PACK = pack || []; EMO_BY_ID = {}; EMO_PACK.forEach(e => { EMO_BY_ID[e.id] = e; }); }
+        function emoPaintRow(row) {
+            const id = row.dataset.emoji || '', e = EMO_BY_ID[id], box = row.querySelector('.bc-ico');
+            box.innerHTML = !id ? '' : (e && e.thumb ? '<img src="' + emoThumb(e) + '" alt="">' : '<span>' + esc(e ? e.emoji : '★') + '</span> ');
+            row.querySelector('.bc-emoclear').style.display = id ? '' : 'none';
+        }
+        function emoPaintAll() { document.querySelectorAll('.bc-row').forEach(emoPaintRow); }
+        function emoLoad() {
+            EMO_LOADED = true;
+            fetch('/api/emoji/pack').then(r => r.json()).then(d => { emoIndex(d.pack); emoPaintAll(); }).catch(() => { EMO_LOADED = false; });
+        }
+        function emoLoadPack() {
+            act('/api/emoji/pack', {name: val('emoPackName')}, d => { emoIndex(d.pack); emoPaintAll(); }, false);
+        }
+        function emoSet(row, id) { row.dataset.emoji = id || ''; emoPaintRow(row); }
+        function emoOpen(btn) {
+            emoRow = btn.closest('.bc-row');
+            document.getElementById('emoManual').value = emoRow.dataset.emoji || '';
+            const g = document.getElementById('emoGrid');
+            g.innerHTML = EMO_PACK.length ? EMO_PACK.map((e, i) =>
+                '<button type="button" class="emo-cell" onclick="emoChoose(' + i + ')" title="' + esc(e.emoji) + '"><span>' + esc(e.emoji) + '</span>' +
+                (e.thumb ? '<img loading="lazy" src="' + emoThumb(e) + '" alt="" onerror="this.remove()">' : '') + '</button>').join('')
+                : '<div class="small text-muted p-2">No pack loaded yet. Close this, paste your emoji pack link and press "Load pack" (or type an emoji ID below).</div>';
+            document.getElementById('emoModal').style.display = 'flex';
+        }
+        function emoChoose(i) { if (emoRow && EMO_PACK[i]) emoSet(emoRow, EMO_PACK[i].id); document.getElementById('emoModal').style.display = 'none'; }
+        function emoManualUse() {
+            const v = val('emoManual').trim();
+            if (v && !/^[0-9]{5,25}$/.test(v)) { toast('An emoji ID is digits only', false); return; }
+            if (emoRow) emoSet(emoRow, v);
+            document.getElementById('emoModal').style.display = 'none';
+        }
+
         /* ===== AUTO REFRESH every 15 s: silent, the page never reloads (so the video and song keep playing) ===== */
         let liveLeft = 15, liveBusy = false, liveReloaded = false;
         function anyModalOpen() {
@@ -2793,14 +3025,15 @@ ADMIN_HTML = """
                     cur.forEach((el, i) => {
                         if (el.innerHTML === nw[i].innerHTML) return;
                         // never overwrite something the admin is typing into
-                        if (el.contains(document.activeElement)) return;
-                        if (Array.from(el.querySelectorAll('input,textarea')).some(f => f.value)) return;
+                        if (!force && el.contains(document.activeElement)) return;
+                        if (!force && Array.from(el.querySelectorAll('input,textarea')).some(f => f.value)) return;
                         el.innerHTML = nw[i].innerHTML;
                     });
                 });
                 const m = html.match(/PRODUCTS = (.*);/);
                 const pm = document.getElementById('prodModal');
                 if (m && !(pm && pm.style.display === 'flex')) { try { PRODUCTS = JSON.parse(m[1]); } catch (e) {} }
+                if (typeof lkProdsFilled !== 'undefined') lkProdsFilled = false;
                 document.querySelectorAll('.tab-pane-content input[onkeyup]').forEach(i => { if (i.value && i.onkeyup) i.onkeyup(); });
                 if (typeof memFilter === 'function') memFilter();
             } catch (e) { /* network hiccup: try again at the next tick */ }
@@ -2825,6 +3058,23 @@ ADMIN_HTML = """
 # ==========================================
 # 🌐 BACKEND API ENDPOINTS
 # ==========================================
+from concurrent.futures import ThreadPoolExecutor as _TPE
+_POOL = _TPE(max_workers=6)
+_ADMIN_TPL = None
+
+def _par(*fns):
+    """Run independent database reads at the same time and return their results in order."""
+    futs = [_POOL.submit(f) for f in fns]
+    return [f.result() for f in futs]
+
+def render_admin(**ctx):
+    """Render the admin page. The big template is compiled ONCE (render_template_string re-compiled it on every request)."""
+    global _ADMIN_TPL
+    if _ADMIN_TPL is None:
+        _ADMIN_TPL = app.jinja_env.from_string(ADMIN_HTML)
+    app.update_template_context(ctx)
+    return _ADMIN_TPL.render(ctx)
+
 def admin_required():
     """Logged in AND the session is from the current session generation ("Logout all devices" bumps it)."""
     if not session.get('admin_logged'):
@@ -2850,7 +3100,7 @@ def login():
         session['sv'] = db.get_session_version()
         return redirect('/')
     time.sleep(1)  # slow down password guessing
-    return render_template_string(ADMIN_HTML, bg=_bg_ctx(), bot_info=BOT_INFO, error="Invalid Admin Password!")
+    return render_admin(bg=_bg_ctx(), bot_info=BOT_INFO, error="Invalid Admin Password!")
 
 @app.route('/logout')
 def logout():
@@ -2861,42 +3111,85 @@ def logout():
 def dashboard():
     if not admin_required():
         session.clear()  # drops stale sessions (e.g. after "Logout all devices")
-        return render_template_string(ADMIN_HTML, bg=_bg_ctx(), bot_info=BOT_INFO)
+        return render_admin(bg=_bg_ctx(), bot_info=BOT_INFO)
 
-    r_u = q_one('SELECT COUNT(*), COALESCE(SUM(wallet_balance), 0) FROM users')
+    today_prefix = datetime.now(IST).strftime("%d %b %Y") + "%"
+    delivered_sql = "LEFT(COALESCE(o.key_delivered, ''), 7) <> 'PENDING'"
+
+    def _stock():
+        d = {}
+        for pk, plan, cnt in q_all('SELECT prod_key, plan, COUNT(*) FROM keys_inventory WHERE is_used = 0 GROUP BY prod_key, plan'):
+            d.setdefault(pk, {})[plan] = cnt
+        return d
+
+    def _alerts():
+        return [
+            {
+                "time_txt": r["received_at"].astimezone(IST).strftime("%d %b, %I:%M %p") if r["received_at"] else "",
+                "amount": r["amount"], "utr": r["utr"], "status": r["status"], "order_id": r["order_id"],
+                "snippet": (r["raw_text"] or "")[:90],
+            }
+            for r in db.recent_bank_credits(20)
+        ]
+
+    # all independent reads run at the same time (several pooled connections) instead of one after another
+    (r_u, r_o, tot_prods, tot_keys, today_dep, awaiting, stock, prod_rows, all_orders, pending, users_list, topups,
+     st_r, pay, gm, alerts, pay_stats_rows, saved_looks, r_k, r_t, pending_n, today_by_product_rows, lifetime_rows,
+     bc_row, st, ui) = _par(
+        lambda: q_one('SELECT COUNT(*), COALESCE(SUM(wallet_balance), 0) FROM users'),
+        lambda: q_one("SELECT COUNT(*), COALESCE(SUM(amount), 0) FROM order_history WHERE LEFT(COALESCE(key_delivered, ''), 7) <> 'PENDING'"),
+        lambda: q_one('SELECT COUNT(*) FROM products')[0],
+        lambda: q_one('SELECT COUNT(*) FROM keys_inventory WHERE is_used = 0')[0],
+        lambda: float(q_one(
+            """
+            SELECT COALESCE(SUM(COALESCE(pay_amount, amount)), 0) FROM payment_records
+            WHERE status = 'verified'
+              AND (created_ts AT TIME ZONE 'Asia/Kolkata')::date = (now() AT TIME ZONE 'Asia/Kolkata')::date
+            """
+        )[0] or 0),
+        lambda: q_one("SELECT COUNT(*) FROM payment_records WHERE status = 'awaiting_approval'")[0] or 0,
+        _stock,
+        lambda: q_all('SELECT prod_key, name, category, prices, icon, download_link, maintenance, stock_out FROM products ORDER BY name'),
+        lambda: q_all('SELECT id, user_id, prod_name, plan, key_delivered, amount, utr, timestamp FROM order_history ORDER BY id DESC LIMIT 50'),
+        lambda: q_all("SELECT id, user_id, prod_name, plan, key_delivered, amount, timestamp FROM order_history WHERE LEFT(key_delivered, 7) = 'PENDING' ORDER BY id DESC"),
+        lambda: q_all('SELECT user_id, full_name, username, joined_date, orders_count, wallet_balance, total_spent, total_referrals, referral_earnings, account_type FROM users ORDER BY user_id DESC LIMIT 500'),
+        lambda: q_all('SELECT created_at, user_id, COALESCE(pay_amount, amount), status, order_id FROM payment_records ORDER BY id DESC LIMIT 30'),
+        lambda: q_one('SELECT support_username, how_to_use_link FROM store_settings WHERE id = 1') or ("@Athulsudin", ""),
+        db.get_payment_settings,
+        db.get_gmail_config,
+        _alerts,
+        lambda: (
+            q_one("SELECT COUNT(*) FROM payment_records WHERE status = 'verified' "
+                  "AND (created_ts AT TIME ZONE 'Asia/Kolkata')::date = (now() AT TIME ZONE 'Asia/Kolkata')::date")[0] or 0,
+            q_one("SELECT COUNT(*) FROM bank_credits WHERE status = 'unmatched'")[0] or 0,
+        ),
+        db.get_button_looks,
+        lambda: q_one(f"SELECT COUNT(*), COALESCE(SUM(o.amount), 0) FROM order_history o WHERE {delivered_sql}"),
+        lambda: q_one(f"SELECT COUNT(*), COALESCE(SUM(o.amount), 0) FROM order_history o WHERE {delivered_sql} AND {TODAY_SQL}", (today_prefix,)),
+        lambda: q_one("SELECT COUNT(*) FROM order_history WHERE LEFT(COALESCE(key_delivered, ''), 7) = 'PENDING'")[0] or 0,
+        lambda: q_all(
+            f"SELECT o.prod_name, COUNT(*), SUM(o.amount) FROM order_history o WHERE {delivered_sql} AND {TODAY_SQL} "
+            "GROUP BY o.prod_name ORDER BY SUM(o.amount) DESC", (today_prefix,)),
+        lambda: q_all(
+            f"SELECT o.prod_name, COUNT(*), SUM(o.amount) FROM order_history o WHERE {delivered_sql} GROUP BY o.prod_name"),
+        lambda: q_one(
+            "SELECT COUNT(*) AS c_all, COUNT(*) FILTER (WHERE orders_count > 0) AS c_cust, COUNT(*) FILTER (WHERE orders_count = 0) AS c_non, "
+            "COUNT(*) FILTER (WHERE account_type = 'Reseller') AS c_res FROM users"
+        ),
+        db.get_settings,
+        db.get_ui_settings,
+    )
     tot_users, tot_wallet = r_u[0] or 0, float(r_u[1] or 0)
-    r_o = q_one("SELECT COUNT(*), COALESCE(SUM(amount), 0) FROM order_history WHERE LEFT(COALESCE(key_delivered, ''), 7) <> 'PENDING'")
     tot_orders, tot_rev = r_o[0] or 0, float(r_o[1] or 0)
-    tot_prods = q_one('SELECT COUNT(*) FROM products')[0]
-    tot_keys = q_one('SELECT COUNT(*) FROM keys_inventory WHERE is_used = 0')[0]
-    today_dep = float(q_one(
-        """
-        SELECT COALESCE(SUM(COALESCE(pay_amount, amount)), 0) FROM payment_records
-        WHERE status = 'verified'
-          AND (created_ts AT TIME ZONE 'Asia/Kolkata')::date = (now() AT TIME ZONE 'Asia/Kolkata')::date
-        """
-    )[0] or 0)
-    awaiting = q_one("SELECT COUNT(*) FROM payment_records WHERE status = 'awaiting_approval'")[0] or 0
-
-    stock = {}
-    for pk, plan, cnt in q_all('SELECT prod_key, plan, COUNT(*) FROM keys_inventory WHERE is_used = 0 GROUP BY prod_key, plan'):
-        stock.setdefault(pk, {})[plan] = cnt
     prods = [
         {"prod_key": p[0], "name": p[1], "category": p[2], "prices": parse_prices(p[3]),
          "icon": p[4] or "⚡", "download_link": p[5] or "", "maintenance": int(p[6] or 0),
          "stock_out": int(p[7] or 0), "stock": stock.get(p[0], {})}
-        for p in q_all('SELECT prod_key, name, category, prices, icon, download_link, maintenance, stock_out FROM products ORDER BY name')
+        for p in prod_rows
     ]
-    all_orders = q_all('SELECT id, user_id, prod_name, plan, key_delivered, amount, utr, timestamp FROM order_history ORDER BY id DESC LIMIT 50')
-    pending = q_all("SELECT id, user_id, prod_name, plan, key_delivered, amount, timestamp FROM order_history WHERE LEFT(key_delivered, 7) = 'PENDING' ORDER BY id DESC")
-    users_list = q_all('SELECT user_id, full_name, username, joined_date, orders_count, wallet_balance, total_spent, total_referrals, referral_earnings, account_type FROM users ORDER BY user_id DESC LIMIT 500')
-    topups = q_all('SELECT created_at, user_id, COALESCE(pay_amount, amount), status, order_id FROM payment_records ORDER BY id DESC LIMIT 30')
-    st_r = q_one('SELECT support_username, how_to_use_link FROM store_settings WHERE id = 1') or ("@Athulsudin", "")
-    pay = db.get_payment_settings()
     pay_cfg = {
         "upi_id": pay["upi_id"], "payee_name": pay["payee_name"], "auto_verify": bool(pay["auto_verify"]),
     }
-    gm = db.get_gmail_config()
     gm_state = (gmail_status() if gmail_status else None) or {}
     gmail_cfg = {
         "user": gm.get("gmail_user") or "", "has_password": bool(gm.get("gmail_app_password")),
@@ -2905,62 +3198,29 @@ def dashboard():
                   + (f" Last check: {gm_state['last_check']}." if gm_state.get("last_check") else "")
                   + (f" Last e-mail: {gm_state['last_mail']}." if gm_state.get("last_mail") else ""),
     }
-    ist = IST
-    alerts = [
-        {
-            "time_txt": r["received_at"].astimezone(ist).strftime("%d %b, %I:%M %p") if r["received_at"] else "",
-            "amount": r["amount"], "utr": r["utr"], "status": r["status"], "order_id": r["order_id"],
-            "snippet": (r["raw_text"] or "")[:90],
-        }
-        for r in db.recent_bank_credits(20)
-    ]
+    pay_stats = {"today_count": pay_stats_rows[0], "unmatched": pay_stats_rows[1]}
 
-    pay_stats = {
-        "today_count": q_one(
-            "SELECT COUNT(*) FROM payment_records WHERE status = 'verified' "
-            "AND (created_ts AT TIME ZONE 'Asia/Kolkata')::date = (now() AT TIME ZONE 'Asia/Kolkata')::date")[0] or 0,
-        "unmatched": q_one("SELECT COUNT(*) FROM bank_credits WHERE status = 'unmatched'")[0] or 0,
-    }
+    button_groups = []
+    for title, items in BUTTON_GROUPS:
+        rows = []
+        for k, label, default in items:
+            sv = saved_looks.get(k)
+            style = (sv[0] if sv and sv[0] is not None else default) or "none"
+            rows.append({"key": k, "label": label, "default": default or "none",
+                         "style": style, "emoji": (sv[1] if sv else "") or ""})
+        button_groups.append({"title": title, "items": rows})
 
-    saved_styles = db.get_button_styles()
-    button_groups = [
-        {"title": title, "items": [
-            {"key": k, "label": label, "default": default or "none",
-             "style": (saved_styles.get(k) if saved_styles.get(k) is not None else default) or "none"}
-            for k, label, default in items
-        ]}
-        for title, items in BUTTON_GROUPS
-    ]
-
-    # ---- Manage Keys analytics ----
-    today_prefix = datetime.now(IST).strftime("%d %b %Y") + "%"
-    delivered_sql = "LEFT(COALESCE(o.key_delivered, ''), 7) <> 'PENDING'"
-    r_k = q_one(f"SELECT COUNT(*), COALESCE(SUM(o.amount), 0) FROM order_history o WHERE {delivered_sql}")
-    r_t = q_one(f"SELECT COUNT(*), COALESCE(SUM(o.amount), 0) FROM order_history o WHERE {delivered_sql} AND {TODAY_SQL}", (today_prefix,))
-    pending_n = q_one("SELECT COUNT(*) FROM order_history WHERE LEFT(COALESCE(key_delivered, ''), 7) = 'PENDING'")[0] or 0
     key_stats = {
         "total": r_k[0] or 0, "today": r_t[0] or 0, "today_rev": f"{float(r_t[1] or 0):,.2f}",
         "live_products": sum(1 for p in prods if not p["maintenance"] and not p["stock_out"]),
         "pending": pending_n,
     }
-    today_by_product = [
-        (r[0], r[1], float(r[2] or 0)) for r in q_all(
-            f"SELECT o.prod_name, COUNT(*), SUM(o.amount) FROM order_history o WHERE {delivered_sql} AND {TODAY_SQL} "
-            "GROUP BY o.prod_name ORDER BY SUM(o.amount) DESC", (today_prefix,))
-    ]
-    lifetime = {
-        r[0]: [r[1], float(r[2] or 0)] for r in q_all(
-            f"SELECT o.prod_name, COUNT(*), SUM(o.amount) FROM order_history o WHERE {delivered_sql} GROUP BY o.prod_name")
-    }
-    bc_row = q_one(
-        "SELECT COUNT(*) AS c_all, COUNT(*) FILTER (WHERE orders_count > 0) AS c_cust, COUNT(*) FILTER (WHERE orders_count = 0) AS c_non, "
-        "COUNT(*) FILTER (WHERE account_type = 'Reseller') AS c_res FROM users"
-    )
+    today_by_product = [(r[0], r[1], float(r[2] or 0)) for r in today_by_product_rows]
+    lifetime = {r[0]: [r[1], float(r[2] or 0)] for r in lifetime_rows}
     bc_counts = {"all": bc_row[0] or 0, "customers": bc_row[1] or 0, "non_buyers": bc_row[2] or 0, "resellers": bc_row[3] or 0}
-    st = db.get_settings()
 
-    return render_template_string(
-        ADMIN_HTML, bg=_bg_ctx(), bot_info=BOT_INFO, button_groups=button_groups, topups=topups,
+    return render_admin(
+        bg=_bg_ctx(), bot_info=BOT_INFO, button_groups=button_groups, topups=topups, ui=_ui_view(ui),
         key_stats=key_stats, today_by_product=today_by_product, lifetime=lifetime,
         bc_counts=bc_counts, admin_id=ADMIN_ID,
         stats={"users": tot_users, "total_wallet": f"{tot_wallet:,.2f}", "products_count": tot_prods,
@@ -3496,7 +3756,6 @@ def _install_product_page_hook():
             return
         time.sleep(0.5)
 
-_install_product_page_hook_thread = None
 try:
     from telegram.ext import Application as _PTBApp
     _pp_orig = _PTBApp.add_handler
@@ -3701,14 +3960,209 @@ def api_coupon():
 @app.route('/api/buttons/save', methods=['POST'])
 def api_buttons_save():
     if not admin_required(): return unauthorized()
-    styles = (request.json or {}).get('styles') or {}
-    if not isinstance(styles, dict):
-        return jsonify({"message": "Invalid data!"}), 400
+    body = request.json or {}
+    styles, emojis = body.get('styles') or {}, body.get('emojis') or {}
+    if not isinstance(styles, dict) or not isinstance(emojis, dict):
+        return jsonify({"message": "Invalid data!", "error": True}), 400
     allowed = set(BUTTON_COLORS) | {"none"}
-    for key, style in styles.items():
-        if key in MENU_BUTTONS and style in allowed:
-            db.set_button_style(key, style)
-    return jsonify({"message": "Button colors saved! The bot shows them within a few seconds."})
+    n = 0
+    for key in set(styles) | set(emojis):
+        if key not in MENU_BUTTONS:
+            continue
+        st = styles.get(key)
+        st = st if st in allowed else None
+        em = emojis.get(key)
+        em = str(em).strip() if em is not None else None
+        if em and not re.fullmatch(r'\d{5,25}', em):
+            return jsonify({"message": "An emoji ID must be digits only.", "error": True}), 400
+        if st is None and em is None:
+            continue
+        if st is None:
+            st = (db.get_button_looks().get(key) or (MENU_BUTTONS[key][1] or "none",))[0] or "none"
+        db.set_button_look(key, style=st, emoji_id=em)
+        n += 1
+    return jsonify({"message": "Saved ✔ (%d button%s). The bot shows it within a few seconds." % (n, "" if n == 1 else "s")})
+
+
+# ==========================================
+# 😀 PREMIUM EMOJI PACK + TELEGRAM FILES (admin preview)
+# ==========================================
+def _pack_names(raw):
+    out = []
+    for part in re.split(r'[\s,]+', raw or ''):
+        part = part.strip().rstrip('/')
+        if part:
+            out.append(part.split('/')[-1])
+    return out[:5]
+
+@app.route('/api/emoji/pack', methods=['GET', 'POST'])
+def api_emoji_pack():
+    if not admin_required(): return unauthorized()
+    if request.method == 'GET':
+        ui = db.get_ui_settings()
+        try:
+            pack = json.loads(ui.get("emoji_pack_json") or "[]")
+        except Exception:
+            pack = []
+        return jsonify({"name": ui.get("emoji_pack_name", ""), "pack": pack})
+    names = _pack_names((request.json or {}).get('name'))
+    if not names:
+        return jsonify({"message": "Paste the emoji pack link (like t.me/addemoji/YourPack).", "error": True}), 400
+    pack = []
+    for nm in names:
+        ok, res = tg_call("getStickerSet", {"name": nm})
+        if not ok or not isinstance(res, dict):
+            return jsonify({"message": "Telegram could not find '%s': %s" % (nm, res), "error": True}), 400
+        for st in res.get("stickers", []):
+            if st.get("custom_emoji_id"):
+                th = (st.get("thumbnail") or {}).get("file_id") or st.get("file_id")
+                pack.append({"id": st["custom_emoji_id"], "emoji": st.get("emoji", ""), "thumb": th})
+    if not pack:
+        return jsonify({"message": "That pack has no custom (premium) emoji.", "error": True}), 400
+    db.set_ui_settings({"emoji_pack_name": " ".join(names), "emoji_pack_json": json.dumps(pack, ensure_ascii=False)})
+    return jsonify({"message": "Loaded %d emoji ✔" % len(pack), "name": " ".join(names), "pack": pack})
+
+@app.route('/api/tgfile/<fid>')
+def api_tgfile(fid):
+    """Shows a Telegram file (emoji thumbnail / welcome picture) in the admin without ever exposing the bot token."""
+    if not admin_required(): return unauthorized()
+    if not re.fullmatch(r'[A-Za-z0-9_\-]{10,250}', fid):
+        return "bad id", 400
+    ok, res = tg_call("getFile", {"file_id": fid})
+    if not ok or not isinstance(res, dict) or not res.get("file_path"):
+        return "not found", 404
+    try:
+        with urllib.request.urlopen("https://api.telegram.org/file/bot%s/%s" % (BOT_TOKEN, res["file_path"]), timeout=15) as r:
+            data = r.read()
+    except Exception:
+        return "not found", 404
+    ctype = mimetypes.guess_type(res["file_path"])[0] or "image/webp"
+    return Response(data, mimetype=ctype, headers={"Cache-Control": "private, max-age=86400"})
+
+
+# ==========================================
+# 👑 RESELLER / 👋 WELCOME / 🚨 ALERTS / 🌐 LANGUAGE settings (shared with the bot through ui_settings)
+# ==========================================
+def _ui_view(ui):
+    """Admin-written bot settings with defaults, for the settings cards."""
+    g = lambda k, d="": (ui.get(k) if ui.get(k) is not None else d)
+    return {
+        "welcome_text": g("welcome_text"), "welcome_image": g("welcome_image"),
+        "welcome_image_on": str(g("welcome_image_on", "0")),
+        "bot_description": g("bot_description"), "bot_short_description": g("bot_short_description"),
+        "alert_on": str(g("alert_on", "1")), "alert_chat": g("alert_chat") or str(ADMIN_ID),
+        "lang_on": str(g("lang_on", "1")),
+        "emoji_pack_name": g("emoji_pack_name"),
+        "r_enabled": str(g("reseller_enabled", "1")), "r_min": g("reseller_min_balance", "2500"),
+        "r_fee": g("reseller_fee", "700"), "r_factor": g("reseller_factor", "0.6"),
+        "r_text": g("reseller_text"), "r_buy": g("reseller_buy_label", "Buy Reseller Plan"),
+        "r_success": g("reseller_success_text"), "r_low": g("reseller_lowbal_text"),
+    }
+
+def _pos_num(v, name, maxv=10_000_000):
+    try:
+        n = float(str(v).strip())
+    except Exception:
+        raise ValueError("%s must be a number." % name)
+    if n < 0 or n > maxv:
+        raise ValueError("%s must be between 0 and %d." % (name, maxv))
+    return ("%g" % n)
+
+@app.route('/api/reseller/save', methods=['POST'])
+def api_reseller_save():
+    if not admin_required(): return unauthorized()
+    d = request.json or {}
+    try:
+        vals = {
+            "reseller_enabled": "1" if d.get("enabled") else "0",
+            "reseller_min_balance": _pos_num(d.get("min_balance"), "Minimum balance"),
+            "reseller_fee": _pos_num(d.get("fee"), "Activation fee"),
+            "reseller_factor": _pos_num(d.get("factor"), "Price factor", 10),
+        }
+    except ValueError as e:
+        return jsonify({"message": str(e), "error": True}), 400
+    for key, field, limit in (("reseller_text", "text", 3500), ("reseller_buy_label", "buy_label", 60),
+                              ("reseller_success_text", "success_text", 3500), ("reseller_lowbal_text", "lowbal_text", 3500)):
+        v = str(d.get(field) or "")
+        if len(v) > limit:
+            return jsonify({"message": "'%s' is too long (max %d characters)." % (field, limit), "error": True}), 400
+        vals[key] = v
+    db.set_ui_settings(vals)
+    return jsonify({"message": "Reseller settings saved ✔ The bot shows them within a few seconds."})
+
+def _bg_tg(method, payload):
+    try:
+        ok, res = tg_call(method, payload)
+        if not ok:
+            print("[admin] %s failed: %s" % (method, res))
+    except Exception as e:
+        print("[admin] %s error: %s" % (method, e))
+
+@app.route('/api/welcome/save', methods=['POST'])
+def api_welcome_save():
+    if not admin_required(): return unauthorized()
+    d = request.json or {}
+    text = str(d.get("welcome_text") or "")
+    desc = str(d.get("bot_description") or "")
+    short = str(d.get("bot_short_description") or "")
+    if len(text) > 3500 or len(desc) > 512 or len(short) > 120:
+        return jsonify({"message": "Too long: welcome text max 3500, description max 512, short description max 120.", "error": True}), 400
+    vals = {"welcome_text": text, "welcome_image_on": "1" if d.get("image_on") else "0",
+            "bot_description": desc, "bot_short_description": short}
+    if "welcome_image" in d:
+        img = str(d.get("welcome_image") or "").strip()
+        if img and not (img.startswith("http://") or img.startswith("https://") or re.fullmatch(r'[A-Za-z0-9_\-]{20,250}', img)):
+            return jsonify({"message": "Picture must be an https:// link or an uploaded picture.", "error": True}), 400
+        vals["welcome_image"] = img
+    db.set_ui_settings(vals)
+    # the pre-Start texts are sent to Telegram in the background so the Save button answers at once
+    _POOL.submit(_bg_tg, "setMyDescription", {"description": desc})
+    _POOL.submit(_bg_tg, "setMyShortDescription", {"short_description": short})
+    return jsonify({"message": "Welcome settings saved ✔"})
+
+@app.route('/api/welcome/image', methods=['POST'])
+def api_welcome_image():
+    if not admin_required(): return unauthorized()
+    d = request.json or {}
+    if d.get("clear"):
+        db.set_ui_settings({"welcome_image": "", "welcome_image_on": "0"})
+        return jsonify({"message": "Welcome picture removed ✔", "file_id": ""})
+    data = str(d.get("data") or "")
+    if not data.startswith("data:image/") or "," not in data or len(data) > 9_000_000:
+        return jsonify({"message": "Choose a picture (JPG / PNG, under about 6 MB).", "error": True}), 400
+    try:
+        fid = _tg_photo_file_id(data)
+    except Exception as e:
+        return jsonify({"message": "Upload to Telegram failed: %s" % e, "error": True}), 400
+    db.set_ui_settings({"welcome_image": fid, "welcome_image_on": "1"})
+    return jsonify({"message": "Picture uploaded & saved ✔", "file_id": fid})
+
+@app.route('/api/alerts/save', methods=['POST'])
+def api_alerts_save():
+    if not admin_required(): return unauthorized()
+    d = request.json or {}
+    chat = str(d.get("chat") or "").strip()
+    if chat and not re.fullmatch(r'-?\d{5,20}', chat):
+        return jsonify({"message": "Chat ID must be a number (your Telegram ID).", "error": True}), 400
+    db.set_ui_settings({"alert_on": "1" if d.get("on") else "0", "alert_chat": chat})
+    return jsonify({"message": "Alert settings saved ✔"})
+
+@app.route('/api/alerts/test', methods=['POST'])
+def api_alerts_test():
+    if not admin_required(): return unauthorized()
+    try:
+        ok = bool(send_test_alert())
+    except Exception:
+        ok = False
+    if ok:
+        return jsonify({"message": "Test alert sent ✔ Check your Telegram."})
+    return jsonify({"message": "Could not send. Press /start on the bot with the alert account and check the Chat ID.", "error": True}), 400
+
+@app.route('/api/lang/save', methods=['POST'])
+def api_lang_save():
+    if not admin_required(): return unauthorized()
+    db.set_ui_settings({"lang_on": "1" if (request.json or {}).get("on") else "0"})
+    return jsonify({"message": "Language button saved ✔"})
 
 
 # ==========================================
@@ -4233,6 +4687,7 @@ def run_web():
 if __name__ == "__main__":
     init_db()
     run_web()
+
 
 
 
