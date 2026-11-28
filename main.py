@@ -8,6 +8,7 @@ import random
 import urllib.parse
 import html
 import io
+import sys
 from threading import Thread
 from datetime import datetime, timedelta
 import pytz
@@ -17,6 +18,7 @@ from telegram.ext import (
     CommandHandler,
     CallbackQueryHandler,
     MessageHandler,
+    TypeHandler,
     ContextTypes,
     filters
 )
@@ -49,10 +51,6 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "7616127905"))
 STORE_CONFIG = {
     "support_username": "@Athulsudin",
     "how_to_use_link": "https://t.me/chatelitehackers"
-}
-UPI_CONFIG = {
-    "fampay_token": "9544113089@fam",
-    "paytm_token": ""
 }
 
 IST = pytz.timezone('Asia/Kolkata')
@@ -117,35 +115,15 @@ def _num(value, default):
 # ----------------------------------------------------------------------
 RESELLER_SCHEMA_VERSION = 1
 RESELLER_SCHEMA = [
-    # key, label, type, default
+    # key, label, type, default  (every text is written in the admin panel; empty = a short neutral line)
     ("reseller_enabled", "Reseller plan enabled (1 = on, 0 = off)", "number", "1"),
     ("reseller_min_balance", "Minimum wallet balance (₹)", "number", "2500"),
     ("reseller_fee", "Activation fee (₹)", "number", "700"),
     ("reseller_factor", "Reseller price factor (0.6 = pay 60% of regular price)", "number", "0.6"),
-    ("reseller_text", "Reseller plan screen text (HTML). Use {min_balance} {fee} {rest}", "textarea",
-     "🤝 <b>RESELLER PLAN</b>\n_________________________\n\n"
-     "💰 Minimum Balance: <b>₹{min_balance}</b>\n"
-     "💸 Activation Fee: <b>Only ₹{fee}</b>\n"
-     "_________________________\n\n"
-     "⚡ <b>How does it work?</b>\n"
-     "Deposit ₹{min_balance} in your wallet — only ₹{fee} will be charged as activation fee!\n"
-     "The remaining ₹{rest} stays safe in your wallet to purchase any products at wholesale rates!\n\n"
-     "👑 <b>Reseller Benefits:</b>\n"
-     "• Get all products at exclusive discounted prices!\n"
-     "• Set your own margin & earn maximum profit\n"
-     "• Unlimited earning opportunity\n"
-     "• Exclusive VIP Reseller badge on your profile\n\n"
-     "💸 <b>Example:</b>\n"
-     "🔷 Regular ₹90 Product → Reseller Price: <b>₹40</b>\n"
-     "🔷 Regular ₹300 Product → Reseller Price: <b>₹150</b>\n\n"
-     "🔥 Start reselling now and earn huge profits!"),
+    ("reseller_text", "Reseller plan screen text (HTML). Use {min_balance} {fee} {rest}", "textarea", ""),
     ("reseller_buy_label", "Buy button text", "text", "Buy Reseller Plan"),
-    ("reseller_success_text", "Success message (HTML). Use {fee} {rest}", "textarea",
-     "🎉 <b>CONGRATULATIONS!</b>\n\nYou are now officially a <b>👑 VIP Reseller!</b>\n"
-     "₹{fee} activation fee deducted. Your remaining ₹{rest}+ is safe in your wallet for purchases."),
-    ("reseller_lowbal_text", "Not-enough-balance message (HTML). Use {min_balance} {balance}", "textarea",
-     "⚠️ <b>Insufficient Balance!</b>\n\n💰 Required: <b>₹{min_balance}</b>\n"
-     "💸 Your Balance: <b>₹{balance}</b>\n\nPlease add balance to your wallet to activate the VIP Reseller Plan."),
+    ("reseller_success_text", "Success message (HTML). Use {fee} {rest}", "textarea", ""),
+    ("reseller_lowbal_text", "Not-enough-balance message (HTML). Use {min_balance} {balance}", "textarea", ""),
 ]
 RESELLER_DEFAULTS = {k: d for k, _l, _t, d in RESELLER_SCHEMA}
 _reseller_cache = {"t": 0.0, "v": None}
@@ -194,6 +172,40 @@ def _fill(template, **vals):
     for k, v in vals.items():
         out = out.replace("{" + k + "}", fmt_amount(v))
     return out
+
+
+def _fill_text(template, **vals):
+    out = str(template)
+    for k, v in vals.items():
+        out = out.replace("{" + k + "}", str(v))
+    return out
+
+_TG_TAGS = {"b", "strong", "i", "em", "u", "ins", "s", "strike", "del", "code", "pre", "a", "tg-spoiler", "blockquote"}
+_TAG_RE = re.compile(r"<(/?)([a-zA-Z][\w-]*)([^<>]*)>")
+
+def _safe_html(text):
+    """Admin-written text must never break a message: only Telegram's own tags, properly closed
+    (anything else, or a mistake in the tags, and the whole text is shown as plain text instead)."""
+    text = str(text or "")
+    stack, pos = [], 0
+    for m in _TAG_RE.finditer(text):
+        if "<" in text[pos:m.start()] or ">" in text[pos:m.start()]:
+            return html.escape(text, quote=False)
+        pos = m.end()
+        closing, name, attrs = m.group(1), m.group(2).lower(), m.group(3)
+        if name not in _TG_TAGS or (closing and attrs.strip()):
+            return html.escape(text, quote=False)
+        if closing:
+            if not stack or stack.pop() != name:
+                return html.escape(text, quote=False)
+        else:
+            if attrs.strip() and not (name == "a" and re.fullmatch(r'\s+href="[^"<>]*"\s*', attrs)):
+                if not (name in ("pre", "code", "blockquote") and re.fullmatch(r'\s+[\w-]+(="[^"<>]*")?\s*', attrs)):
+                    return html.escape(text, quote=False)
+            stack.append(name)
+    if stack or "<" in text[pos:] or ">" in text[pos:]:
+        return html.escape(text, quote=False)
+    return text
 
 
 def fmt_amount(value):
@@ -256,12 +268,6 @@ def db_get_user(user_id):
         row["account_type"],
     )
 
-def db_set_reseller(user_id):
-    db.set_reseller(user_id)
-
-def db_add_order(user_id, prod_name, plan, key_delivered, amount, utr, timestamp):
-    db.add_order(user_id, prod_name, plan, key_delivered, amount, utr, timestamp)
-
 def db_get_user_history(user_id, limit=20):
     rows = db.get_user_history(user_id, limit)
     return [
@@ -274,9 +280,6 @@ def db_get_user_history(user_id, limit=20):
         )
         for row in rows
     ]
-
-def db_pop_auto_key(prod_key, plan):
-    return db.pop_auto_key(prod_key, plan)
 
 def get_products_by_category(category):
     rows = db.get_products_by_category(category)
@@ -534,17 +537,38 @@ def build_pending_notice(prod_name, plan_name):
 def tg_call(method, payload):
     if not BOT_TOKEN:
         return None
-    try:
-        req = urllib.request.Request(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/{method}",
-            data=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            return json.loads(resp.read().decode())
-    except Exception:
-        logger.exception("Telegram API call failed: %s", method)
-        return None
+    payload = _localize_payload(method, payload)
+    for attempt in (1, 2):
+        try:
+            req = urllib.request.Request(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/{method}",
+                data=json.dumps(payload).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                result = json.loads(resp.read().decode())
+            if attempt == 2:
+                pause_icons()
+            return result
+        except urllib.error.HTTPError as e:
+            body = ""
+            try:
+                body = e.read().decode("utf-8", "ignore")
+            except Exception:
+                pass
+            if (attempt == 1 and e.code == 400 and _payload_has_icons(payload)
+                    and any(w in body.lower() for w in _ICON_ERR_WORDS)):
+                payload = _strip_payload_icons(payload)      # Telegram refused a premium icon: send it plain
+                continue
+            if e.code == 403:
+                logger.warning("Telegram API %s refused (403): %s", method, body[:200])
+            else:
+                logger.error("Telegram API call failed: %s -> HTTP %s %s", method, e.code, body[:300])
+            return None
+        except Exception:
+            logger.exception("Telegram API call failed: %s", method)
+            return None
+    return None
 
 
 # ----------------------------------------------------------------------
@@ -1113,12 +1137,13 @@ web_admin.gmail_detect = gmail_detect_sender
 # 🎨 BUTTON COLORS (chosen in the admin panel → "Button Colors")
 # ==========================================
 _style_cache = {"t": 0.0, "data": {}}
+_icon_pause = {"until": 0.0}      # icons are switched off for a while after Telegram refused one
 
-def get_button_styles():
-    """Saved colors, cached for 5 seconds so a change in the admin panel shows up almost at once."""
+def get_button_looks():
+    """{key: (color, premium_emoji_id)} saved in the admin panel, cached 5 s (a change shows up almost at once)."""
     if time.time() - _style_cache["t"] > 5:
         try:
-            _style_cache["data"] = db.get_button_styles()
+            _style_cache["data"] = db.get_button_looks()
         except Exception:
             logger.exception("Could not load button colors")
         _style_cache["t"] = time.time()
@@ -1126,25 +1151,44 @@ def get_button_styles():
 
 def style_of(key):
     """The color saved for a button key (or its default). None = Telegram's normal grey."""
-    style = get_button_styles().get(key)
-    if style is None:
-        style = MENU_BUTTONS.get(key, ("", ""))[1]
+    look = get_button_looks().get(key)
+    style = look[0] if look else MENU_BUTTONS.get(key, ("", ""))[1]
     return style if style in BUTTON_COLORS else None
 
+def icon_of(key):
+    """Premium (custom) emoji id saved for a button, '' if none or while icons are paused."""
+    if time.time() < _icon_pause["until"]:
+        return ""
+    look = get_button_looks().get(key)
+    emoji_id = (look[1] if look else "") or ""
+    return emoji_id if emoji_id.isdigit() else ""
+
+def pause_icons(minutes=10):
+    """Telegram refused a custom emoji icon (e.g. the owner has no Premium): send plain buttons for a while."""
+    _icon_pause["until"] = time.time() + minutes * 60
+    logger.warning("Premium emoji icons paused for %d minutes", minutes)
+
 def styled_button(text, key, **kwargs):
-    """InlineKeyboardButton with the color saved for `key`. The color is sent as the Bot API
-    'style' field through api_kwargs, which works on any python-telegram-bot version."""
-    style = style_of(key)
+    """InlineKeyboardButton with the color and premium emoji saved for `key`. Both are sent as Bot API
+    fields ('style', 'icon_custom_emoji_id') through api_kwargs, which works on any python-telegram-bot version."""
+    extra = {}
+    style, icon = style_of(key), icon_of(key)
     if style:
-        kwargs["api_kwargs"] = {"style": style}
+        extra["style"] = style
+    if icon:
+        extra["icon_custom_emoji_id"] = icon
+    if extra:
+        kwargs["api_kwargs"] = extra
     return InlineKeyboardButton(text, **kwargs)
 
 def tg_button(text, key, **extra):
     """Same as styled_button, for the plain-HTTP messages (dict buttons)."""
     btn = {"text": text, **extra}
-    style = style_of(key)
+    style, icon = style_of(key), icon_of(key)
     if style:
         btn["style"] = style
+    if icon:
+        btn["icon_custom_emoji_id"] = icon
     return btn
 
 def key_card_keyboard(prod):
@@ -1156,6 +1200,794 @@ def key_card_keyboard(prod):
 
 def back_to_menu_markup():
     return InlineKeyboardMarkup([[styled_button("➡️ Back to Menu", "back_menu", callback_data="main_menu")]])
+
+# ==========================================
+# ⚙️ LIVE SETTINGS FROM THE ADMIN PANEL (ui_settings table, cached 5 s)
+# ==========================================
+_ui_cache = {"t": 0.0, "v": {}}
+
+def ui_get(key, default=""):
+    """A value saved in the admin panel (welcome text, alerts, language switch ...). Never raises."""
+    if time.time() - _ui_cache["t"] > 5:
+        try:
+            _ui_cache["v"] = db.get_ui_settings()
+        except Exception:
+            pass
+        _ui_cache["t"] = time.time()
+    value = _ui_cache["v"].get(key)
+    return default if value is None else value
+
+
+# ==========================================
+# 🌐 LANGUAGES: English (default), हिन्दी, తెలుగు, தமிழ், മലയാളം
+# Every text of the bot is written in English in this file. Just before a message / button / pop-up is sent,
+# it is translated with the tables below into the language the customer chose with the Language button.
+# A table row is (English line, Hindi, Telugu, Tamil, Malayalam). {name} marks a part that changes
+# (amount, name ...) and is copied as it is. A line that is not in a table is sent in English, so nothing
+# can break - a missing translation simply stays English. Fix or add translations in the tables only.
+# ==========================================
+import contextvars
+import functools
+import inspect
+import telegram
+
+I18N_LANGS = {"en": "English", "hi": "हिन्दी", "te": "తెలుగు", "ta": "தமிழ்", "ml": "മലയാളം"}
+_I18N_ORDER = ("hi", "te", "ta", "ml")
+_I18N_PH = re.compile(r"\{(\w+)\}")
+_I18N_TAG = re.compile(r"<[^>]+>")
+_CUR_USER = contextvars.ContextVar("cur_user", default=0)   # who pressed the button being handled
+
+# ======================================================================
+# TABLES - one row = (English, Hindi, Telugu, Tamil, Malayalam)
+# `{name}` = a changing part (amount, name, date ...), copied into the translation as it is.
+# ======================================================================
+_LINES = [
+    # ---- main menu ----
+    ("👏 Welcome, <b>{n}!</b> 🥷",
+     "👏 स्वागत है, <b>{n}!</b> 🥷", "👏 స్వాగతం, <b>{n}!</b> 🥷", "👏 வரவேற்கிறோம், <b>{n}!</b> 🥷", "👏 സ്വാഗതം, <b>{n}!</b> 🥷"),
+    ("📈 ── <b>STORE HIGHLIGHTS</b> ── 📈",
+     "📈 ── <b>स्टोर की खासियतें</b> ── 📈", "📈 ── <b>స్టోర్ ప్రత్యేకతలు</b> ── 📈", "📈 ── <b>ஸ்டோர் சிறப்பம்சங்கள்</b> ── 📈", "📈 ── <b>സ്റ്റോർ സവിശേഷതകൾ</b> ── 📈"),
+    ("🗝️ Premium Game Keys", "🗝️ प्रीमियम गेम कीज़", "🗝️ ప్రీమియం గేమ్ కీలు", "🗝️ பிரீமியம் கேம் கீகள்", "🗝️ പ്രീമിയം ഗെയിം കീകൾ"),
+    ("⚡ Instant Delivery 24/7", "⚡ 24/7 तुरंत डिलीवरी", "⚡ 24/7 తక్షణ డెలివరీ", "⚡ 24/7 உடனடி டெலிவரி", "⚡ 24/7 തൽക്ഷണ ഡെലിവറി"),
+    ("🔓 100% Secure Payment", "🔓 100% सुरक्षित पेमेंट", "🔓 100% సురక్షిత చెల్లింపు", "🔓 100% பாதுகாப்பான கட்டணம்", "🔓 100% സുരക്ഷിത പേയ്‌മെന്റ്"),
+    ("💸 Best Prices Guaranteed", "💸 सबसे अच्छे दाम की गारंटी", "💸 ఉత్తమ ధరల హామీ", "💸 சிறந்த விலை உத்தரவாதம்", "💸 മികച്ച വില ഉറപ്പ്"),
+    ("🎁 Referral Rewards", "🎁 रेफरल रिवॉर्ड", "🎁 రెఫరల్ రివార్డులు", "🎁 பரிந்துரை பரிசுகள்", "🎁 റഫറൽ റിവാർഡുകൾ"),
+    ("💬 Professional Support", "💬 प्रोफेशनल सपोर्ट", "💬 ప్రొఫెషనల్ సపోర్ట్", "💬 தொழில்முறை ஆதரவு", "💬 പ്രൊഫഷണൽ സപ്പോർട്ട്"),
+    ("👤 User ID: <code>{i}</code>", "👤 यूज़र आईडी: <code>{i}</code>", "👤 యూజర్ ఐడి: <code>{i}</code>", "👤 பயனர் ஐடி: <code>{i}</code>", "👤 യൂസർ ഐഡി: <code>{i}</code>"),
+    ("💰 Wallet Balance: {v}", "💰 वॉलेट बैलेंस: {v}", "💰 వాలెట్ బ్యాలెన్స్: {v}", "💰 வாலட் இருப்பு: {v}", "💰 വാലറ്റ് ബാലൻസ്: {v}"),
+    ("🚀 Tap Shop Now to Start!", "🚀 शुरू करने के लिए Shop Now दबाएँ!", "🚀 ప్రారంభించడానికి Shop Now నొక్కండి!", "🚀 தொடங்க Shop Now அழுத்தவும்!", "🚀 തുടങ്ങാൻ Shop Now അമർത്തുക!"),
+    ("🎉 <b>New Referral!</b> User <code>{u}</code> joined via your link.",
+     "🎉 <b>नया रेफरल!</b> यूज़र <code>{u}</code> आपके लिंक से जुड़ा।",
+     "🎉 <b>కొత్త రెఫరల్!</b> యూజర్ <code>{u}</code> మీ లింక్ ద్వారా చేరారు.",
+     "🎉 <b>புதிய பரிந்துரை!</b> பயனர் <code>{u}</code> உங்கள் இணைப்பு மூலம் சேர்ந்தார்.",
+     "🎉 <b>പുതിയ റഫറൽ!</b> യൂസർ <code>{u}</code> നിങ്ങളുടെ ലിങ്ക് വഴി ചേർന്നു."),
+    ("💰 <b>{a}</b> bonus added to your wallet!",
+     "💰 आपके वॉलेट में <b>{a}</b> बोनस जुड़ गया!", "💰 మీ వాలెట్‌లో <b>{a}</b> బోనస్ జమ అయింది!",
+     "💰 உங்கள் வாலட்டில் <b>{a}</b> போனஸ் சேர்க்கப்பட்டது!", "💰 നിങ്ങളുടെ വാലറ്റിൽ <b>{a}</b> ബോണസ് ചേർത്തു!"),
+    # ---- support ----
+    ("💬 <b>SUPPORT</b>", "💬 <b>सपोर्ट</b>", "💬 <b>సపోర్ట్</b>", "💬 <b>ஆதரவு</b>", "💬 <b>സപ്പോർട്ട്</b>"),
+    ("Need help with an order or payment? Contact our support team:",
+     "ऑर्डर या पेमेंट में मदद चाहिए? हमारी सपोर्ट टीम से संपर्क करें:",
+     "ఆర్డర్ లేదా చెల్లింపులో సహాయం కావాలా? మా సపోర్ట్ టీమ్‌ను సంప్రదించండి:",
+     "ஆர்டர் அல்லது கட்டணத்தில் உதவி வேண்டுமா? எங்கள் ஆதரவு குழுவைத் தொடர்பு கொள்ளுங்கள்:",
+     "ഓർഡറിലോ പേയ്‌മെന്റിലോ സഹായം വേണോ? ഞങ്ങളുടെ സപ്പോർട്ട് ടീമിനെ ബന്ധപ്പെടുക:"),
+    ("👤 Support not configured yet", "👤 सपोर्ट अभी सेट नहीं है", "👤 సపోర్ట్ ఇంకా సెట్ చేయలేదు", "👤 ஆதரவு இன்னும் அமைக்கப்படவில்லை", "👤 സപ്പോർട്ട് ഇതുവരെ സജ്ജമാക്കിയിട്ടില്ല"),
+    ("⏱️ We usually reply within a few hours.", "⏱️ हम आमतौर पर कुछ घंटों में जवाब देते हैं।",
+     "⏱️ మేము సాధారణంగా కొన్ని గంటల్లో సమాధానం ఇస్తాము.", "⏱️ நாங்கள் பொதுவாக சில மணி நேரத்தில் பதில் அளிப்போம்.", "⏱️ ഞങ്ങൾ സാധാരണയായി ഏതാനും മണിക്കൂറിനുള്ളിൽ മറുപടി നൽകും."),
+    # ---- profile ----
+    ("👤 ── <b>YOUR PROFILE</b> ── 👤", "👤 ── <b>आपकी प्रोफ़ाइल</b> ── 👤", "👤 ── <b>మీ ప్రొఫైల్</b> ── 👤", "👤 ── <b>உங்கள் சுயவிவரம்</b> ── 👤", "👤 ── <b>നിങ്ങളുടെ പ്രൊഫൈൽ</b> ── 👤"),
+    ("🚩 User ID: <code>{i}</code>", "🚩 यूज़र आईडी: <code>{i}</code>", "🚩 యూజర్ ఐడి: <code>{i}</code>", "🚩 பயனர் ஐடி: <code>{i}</code>", "🚩 യൂസർ ഐഡി: <code>{i}</code>"),
+    ("🚩 Name: <b>{n}</b>", "🚩 नाम: <b>{n}</b>", "🚩 పేరు: <b>{n}</b>", "🚩 பெயர்: <b>{n}</b>", "🚩 പേര്: <b>{n}</b>"),
+    ("🤖 Phone: N/A", "🤖 फ़ोन: उपलब्ध नहीं", "🤖 ఫోన్: లేదు", "🤖 தொலைபேசி: இல்லை", "🤖 ഫോൺ: ലഭ്യമല്ല"),
+    ("👑 Account: {b} | 🟢 Active", "👑 अकाउंट: {b} | 🟢 सक्रिय", "👑 ఖాతా: {b} | 🟢 యాక్టివ్", "👑 கணக்கு: {b} | 🟢 செயலில்", "👑 അക്കൗണ്ട്: {b} | 🟢 സജീവം"),
+    ("👑 Reseller User", "👑 रीसेलर यूज़र", "👑 రీసెల్లర్ యూజర్", "👑 மறுவிற்பனையாளர்", "👑 റീസെല്ലർ യൂസർ"),
+    ("👤 Regular", "👤 सामान्य", "👤 సాధారణ", "👤 சாதாரண", "👤 സാധാരണ"),
+    ("💰 ── <b>Balance</b> ── 💰", "💰 ── <b>बैलेंस</b> ── 💰", "💰 ── <b>బ్యాలెన్స్</b> ── 💰", "💰 ── <b>இருப்பு</b> ── 💰", "💰 ── <b>ബാലൻസ്</b> ── 💰"),
+    ("🎟️ Current: {v}", "🎟️ वर्तमान: {v}", "🎟️ ప్రస్తుతం: {v}", "🎟️ தற்போது: {v}", "🎟️ നിലവിൽ: {v}"),
+    ("📊 ── <b>Statistics</b> ── 📊", "📊 ── <b>आँकड़े</b> ── 📊", "📊 ── <b>గణాంకాలు</b> ── 📊", "📊 ── <b>புள்ளிவிவரம்</b> ── 📊", "📊 ── <b>കണക്കുകൾ</b> ── 📊"),
+    ("🎯 Orders: {n}", "🎯 ऑर्डर: {n}", "🎯 ఆర్డర్లు: {n}", "🎯 ஆர்டர்கள்: {n}", "🎯 ഓർഡറുകൾ: {n}"),
+    ("💸 Spent: {v}", "💸 खर्च: {v}", "💸 ఖర్చు: {v}", "💸 செலவு: {v}", "💸 ചെലവ്: {v}"),
+    ("🤝 Referrals: {n}", "🤝 रेफरल: {n}", "🤝 రెఫరల్స్: {n}", "🤝 பரிந்துரைகள்: {n}", "🤝 റഫറലുകൾ: {n}"),
+    ("🎁 Referral Earnings: {v}", "🎁 रेफरल कमाई: {v}", "🎁 రెఫరల్ సంపాదన: {v}", "🎁 பரிந்துரை வருமானம்: {v}", "🎁 റഫറൽ വരുമാനം: {v}"),
+    ("🕒 Joined: {d}", "🕒 जुड़े: {d}", "🕒 చేరినది: {d}", "🕒 சேர்ந்த நாள்: {d}", "🕒 ചേർന്നത്: {d}"),
+    # ---- reseller (customer messages; the plan text itself is written by the admin) ----
+    ("👑 <b>Reseller Plan</b>", "👑 <b>रीसेलर प्लान</b>", "👑 <b>రీసెల్లర్ ప్లాన్</b>", "👑 <b>மறுவிற்பனையாளர் திட்டம்</b>", "👑 <b>റീസെല്ലർ പ്ലാൻ</b>"),
+    ("🎉 <b>CONGRATULATIONS!</b>", "🎉 <b>बधाई हो!</b>", "🎉 <b>అభినందనలు!</b>", "🎉 <b>வாழ்த்துகள்!</b>", "🎉 <b>അഭിനന്ദനങ്ങൾ!</b>"),
+    ("You are now officially a <b>👑 VIP Reseller!</b>", "अब आप आधिकारिक रूप से <b>👑 VIP रीसेलर</b> हैं!",
+     "ఇప్పుడు మీరు అధికారికంగా <b>👑 VIP రీసెల్లర్</b>!", "இப்போது நீங்கள் அதிகாரப்பூர்வமாக <b>👑 VIP மறுவிற்பனையாளர்</b>!", "ഇപ്പോൾ നിങ്ങൾ ഔദ്യോഗികമായി <b>👑 VIP റീസെല്ലർ</b> ആണ്!"),
+    ("💸 Activation fee deducted: {v}", "💸 एक्टिवेशन फ़ीस कटी: {v}", "💸 యాక్టివేషన్ ఫీజు తగ్గించబడింది: {v}", "💸 செயல்படுத்தும் கட்டணம் கழிக்கப்பட்டது: {v}", "💸 ആക്ടിവേഷൻ ഫീസ് കുറച്ചു: {v}"),
+    ("💰 Wallet balance now: {v}", "💰 अब वॉलेट बैलेंस: {v}", "💰 ఇప్పుడు వాలెట్ బ్యాలెన్స్: {v}", "💰 இப்போதைய வாலட் இருப்பு: {v}", "💰 ഇപ്പോഴത്തെ വാലറ്റ് ബാലൻസ്: {v}"),
+    ("👑 <b>You are already a VIP Reseller!</b>", "👑 <b>आप पहले से VIP रीसेलर हैं!</b>", "👑 <b>మీరు ఇప్పటికే VIP రీసెల్లర్!</b>",
+     "👑 <b>நீங்கள் ஏற்கனவே VIP மறுவிற்பனையாளர்!</b>", "👑 <b>നിങ്ങൾ ഇതിനകം VIP റീസെല്ലർ ആണ്!</b>"),
+    ("Your reseller plan is already active — nothing was charged.", "आपका रीसेलर प्लान पहले से चालू है — कुछ भी नहीं काटा गया।",
+     "మీ రీసెల్లర్ ప్లాన్ ఇప్పటికే యాక్టివ్‌లో ఉంది — ఏమీ తగ్గించబడలేదు.", "உங்கள் மறுவிற்பனையாளர் திட்டம் ஏற்கனவே செயலில் உள்ளது — எதுவும் கழிக்கப்படவில்லை.",
+     "നിങ്ങളുടെ റീസെല്ലർ പ്ലാൻ ഇതിനകം സജീവമാണ് — ഒന്നും കുറച്ചിട്ടില്ല."),
+    ("⚠️ <b>Insufficient Balance!</b>", "⚠️ <b>बैलेंस कम है!</b>", "⚠️ <b>బ్యాలెన్స్ సరిపోదు!</b>", "⚠️ <b>இருப்பு போதவில்லை!</b>", "⚠️ <b>ബാലൻസ് മതിയാകില്ല!</b>"),
+    ("💰 Required: {v}", "💰 ज़रूरी: {v}", "💰 అవసరం: {v}", "💰 தேவை: {v}", "💰 ആവശ്യം: {v}"),
+    ("💸 Your Balance: {v}", "💸 आपका बैलेंस: {v}", "💸 మీ బ్యాలెన్స్: {v}", "💸 உங்கள் இருப்பு: {v}", "💸 നിങ്ങളുടെ ബാലൻസ്: {v}"),
+    ("Please add balance to your wallet to activate the VIP Reseller Plan.", "VIP रीसेलर प्लान चालू करने के लिए अपने वॉलेट में बैलेंस जोड़ें।",
+     "VIP రీసెల్లర్ ప్లాన్ యాక్టివేట్ చేయడానికి మీ వాలెట్‌లో బ్యాలెన్స్ జోడించండి.", "VIP மறுவிற்பனையாளர் திட்டத்தை செயல்படுத்த உங்கள் வாலட்டில் பணம் சேர்க்கவும்.",
+     "VIP റീസെല്ലർ പ്ലാൻ സജീവമാക്കാൻ നിങ്ങളുടെ വാലറ്റിൽ ബാലൻസ് ചേർക്കുക."),
+    ("⚠️ Please try again — could not activate right now.", "⚠️ कृपया फिर कोशिश करें — अभी चालू नहीं हो सका।",
+     "⚠️ దయచేసి మళ్లీ ప్రయత్నించండి — ఇప్పుడు యాక్టివేట్ కాలేదు.", "⚠️ தயவுசெய்து மீண்டும் முயற்சிக்கவும் — இப்போது செயல்படுத்த முடியவில்லை.",
+     "⚠️ ദയവായി വീണ്ടും ശ്രമിക്കുക — ഇപ്പോൾ സജീവമാക്കാനായില്ല."),
+    # ---- language screen ----
+    ("🌐 <b>Choose your language</b>", "🌐 <b>अपनी भाषा चुनें</b>", "🌐 <b>మీ భాషను ఎంచుకోండి</b>", "🌐 <b>உங்கள் மொழியைத் தேர்ந்தெடுக்கவும்</b>", "🌐 <b>നിങ്ങളുടെ ഭാഷ തിരഞ്ഞെടുക്കുക</b>"),
+    ("Tap a language below. The whole bot will switch to it.", "नीचे से भाषा चुनें। पूरा बॉट उसी भाषा में बदल जाएगा।",
+     "క్రింద భాషను నొక్కండి. బాట్ మొత్తం ఆ భాషలోకి మారుతుంది.", "கீழே ஒரு மொழியைத் தொடவும். முழு பாட்டும் அந்த மொழிக்கு மாறும்.", "താഴെ ഒരു ഭാഷ തൊടുക. ബോട്ട് മുഴുവൻ ആ ഭാഷയിലേക്ക് മാറും."),
+    ("✅ Language changed to <b>{l}</b>.", "✅ भाषा बदलकर <b>{l}</b> हो गई।", "✅ భాష <b>{l}</b>కు మార్చబడింది.", "✅ மொழி <b>{l}</b> ஆக மாற்றப்பட்டது.", "✅ ഭാഷ <b>{l}</b> ആയി മാറ്റി."),
+    ("✅ Language updated", "✅ भाषा बदल गई", "✅ భాష మార్చబడింది", "✅ மொழி மாற்றப்பட்டது", "✅ ഭാഷ മാറ്റി"),
+    # ---- add balance ----
+    ("💰 <b>ADD BALANCE</b>", "💰 <b>बैलेंस जोड़ें</b>", "💰 <b>బ్యాలెన్స్ జోడించండి</b>", "💰 <b>இருப்பு சேர்க்க</b>", "💰 <b>ബാലൻസ് ചേർക്കുക</b>"),
+    ("💳 Pay with any UPI app (GPay, PhonePe, Paytm...)", "💳 किसी भी UPI ऐप (GPay, PhonePe, Paytm...) से भुगतान करें",
+     "💳 ఏదైనా UPI యాప్ (GPay, PhonePe, Paytm...) తో చెల్లించండి", "💳 எந்த UPI ஆப் (GPay, PhonePe, Paytm...) மூலமும் செலுத்தலாம்", "💳 ഏതെങ്കിലും UPI ആപ്പ് (GPay, PhonePe, Paytm...) വഴി പേയ്‌മെന്റ് ചെയ്യുക"),
+    ("⏱️ Balance is added as soon as your payment is confirmed.", "⏱️ पेमेंट की पुष्टि होते ही बैलेंस जुड़ जाता है।",
+     "⏱️ చెల్లింపు నిర్ధారణ అయిన వెంటనే బ్యాలెన్స్ జమ అవుతుంది.", "⏱️ கட்டணம் உறுதியானவுடன் இருப்பு சேர்க்கப்படும்.", "⏱️ പേയ്‌മെന്റ് സ്ഥിരീകരിച്ചാലുടൻ ബാലൻസ് ചേർക്കും."),
+    ("💸 <b>Add Balance</b>", "💸 <b>बैलेंस जोड़ें</b>", "💸 <b>బ్యాలెన్స్ జోడించండి</b>", "💸 <b>இருப்பு சேர்க்க</b>", "💸 <b>ബാലൻസ് ചേർക്കുക</b>"),
+    ("Current balance: {v}", "वर्तमान बैलेंस: {v}", "ప్రస్తుత బ్యాలెన్స్: {v}", "தற்போதைய இருப்பு: {v}", "നിലവിലെ ബാലൻസ്: {v}"),
+    ("Pick a quick amount below, or enter a custom amount.", "नीचे से कोई रकम चुनें, या अपनी रकम दर्ज करें।",
+     "క్రింద ఒక మొత్తాన్ని ఎంచుకోండి, లేదా మీ మొత్తాన్ని నమోదు చేయండి.", "கீழே ஒரு தொகையைத் தேர்ந்தெடுக்கவும், அல்லது உங்கள் தொகையை உள்ளிடவும்.", "താഴെ ഒരു തുക തിരഞ്ഞെടുക്കുക, അല്ലെങ്കിൽ സ്വന്തം തുക നൽകുക."),
+    ("Min: {a} · Max: {b}", "न्यूनतम: {a} · अधिकतम: {b}", "కనిష్టం: {a} · గరిష్టం: {b}", "குறைந்தபட்சம்: {a} · அதிகபட்சம்: {b}", "കുറഞ്ഞത്: {a} · കൂടിയത്: {b}"),
+    ("💰 <b>Enter Amount</b>", "💰 <b>रकम दर्ज करें</b>", "💰 <b>మొత్తాన్ని నమోదు చేయండి</b>", "💰 <b>தொகையை உள்ளிடவும்</b>", "💰 <b>തുക നൽകുക</b>"),
+    ("⚠️ Minimum deposit is {v}!", "⚠️ न्यूनतम जमा {v} है!", "⚠️ కనిష్ట డిపాజిట్ {v}!", "⚠️ குறைந்தபட்ச டெபாசிட் {v}!", "⚠️ കുറഞ്ഞ ഡെപ്പോസിറ്റ് {v} ആണ്!"),
+    ("⚠️ Maximum deposit is {v}!", "⚠️ अधिकतम जमा {v} है!", "⚠️ గరిష్ట డిపాజిట్ {v}!", "⚠️ அதிகபட்ச டெபாசிட் {v}!", "⚠️ കൂടിയ ഡെപ്പോസിറ്റ് {v} ആണ്!"),
+    ("✅ You are already a <b>👑 VIP Reseller</b>.", "✅ आप पहले से <b>👑 VIP रीसेलर</b> हैं।", "✅ మీరు ఇప్పటికే <b>👑 VIP రీసెల్లర్</b>.",
+     "✅ நீங்கள் ஏற்கனவே <b>👑 VIP மறுவிற்பனையாளர்</b>.", "✅ നിങ്ങൾ ഇതിനകം <b>👑 VIP റീസെല്ലർ</b> ആണ്."),
+    ("⚠️ The reseller plan is not available right now.", "⚠️ रीसेलर प्लान अभी उपलब्ध नहीं है।", "⚠️ రీసెల్లర్ ప్లాన్ ప్రస్తుతం అందుబాటులో లేదు.",
+     "⚠️ மறுவிற்பனையாளர் திட்டம் இப்போது கிடைக்கவில்லை.", "⚠️ റീസെല്ലർ പ്ലാൻ ഇപ്പോൾ ലഭ്യമല്ല."),
+    ("✅ Reseller plan is already active on your account.", "✅ आपके अकाउंट पर रीसेलर प्लान पहले से चालू है।", "✅ మీ ఖాతాలో రీసెల్లర్ ప్లాన్ ఇప్పటికే యాక్టివ్‌గా ఉంది.",
+     "✅ உங்கள் கணக்கில் மறுவிற்பனையாளர் திட்டம் ஏற்கனவே செயலில் உள்ளது.", "✅ നിങ്ങളുടെ അക്കൗണ്ടിൽ റീസെല്ലർ പ്ലാൻ ഇതിനകം സജീവമാണ്."),
+    # ---- order summary / deposit ----
+    ("📋 <b>ORDER SUMMARY</b>", "📋 <b>ऑर्डर सारांश</b>", "📋 <b>ఆర్డర్ సారాంశం</b>", "📋 <b>ஆர்டர் சுருக்கம்</b>", "📋 <b>ഓർഡർ സംഗ്രഹം</b>"),
+    ("💰 Add Balance to Wallet", "💰 वॉलेट में बैलेंस जोड़ें", "💰 వాలెట్‌కు బ్యాలెన్స్ జోడించండి", "💰 வாலட்டில் இருப்பு சேர்க்க", "💰 വാലറ്റിലേക്ക് ബാലൻസ് ചേർക്കുക"),
+    ("💵 Amount: {v}", "💵 रकम: {v}", "💵 మొత్తం: {v}", "💵 தொகை: {v}", "💵 തുക: {v}"),
+    ("💰 <b>Final Total: {v}</b>", "💰 <b>कुल देय: {v}</b>", "💰 <b>మొత్తం చెల్లించాల్సినది: {v}</b>", "💰 <b>மொத்தம் செலுத்த வேண்டியது: {v}</b>", "💰 <b>ആകെ അടയ്ക്കേണ്ടത്: {v}</b>"),
+    ("Select payment method below:", "नीचे भुगतान का तरीका चुनें:", "క్రింద చెల్లింపు పద్ధతిని ఎంచుకోండి:", "கீழே கட்டண முறையைத் தேர்ந்தெடுக்கவும்:", "താഴെ പേയ്‌മെന്റ് രീതി തിരഞ്ഞെടുക്കുക:"),
+    ("⚠️ Session expired. Choose the amount again.", "⚠️ सेशन समाप्त हो गया। रकम दोबारा चुनें।", "⚠️ సెషన్ ముగిసింది. మొత్తాన్ని మళ్లీ ఎంచుకోండి.",
+     "⚠️ அமர்வு முடிந்தது. தொகையை மீண்டும் தேர்ந்தெடுக்கவும்.", "⚠️ സെഷൻ കഴിഞ്ഞു. തുക വീണ്ടും തിരഞ്ഞെടുക്കുക."),
+    ("⚠️ Binance payment is not available right now.", "⚠️ Binance पेमेंट अभी उपलब्ध नहीं है।", "⚠️ Binance చెల్లింపు ప్రస్తుతం అందుబాటులో లేదు.",
+     "⚠️ Binance கட்டணம் இப்போது கிடைக்கவில்லை.", "⚠️ Binance പേയ്‌മെന്റ് ഇപ്പോൾ ലഭ്യമല്ല."),
+    ("🟡 <b>BINANCE USDT PAYMENT</b>", "🟡 <b>BINANCE USDT पेमेंट</b>", "🟡 <b>BINANCE USDT చెల్లింపు</b>", "🟡 <b>BINANCE USDT கட்டணம்</b>", "🟡 <b>BINANCE USDT പേയ്‌മെന്റ്</b>"),
+    ("💰 Add Balance: {v}", "💰 बैलेंस जोड़ें: {v}", "💰 బ్యాలెన్స్ జోడింపు: {v}", "💰 இருப்பு சேர்ப்பு: {v}", "💰 ബാലൻസ് ചേർക്കൽ: {v}"),
+    ("💵 Send exactly: <b>{u} USDT</b>", "💵 ठीक इतना भेजें: <b>{u} USDT</b>", "💵 సరిగ్గా ఇంత పంపండి: <b>{u} USDT</b>", "💵 சரியாக இவ்வளவு அனுப்பவும்: <b>{u} USDT</b>", "💵 കൃത്യമായി ഇത്ര അയയ്ക്കുക: <b>{u} USDT</b>"),
+    ("📨 Binance Pay ID: <code>{i}</code>", "📨 Binance Pay आईडी: <code>{i}</code>", "📨 Binance Pay ఐడి: <code>{i}</code>", "📨 Binance Pay ஐடி: <code>{i}</code>", "📨 Binance Pay ഐഡി: <code>{i}</code>"),
+    ("After paying, tap <b>✅ I have paid</b>. Balance is added as soon as the admin confirms.",
+     "भुगतान के बाद <b>✅ I have paid</b> दबाएँ। एडमिन की पुष्टि होते ही बैलेंस जुड़ जाएगा।",
+     "చెల్లించిన తర్వాత <b>✅ I have paid</b> నొక్కండి. అడ్మిన్ నిర్ధారించిన వెంటనే బ్యాలెన్స్ జమ అవుతుంది.",
+     "பணம் செலுத்திய பின் <b>✅ I have paid</b> அழுத்தவும். அட்மின் உறுதிப்படுத்தியவுடன் இருப்பு சேர்க்கப்படும்.",
+     "പണമടച്ച ശേഷം <b>✅ I have paid</b> അമർത്തുക. അഡ്മിൻ സ്ഥിരീകരിച്ചാലുടൻ ബാലൻസ് ചേർക്കും."),
+    ("⚠️ Payments are temporarily unavailable. Please try again later or contact support.",
+     "⚠️ पेमेंट अभी अस्थायी रूप से बंद है। कृपया बाद में कोशिश करें या सपोर्ट से संपर्क करें।",
+     "⚠️ చెల్లింపులు తాత్కాలికంగా అందుబాటులో లేవు. దయచేసి తర్వాత ప్రయత్నించండి లేదా సపోర్ట్‌ను సంప్రదించండి.",
+     "⚠️ கட்டணங்கள் தற்காலிகமாகக் கிடைக்கவில்லை. பிறகு முயற்சிக்கவும் அல்லது ஆதரவைத் தொடர்பு கொள்ளவும்.",
+     "⚠️ പേയ്‌മെന്റുകൾ താൽക്കാലികമായി ലഭ്യമല്ല. പിന്നീട് ശ്രമിക്കുക അല്ലെങ്കിൽ സപ്പോർട്ടുമായി ബന്ധപ്പെടുക."),
+    ("⚠️ Could not create the payment. Please try again in a moment.", "⚠️ पेमेंट नहीं बन सका। कृपया थोड़ी देर में फिर कोशिश करें।",
+     "⚠️ చెల్లింపును సృష్టించలేకపోయాం. దయచేసి కొద్దిసేపటి తర్వాత మళ్లీ ప్రయత్నించండి.", "⚠️ கட்டணத்தை உருவாக்க முடியவில்லை. சிறிது நேரம் கழித்து மீண்டும் முயற்சிக்கவும்.",
+     "⚠️ പേയ്‌മെന്റ് ഉണ്ടാക്കാനായില്ല. അൽപ്പം കഴിഞ്ഞ് വീണ്ടും ശ്രമിക്കുക."),
+    ("Scan &amp; pay exactly <b>{v}</b> via any UPI app.", "किसी भी UPI ऐप से स्कैन करके ठीक <b>{v}</b> का भुगतान करें।",
+     "ఏదైనా UPI యాప్‌తో స్కాన్ చేసి సరిగ్గా <b>{v}</b> చెల్లించండి.", "எந்த UPI ஆப் மூலமும் ஸ்கேன் செய்து சரியாக <b>{v}</b> செலுத்தவும்.", "ഏതെങ്കിലും UPI ആപ്പ് ഉപയോഗിച്ച് സ്കാൻ ചെയ്ത് കൃത്യമായി <b>{v}</b> അടയ്ക്കുക."),
+    ("Your balance updates <b>automatically</b> the moment payment is confirmed — no button tap needed.",
+     "भुगतान की पुष्टि होते ही आपका बैलेंस <b>अपने आप</b> अपडेट हो जाएगा — कोई बटन दबाने की ज़रूरत नहीं।",
+     "చెల్లింపు నిర్ధారణ అయిన వెంటనే మీ బ్యాలెన్స్ <b>ఆటోమేటిక్‌గా</b> అప్‌డేట్ అవుతుంది — ఏ బటన్ నొక్కాల్సిన అవసరం లేదు.",
+     "கட்டணம் உறுதியானவுடன் உங்கள் இருப்பு <b>தானாகவே</b> புதுப்பிக்கப்படும் — எந்த பட்டனையும் அழுத்த வேண்டியதில்லை.",
+     "പേയ്‌മെന്റ് സ്ഥിരീകരിച്ചാലുടൻ നിങ്ങളുടെ ബാലൻസ് <b>സ്വയം</b> അപ്ഡേറ്റ് ആകും — ബട്ടൺ അമർത്തേണ്ടതില്ല."),
+    ("After paying, tap <b>✅ I have paid</b>. It is confirmed as soon as the admin approves the payment.",
+     "भुगतान के बाद <b>✅ I have paid</b> दबाएँ। एडमिन के मंज़ूर करते ही पुष्टि हो जाएगी।",
+     "చెల్లించిన తర్వాత <b>✅ I have paid</b> నొక్కండి. అడ్మిన్ ఆమోదించిన వెంటనే నిర్ధారణ అవుతుంది.",
+     "பணம் செலுத்திய பின் <b>✅ I have paid</b> அழுத்தவும். அட்மின் ஒப்புதல் அளித்தவுடன் உறுதியாகும்.",
+     "പണമടച്ച ശേഷം <b>✅ I have paid</b> അമർത്തുക. അഡ്മിൻ അംഗീകരിച്ചാലുടൻ സ്ഥിരീകരിക്കും."),
+    ("🛒 <b>{p} — {l}</b>", "🛒 <b>{p} — {l}</b>", "🛒 <b>{p} — {l}</b>", "🛒 <b>{p} — {l}</b>", "🛒 <b>{p} — {l}</b>"),
+    ("💰 Balance: {a}  |  Price: {b}", "💰 बैलेंस: {a}  |  कीमत: {b}", "💰 బ్యాలెన్స్: {a}  |  ధర: {b}", "💰 இருப்பு: {a}  |  விலை: {b}", "💰 ബാലൻസ്: {a}  |  വില: {b}"),
+    ("⏰ <b>This QR expires in {t} if payment isn't completed.</b>", "⏰ <b>भुगतान पूरा न होने पर यह QR {t} में समाप्त हो जाएगा।</b>",
+     "⏰ <b>చెల్లింపు పూర్తికాకపోతే ఈ QR {t} లో గడువు ముగుస్తుంది.</b>", "⏰ <b>கட்டணம் முடிக்கப்படாவிட்டால் இந்த QR {t} இல் காலாவதியாகும்.</b>",
+     "⏰ <b>പേയ്‌മെന്റ് പൂർത്തിയായില്ലെങ്കിൽ ഈ QR {t} കഴിഞ്ഞാൽ അവസാനിക്കും.</b>"),
+    ("💵 <b>Add Balance — {v}</b>", "💵 <b>बैलेंस जोड़ें — {v}</b>", "💵 <b>బ్యాలెన్స్ జోడించండి — {v}</b>", "💵 <b>இருப்பு சேர்க்க — {v}</b>", "💵 <b>ബാലൻസ് ചേർക്കുക — {v}</b>"),
+    ("💳 UPI ID: <code>{i}</code>", "💳 UPI आईडी: <code>{i}</code>", "💳 UPI ఐడి: <code>{i}</code>", "💳 UPI ஐடி: <code>{i}</code>", "💳 UPI ഐഡി: <code>{i}</code>"),
+    ("🕒 <b>PAYMENT EXPIRED</b>", "🕒 <b>पेमेंट की समय सीमा समाप्त</b>", "🕒 <b>చెల్లింపు గడువు ముగిసింది</b>", "🕒 <b>கட்டணம் காலாவதியானது</b>", "🕒 <b>പേയ്‌മെന്റ് കാലഹരണപ്പെട്ടു</b>"),
+    ("— 🔒 Order: <code>{o}</code>", "— 🔒 ऑर्डर: <code>{o}</code>", "— 🔒 ఆర్డర్: <code>{o}</code>", "— 🔒 ஆர்டர்: <code>{o}</code>", "— 🔒 ഓർഡർ: <code>{o}</code>"),
+    ("— ❌ No payment detected within {t}", "— ❌ {t} के अंदर कोई भुगतान नहीं मिला", "— ❌ {t} లోపల ఎలాంటి చెల్లింపు కనుగొనబడలేదు", "— ❌ {t} க்குள் எந்த கட்டணமும் கண்டறியப்படவில்லை", "— ❌ {t} ഉള്ളിൽ പേയ്‌മെന്റ് ഒന്നും കണ്ടെത്തിയില്ല"),
+    ("— ℹ️ If you already paid the exact amount, it is still credited automatically (up to 1 hour).",
+     "— ℹ️ अगर आपने ठीक रकम पहले ही दी है, तो वह अब भी अपने आप जमा हो जाएगी (1 घंटे तक)।",
+     "— ℹ️ మీరు ఇప్పటికే సరైన మొత్తం చెల్లించి ఉంటే, అది ఇంకా ఆటోమేటిక్‌గా జమ అవుతుంది (1 గంట వరకు).",
+     "— ℹ️ நீங்கள் ஏற்கனவே சரியான தொகையை செலுத்தியிருந்தால், அது இன்னும் தானாகவே வரவு வைக்கப்படும் (1 மணி நேரம் வரை).",
+     "— ℹ️ നിങ്ങൾ ഇതിനകം കൃത്യമായ തുക അടച്ചിട്ടുണ്ടെങ്കിൽ, അത് ഇപ്പോഴും സ്വയം വരവ് വയ്ക്കും (1 മണിക്കൂർ വരെ)."),
+    ("<i>Paid but nothing arrived? Tap the button below. Or tap /start for a new order.</i>",
+     "<i>पैसे दिए पर कुछ नहीं आया? नीचे का बटन दबाएँ। या नए ऑर्डर के लिए /start दबाएँ।</i>",
+     "<i>చెల్లించినా ఏమీ రాలేదా? క్రింది బటన్ నొక్కండి. లేదా కొత్త ఆర్డర్ కోసం /start నొక్కండి.</i>",
+     "<i>பணம் செலுத்தியும் எதுவும் வரவில்லையா? கீழுள்ள பட்டனை அழுத்தவும். அல்லது புதிய ஆர்டருக்கு /start அழுத்தவும்.</i>",
+     "<i>പണമടച്ചിട്ടും ഒന്നും വന്നില്ലേ? താഴെയുള്ള ബട്ടൺ അമർത്തുക. അല്ലെങ്കിൽ പുതിയ ഓർഡറിന് /start അമർത്തുക.</i>"),
+    ("— ❌ Not paid within {t}", "— ❌ {t} के अंदर भुगतान नहीं हुआ", "— ❌ {t} లోపల చెల్లించలేదు", "— ❌ {t} க்குள் செலுத்தப்படவில்லை", "— ❌ {t} ഉള്ളിൽ അടച്ചില്ല"),
+    ("— 🔒 QR / payment details are no longer valid", "— 🔒 QR / पेमेंट विवरण अब मान्य नहीं हैं", "— 🔒 QR / చెల్లింపు వివరాలు ఇక చెల్లవు", "— 🔒 QR / கட்டண விவரங்கள் இனி செல்லாது", "— 🔒 QR / പേയ്‌മെന്റ് വിവരങ്ങൾ ഇനി സാധുവല്ല"),
+    ("<i>Tap /start to begin a new order.</i>", "<i>नया ऑर्डर शुरू करने के लिए /start दबाएँ।</i>", "<i>కొత్త ఆర్డర్ ప్రారంభించడానికి /start నొక్కండి.</i>", "<i>புதிய ஆர்டரைத் தொடங்க /start அழுத்தவும்.</i>", "<i>പുതിയ ഓർഡർ തുടങ്ങാൻ /start അമർത്തുക.</i>"),
+    ("⏳ <b>Payment not received yet</b>", "⏳ <b>पेमेंट अभी तक नहीं मिला</b>", "⏳ <b>చెల్లింపు ఇంకా అందలేదు</b>", "⏳ <b>கட்டணம் இன்னும் வரவில்லை</b>", "⏳ <b>പേയ്‌മെന്റ് ഇതുവരെ ലഭിച്ചില്ല</b>"),
+    ("If you already paid, the admin has been told and will confirm it shortly. It is also still detected automatically.",
+     "अगर आपने भुगतान कर दिया है, तो एडमिन को बता दिया गया है और वे जल्द पुष्टि करेंगे। यह अब भी अपने आप पहचाना जाएगा।",
+     "మీరు చెల్లించి ఉంటే, అడ్మిన్‌కు తెలియజేయబడింది, త్వరలో నిర్ధారిస్తారు. ఇది ఇంకా ఆటోమేటిక్‌గా కూడా గుర్తించబడుతుంది.",
+     "நீங்கள் செலுத்தியிருந்தால், அட்மினுக்குத் தெரிவிக்கப்பட்டுள்ளது, விரைவில் உறுதிப்படுத்துவார். இது இன்னும் தானாகவும் கண்டறியப்படும்.",
+     "നിങ്ങൾ പണമടച്ചിട്ടുണ്ടെങ്കിൽ അഡ്മിനെ അറിയിച്ചിട്ടുണ്ട്, ഉടൻ സ്ഥിരീകരിക്കും. ഇത് ഇപ്പോഴും സ്വയം കണ്ടെത്തപ്പെടും."),
+    ("⚠️ Payment not found.", "⚠️ पेमेंट नहीं मिला।", "⚠️ చెల్లింపు కనుగొనబడలేదు.", "⚠️ கட்டணம் கண்டறியப்படவில்லை.", "⚠️ പേയ്‌മെന്റ് കണ്ടെത്തിയില്ല."),
+    ("⏳ Already checking your payment. You will get a message here the moment it arrives.",
+     "⏳ आपका पेमेंट पहले से जाँचा जा रहा है। आते ही आपको यहाँ संदेश मिलेगा।", "⏳ మీ చెల్లింపును ఇప్పటికే తనిఖీ చేస్తున్నాం. అది రాగానే ఇక్కడ సందేశం వస్తుంది.",
+     "⏳ உங்கள் கட்டணம் ஏற்கனவே சரிபார்க்கப்படுகிறது. வந்தவுடன் இங்கே செய்தி வரும்.", "⏳ നിങ്ങളുടെ പേയ്‌മെന്റ് ഇതിനകം പരിശോധിക്കുന്നുണ്ട്. വന്നാലുടൻ ഇവിടെ സന്ദേശം ലഭിക്കും."),
+    ("✅ This payment was already confirmed.", "✅ यह पेमेंट पहले ही कन्फर्म हो चुका है।", "✅ ఈ చెల్లింపు ఇప్పటికే నిర్ధారించబడింది.", "✅ இந்தக் கட்டணம் ஏற்கனவே உறுதிப்படுத்தப்பட்டது.", "✅ ഈ പേയ്‌മെന്റ് ഇതിനകം സ്ഥിരീകരിച്ചു."),
+    ("⚠️ This payment session has ended. Tap /start to begin again.", "⚠️ यह पेमेंट सेशन समाप्त हो गया है। दोबारा शुरू करने के लिए /start दबाएँ।",
+     "⚠️ ఈ చెల్లింపు సెషన్ ముగిసింది. మళ్లీ ప్రారంభించడానికి /start నొక్కండి.", "⚠️ இந்தக் கட்டண அமர்வு முடிந்தது. மீண்டும் தொடங்க /start அழுத்தவும்.",
+     "⚠️ ഈ പേയ്‌മെന്റ് സെഷൻ അവസാനിച്ചു. വീണ്ടും തുടങ്ങാൻ /start അമർത്തുക."),
+    ("Checking your payment…", "आपका पेमेंट जाँचा जा रहा है…", "మీ చెల్లింపును తనిఖీ చేస్తున్నాం…", "உங்கள் கட்டணத்தைச் சரிபார்க்கிறோம்…", "നിങ്ങളുടെ പേയ്‌മെന്റ് പരിശോധിക്കുന്നു…"),
+    ("⏳ <b>Checking your payment…</b>", "⏳ <b>आपका पेमेंट जाँचा जा रहा है…</b>", "⏳ <b>మీ చెల్లింపును తనిఖీ చేస్తున్నాం…</b>", "⏳ <b>உங்கள் கட்டணத்தைச் சரிபார்க்கிறோம்…</b>", "⏳ <b>നിങ്ങളുടെ പേയ്‌മെന്റ് പരിശോധിക്കുന്നു…</b>"),
+    ("I am checking every 5 seconds. Your key / balance arrives here as soon as the payment is found. You do not need to press anything again.",
+     "मैं हर 5 सेकंड में जाँच रहा हूँ। पेमेंट मिलते ही आपकी की / बैलेंस यहीं आ जाएगा। दोबारा कुछ दबाने की ज़रूरत नहीं।",
+     "నేను ప్రతి 5 సెకన్లకు తనిఖీ చేస్తున్నాను. చెల్లింపు దొరికిన వెంటనే మీ కీ / బ్యాలెన్స్ ఇక్కడికే వస్తుంది. మళ్లీ ఏమీ నొక్కాల్సిన అవసరం లేదు.",
+     "நான் ஒவ்வொரு 5 விநாடிக்கும் சரிபார்க்கிறேன். கட்டணம் கிடைத்தவுடன் உங்கள் கீ / இருப்பு இங்கே வரும். மீண்டும் எதுவும் அழுத்த வேண்டியதில்லை.",
+     "ഞാൻ ഓരോ 5 സെക്കൻഡിലും പരിശോധിക്കുന്നു. പേയ്‌മെന്റ് കണ്ടെത്തിയാലുടൻ നിങ്ങളുടെ കീ / ബാലൻസ് ഇവിടെ എത്തും. വീണ്ടും ഒന്നും അമർത്തേണ്ടതില്ല."),
+    ("Submitted for verification ✅", "सत्यापन के लिए भेजा गया ✅", "ధృవీకరణ కోసం సమర్పించబడింది ✅", "சரிபார்ப்புக்கு சமர்ப்பிக்கப்பட்டது ✅", "പരിശോധനയ്ക്കായി സമർപ്പിച്ചു ✅"),
+    ("⏳ <b>Payment submitted!</b>", "⏳ <b>पेमेंट भेज दिया गया!</b>", "⏳ <b>చెల్లింపు సమర్పించబడింది!</b>", "⏳ <b>கட்டணம் சமர்ப்பிக்கப்பட்டது!</b>", "⏳ <b>പേയ്‌മെന്റ് സമർപ്പിച്ചു!</b>"),
+    ("The admin is verifying your payment. You will get a message here as soon as it is confirmed.",
+     "एडमिन आपका पेमेंट जाँच रहे हैं। पुष्टि होते ही आपको यहाँ संदेश मिलेगा।", "అడ్మిన్ మీ చెల్లింపును ధృవీకరిస్తున్నారు. నిర్ధారణ అయిన వెంటనే ఇక్కడ సందేశం వస్తుంది.",
+     "அட்மின் உங்கள் கட்டணத்தைச் சரிபார்க்கிறார். உறுதியானவுடன் இங்கே செய்தி வரும்.", "അഡ്മിൻ നിങ്ങളുടെ പേയ്‌മെന്റ് പരിശോധിക്കുന്നു. സ്ഥിരീകരിച്ചാലുടൻ ഇവിടെ സന്ദേശം ലഭിക്കും."),
+    ("Already processed.", "पहले ही प्रोसेस हो चुका है।", "ఇప్పటికే ప్రాసెస్ అయింది.", "ஏற்கனவே செயலாக்கப்பட்டது.", "ഇതിനകം പ്രോസസ് ചെയ്തു."),
+    ("❌ <b>Payment not verified</b>", "❌ <b>पेमेंट सत्यापित नहीं हुआ</b>", "❌ <b>చెల్లింపు ధృవీకరించబడలేదు</b>", "❌ <b>கட்டணம் சரிபார்க்கப்படவில்லை</b>", "❌ <b>പേയ്‌മെന്റ് സ്ഥിരീകരിച്ചില്ല</b>"),
+    ("We could not confirm this payment. If you already paid, please contact support with your order ID.",
+     "हम इस पेमेंट की पुष्टि नहीं कर सके। अगर आपने भुगतान कर दिया है, तो कृपया अपनी ऑर्डर आईडी के साथ सपोर्ट से संपर्क करें।",
+     "ఈ చెల్లింపును మేము నిర్ధారించలేకపోయాం. మీరు చెల్లించి ఉంటే, దయచేసి మీ ఆర్డర్ ఐడితో సపోర్ట్‌ను సంప్రదించండి.",
+     "இந்தக் கட்டணத்தை எங்களால் உறுதிப்படுத்த முடியவில்லை. நீங்கள் செலுத்தியிருந்தால், உங்கள் ஆர்டர் ஐடியுடன் ஆதரவைத் தொடர்பு கொள்ளவும்.",
+     "ഈ പേയ്‌മെന്റ് സ്ഥിരീകരിക്കാൻ ഞങ്ങൾക്കായില്ല. നിങ്ങൾ പണമടച്ചിട്ടുണ്ടെങ്കിൽ ദയവായി ഓർഡർ ഐഡി സഹിതം സപ്പോർട്ടിനെ ബന്ധപ്പെടുക."),
+    ("Rejected", "अस्वीकृत", "తిరస్కరించబడింది", "நிராகரிக்கப்பட்டது", "നിരസിച്ചു"),
+    ("Approved ✅", "स्वीकृत ✅", "ఆమోదించబడింది ✅", "ஒப்புதல் அளிக்கப்பட்டது ✅", "അംഗീകരിച്ചു ✅"),
+    ("🔌 DB connection pool: <b>{v}</b>", "🔌 DB कनेक्शन पूल: <b>{v}</b>", "🔌 DB కనెక్షన్ పూల్: <b>{v}</b>", "🔌 DB இணைப்பு பூல்: <b>{v}</b>", "🔌 DB കണക്ഷൻ പൂൾ: <b>{v}</b>"),
+    # ---- delivery / notices (messages sent by the payment code) ----
+    ("✅ <b>Payment verified — here's your key!</b>", "✅ <b>पेमेंट सत्यापित — यह रही आपकी की!</b>", "✅ <b>చెల్లింపు ధృవీకరించబడింది — ఇదిగో మీ కీ!</b>", "✅ <b>கட்டணம் சரிபார்க்கப்பட்டது — இதோ உங்கள் கீ!</b>", "✅ <b>പേയ്‌മെന്റ് സ്ഥിരീകരിച്ചു — ഇതാ നിങ്ങളുടെ കീ!</b>"),
+    ("🗝️ Your Key:", "🗝️ आपकी की:", "🗝️ మీ కీ:", "🗝️ உங்கள் கீ:", "🗝️ നിങ്ങളുടെ കീ:"),
+    ("💰 Remaining balance: {v}", "💰 बचा हुआ बैलेंस: {v}", "💰 మిగిలిన బ్యాలెన్స్: {v}", "💰 மீதமுள்ள இருப்பு: {v}", "💰 மீதமுள்ள ബാലൻസ്: {v}"),
+    ("⚠️ <b>Out of Stock</b>", "⚠️ <b>स्टॉक खत्म</b>", "⚠️ <b>స్టాక్ లేదు</b>", "⚠️ <b>கையிருப்பு இல்லை</b>", "⚠️ <b>സ്റ്റോക്ക് തീർന്നു</b>"),
+    ("<b>{p}</b> ({l}) has no stock right now.", "<b>{p}</b> ({l}) का अभी स्टॉक नहीं है।", "<b>{p}</b> ({l}) కు ప్రస్తుతం స్టాక్ లేదు.", "<b>{p}</b> ({l}) க்கு தற்போது கையிருப்பு இல்லை.", "<b>{p}</b> ({l}) ഇപ്പോൾ സ്റ്റോക്കില്ല."),
+    ("🛡️ Your money is safe — {a} has been added to your wallet.", "🛡️ आपका पैसा सुरक्षित है — {a} आपके वॉलेट में जोड़ दिए गए हैं।",
+     "🛡️ మీ డబ్బు సురక్షితం — {a} మీ వాలెట్‌లో జమ చేయబడింది.", "🛡️ உங்கள் பணம் பாதுகாப்பாக உள்ளது — {a} உங்கள் வாலட்டில் சேர்க்கப்பட்டது.", "🛡️ നിങ്ങളുടെ പണം സുരക്ഷിതമാണ് — {a} നിങ്ങളുടെ വാലറ്റിൽ ചേർത്തു."),
+    ("You can buy it as soon as it is restocked.", "रीस्टॉक होते ही आप इसे खरीद सकते हैं।", "రీస్టాక్ అయిన వెంటనే మీరు దీన్ని కొనవచ్చు.", "மீண்டும் கையிருப்பு வந்தவுடன் இதை வாங்கலாம்.", "വീണ്ടും സ്റ്റോക്ക് വന്നാലുടൻ നിങ്ങൾക്കിത് വാങ്ങാം."),
+    ("✅ <b>Payment Verified &amp; Received!</b>", "✅ <b>पेमेंट सत्यापित और प्राप्त!</b>", "✅ <b>చెల్లింపు ధృవీకరించబడింది & అందింది!</b>", "✅ <b>கட்டணம் சரிபார்க்கப்பட்டு பெறப்பட்டது!</b>", "✅ <b>പേയ്‌മെന്റ് സ്ഥിരീകരിച്ച് ലഭിച്ചു!</b>"),
+    ("⚠️ NOTICE: Auto-stock for <b>{p}</b> ({l}) is currently restocking!", "⚠️ सूचना: <b>{p}</b> ({l}) का ऑटो-स्टॉक अभी रीस्टॉक हो रहा है!",
+     "⚠️ గమనిక: <b>{p}</b> ({l}) ఆటో-స్టాక్ ప్రస్తుతం రీస్టాక్ అవుతోంది!", "⚠️ அறிவிப்பு: <b>{p}</b> ({l}) தானியங்கி கையிருப்பு தற்போது நிரப்பப்படுகிறது!", "⚠️ അറിയിപ്പ്: <b>{p}</b> ({l}) ഓട്ടോ-സ്റ്റോക്ക് ഇപ്പോൾ റീസ്റ്റോക്ക് ചെയ്യുകയാണ്!"),
+    ("🛡️ 100% SECURE: Admin is preparing your fresh key right now. It will be delivered directly to this chat shortly!",
+     "🛡️ 100% सुरक्षित: एडमिन अभी आपकी नई की तैयार कर रहे हैं। यह जल्द ही सीधे इस चैट में भेज दी जाएगी!",
+     "🛡️ 100% సురక్షితం: అడ్మిన్ ఇప్పుడు మీ కొత్త కీని సిద్ధం చేస్తున్నారు. ఇది త్వరలో నేరుగా ఈ చాట్‌కు పంపబడుతుంది!",
+     "🛡️ 100% பாதுகாப்பு: அட்மின் இப்போது உங்கள் புதிய கீயைத் தயாரிக்கிறார். இது விரைவில் நேரடியாக இந்த சாட்டுக்கு அனுப்பப்படும்!",
+     "🛡️ 100% സുരക്ഷിതം: അഡ്മിൻ ഇപ്പോൾ നിങ്ങളുടെ പുതിയ കീ തയ്യാറാക്കുകയാണ്. ഇത് ഉടൻ ഈ ചാറ്റിലേക്ക് നേരിട്ട് എത്തും!"),
+    ("✅ <b>Payment Verified Successfully!</b>", "✅ <b>पेमेंट सफलतापूर्वक सत्यापित!</b>", "✅ <b>చెల్లింపు విజయవంతంగా ధృవీకరించబడింది!</b>", "✅ <b>கட்டணம் வெற்றிகரமாக சரிபார்க்கப்பட்டது!</b>", "✅ <b>പേയ്‌മെന്റ് വിജയകരമായി സ്ഥിരീകരിച്ചു!</b>"),
+    ("{a} has been added to your wallet.", "{a} आपके वॉलेट में जोड़ दिए गए हैं।", "{a} మీ వాలెట్‌లో జమ చేయబడింది.", "{a} உங்கள் வாலட்டில் சேர்க்கப்பட்டது.", "{a} നിങ്ങളുടെ വാലറ്റിൽ ചേർത്തു."),
+    ("Your balance is ready — open the shop to complete your purchase.", "आपका बैलेंस तैयार है — खरीदारी पूरी करने के लिए शॉप खोलें।",
+     "మీ బ్యాలెన్స్ సిద్ధంగా ఉంది — కొనుగోలు పూర్తి చేయడానికి షాప్ తెరవండి.", "உங்கள் இருப்பு தயாராக உள்ளது — வாங்குதலை முடிக்க ஷாப்பைத் திறக்கவும்.", "നിങ്ങളുടെ ബാലൻസ് തയ്യാറാണ് — വാങ്ങൽ പൂർത്തിയാക്കാൻ ഷോപ്പ് തുറക്കുക."),
+    # ---- lucky spin ----
+    ("── <b>CASH SPIN</b> ──", "── <b>कैश स्पिन</b> ──", "── <b>క్యాష్ స్పిన్</b> ──", "── <b>கேஷ் ஸ்பின்</b> ──", "── <b>ക്യാഷ് സ്പിൻ</b> ──"),
+    ("🎁 <b>Daily Free Spin!</b>", "🎁 <b>रोज़ाना फ्री स्पिन!</b>", "🎁 <b>రోజువారీ ఉచిత స్పిన్!</b>", "🎁 <b>தினசரி இலவச ஸ்பின்!</b>", "🎁 <b>ദിവസേനയുള്ള സൗജന്യ സ്പിൻ!</b>"),
+    ("💰 Win real cash directly into your wallet!", "💰 असली कैश सीधे अपने वॉलेट में जीतें!", "💰 నిజమైన నగదును నేరుగా మీ వాలెట్‌లో గెలవండి!", "💰 உண்மையான பணத்தை நேரடியாக உங்கள் வாலட்டில் வெல்லுங்கள்!", "💰 യഥാർത്ഥ പണം നേരിട്ട് നിങ്ങളുടെ വാലറ്റിൽ നേടൂ!"),
+    ("Get 1 Free Spin every {t}!", "हर {t} में 1 फ्री स्पिन पाएँ!", "ప్రతి {t} కు 1 ఉచిత స్పిన్ పొందండి!", "ஒவ்வொரு {t} க்கும் 1 இலவச ஸ்பின் பெறுங்கள்!", "ഓരോ {t} കൂടുമ്പോഴും 1 സൗജന്യ സ്പിൻ നേടൂ!"),
+    ("⏳ Use the cash for a purchase within <b>{t}</b> or it expires!", "⏳ कैश को <b>{t}</b> के अंदर खरीदारी में इस्तेमाल करें, वरना यह खत्म हो जाएगा!",
+     "⏳ నగదును <b>{t}</b> లోపల కొనుగోలుకు వాడండి, లేకపోతే అది గడువు ముగుస్తుంది!", "⏳ பணத்தை <b>{t}</b> க்குள் வாங்குதலுக்குப் பயன்படுத்தவும், இல்லையெனில் காலாவதியாகும்!", "⏳ പണം <b>{t}</b> ഉള്ളിൽ വാങ്ങലിന് ഉപയോഗിക്കുക, അല്ലെങ്കിൽ അത് കാലഹരണപ്പെടും!"),
+    ("🕒 Spin Status: ✅ <b>Available Now!</b>", "🕒 स्पिन स्थिति: ✅ <b>अभी उपलब्ध!</b>", "🕒 స్పిన్ స్థితి: ✅ <b>ఇప్పుడు అందుబాటులో!</b>", "🕒 ஸ்பின் நிலை: ✅ <b>இப்போது கிடைக்கும்!</b>", "🕒 സ്പിൻ നില: ✅ <b>ഇപ്പോൾ ലഭ്യം!</b>"),
+    ("👇 Tap below to spin and try your luck!", "👇 स्पिन करने और किस्मत आज़माने के लिए नीचे दबाएँ!", "👇 స్పిన్ చేసి అదృష్టం పరీక్షించుకోవడానికి క్రింద నొక్కండి!", "👇 ஸ்பின் செய்து அதிர்ஷ்டத்தை சோதிக்க கீழே அழுத்தவும்!", "👇 സ്പിൻ ചെയ്ത് ഭാഗ്യം പരീക്ഷിക്കാൻ താഴെ അമർത്തുക!"),
+    ("🕒 Spin Status: ⏳ Next free spin in <b>{t}</b>", "🕒 स्पिन स्थिति: ⏳ अगला फ्री स्पिन <b>{t}</b> में", "🕒 స్పిన్ స్థితి: ⏳ తదుపరి ఉచిత స్పిన్ <b>{t}</b> లో",
+     "🕒 ஸ்பின் நிலை: ⏳ அடுத்த இலவச ஸ்பின் <b>{t}</b> இல்", "🕒 സ്പിൻ നില: ⏳ അടുത്ത സൗജന്യ സ്പിൻ <b>{t}</b> കഴിഞ്ഞ്"),
+    ("🎁 Active spin cash: <b>{a}</b> — expires in <b>{t}</b>. Buy a key now to keep it!", "🎁 सक्रिय स्पिन कैश: <b>{a}</b> — <b>{t}</b> में समाप्त। इसे रखने के लिए अभी की खरीदें!",
+     "🎁 యాక్టివ్ స్పిన్ నగదు: <b>{a}</b> — <b>{t}</b> లో ముగుస్తుంది. దీన్ని ఉంచుకోవడానికి ఇప్పుడే కీ కొనండి!", "🎁 செயலில் உள்ள ஸ்பின் பணம்: <b>{a}</b> — <b>{t}</b> இல் காலாவதியாகும். வைத்துக்கொள்ள இப்போதே கீ வாங்குங்கள்!",
+     "🎁 സജീവ സ്പിൻ പണം: <b>{a}</b> — <b>{t}</b> കഴിഞ്ഞാൽ കാലഹരണപ്പെടും. സൂക്ഷിക്കാൻ ഇപ്പോൾ തന്നെ കീ വാങ്ങൂ!"),
+    ("⏳ Your next free spin is not available yet. Try again later!", "⏳ आपका अगला फ्री स्पिन अभी उपलब्ध नहीं है। बाद में कोशिश करें!",
+     "⏳ మీ తదుపరి ఉచిత స్పిన్ ఇంకా అందుబాటులో లేదు. తర్వాత మళ్లీ ప్రయత్నించండి!", "⏳ உங்கள் அடுத்த இலவச ஸ்பின் இன்னும் கிடைக்கவில்லை. பிறகு முயற்சிக்கவும்!", "⏳ നിങ്ങളുടെ അടുത്ത സൗജന്യ സ്പിൻ ഇതുവരെ ലഭ്യമല്ല. പിന്നീട് ശ്രമിക്കുക!"),
+    ("🎰 Spinning... {r}", "🎰 स्पिन हो रहा है... {r}", "🎰 స్పిన్ అవుతోంది... {r}", "🎰 ஸ்பின் ஆகிறது... {r}", "🎰 സ്പിൻ ചെയ്യുന്നു... {r}"),
+    ("🎰 Stopping... {r}", "🎰 रुक रहा है... {r}", "🎰 ఆగుతోంది... {r}", "🎰 நிற்கிறது... {r}", "🎰 നിൽക്കുന്നു... {r}"),
+    ("🎁 ── <b>CASH SPIN RESULT!</b> ── 🎁", "🎁 ── <b>कैश स्पिन परिणाम!</b> ── 🎁", "🎁 ── <b>క్యాష్ స్పిన్ ఫలితం!</b> ── 🎁", "🎁 ── <b>கேஷ் ஸ்பின் முடிவு!</b> ── 🎁", "🎁 ── <b>ക്യാഷ് സ്പിൻ ഫലം!</b> ── 🎁"),
+    ("🎉 <b>Congratulations!</b>", "🎉 <b>बधाई हो!</b>", "🎉 <b>అభినందనలు!</b>", "🎉 <b>வாழ்த்துகள்!</b>", "🎉 <b>അഭിനന്ദനങ്ങൾ!</b>"),
+    ("💰 You won <b>{a} Cash Reward!</b>", "💰 आपने <b>{a} कैश इनाम</b> जीता!", "💰 మీరు <b>{a} నగదు బహుమతి</b> గెలిచారు!", "💰 நீங்கள் <b>{a} பண பரிசு</b> வென்றீர்கள்!", "💰 നിങ്ങൾ <b>{a} ക്യാഷ് റിവാർഡ്</b> നേടി!"),
+    ("It has been added to your wallet.", "इसे आपके वॉलेट में जोड़ दिया गया है।", "ఇది మీ వాలెట్‌లో జమ చేయబడింది.", "இது உங்கள் வாலட்டில் சேர்க்கப்பட்டது.", "ഇത് നിങ്ങളുടെ വാലറ്റിൽ ചേർത്തു."),
+    ("⏳ <b>Use it for a purchase within {t}</b> — otherwise this cash expires!", "⏳ <b>इसे {t} के अंदर खरीदारी में इस्तेमाल करें</b> — वरना यह कैश खत्म हो जाएगा!",
+     "⏳ <b>దీన్ని {t} లోపల కొనుగోలుకు వాడండి</b> — లేకపోతే ఈ నగదు గడువు ముగుస్తుంది!", "⏳ <b>இதை {t} க்குள் வாங்குதலுக்குப் பயன்படுத்தவும்</b> — இல்லையெனில் இந்தப் பணம் காலாவதியாகும்!", "⏳ <b>ഇത് {t} ഉള്ളിൽ വാങ്ങലിന് ഉപയോഗിക്കുക</b> — അല്ലെങ്കിൽ ഈ പണം കാലഹരണപ്പെടും!"),
+    ("💳 New balance: {v}", "💳 नया बैलेंस: {v}", "💳 కొత్త బ్యాలెన్స్: {v}", "💳 புதிய இருப்பு: {v}", "💳 പുതിയ ബാലൻസ്: {v}"),
+    ("🕒 Next free spin available in {t}!", "🕒 अगला फ्री स्पिन {t} में उपलब्ध होगा!", "🕒 తదుపరి ఉచిత స్పిన్ {t} లో అందుబాటులో ఉంటుంది!", "🕒 அடுத்த இலவச ஸ்பின் {t} இல் கிடைக்கும்!", "🕒 അടുത്ത സൗജന്യ സ്പിൻ {t} കഴിഞ്ഞ് ലഭ്യമാകും!"),
+    ("⏰ <b>SPIN CASH EXPIRED</b>", "⏰ <b>स्पिन कैश की समय सीमा समाप्त</b>", "⏰ <b>స్పిన్ నగదు గడువు ముగిసింది</b>", "⏰ <b>ஸ்பின் பணம் காலாவதியானது</b>", "⏰ <b>സ്പിൻ പണം കാലഹരണപ്പെട്ടു</b>"),
+    ("Your free spin reward of <b>{a}</b> was not used for a purchase in time, so it has been removed from your wallet.",
+     "आपका <b>{a}</b> का फ्री स्पिन इनाम समय पर खरीदारी में इस्तेमाल नहीं हुआ, इसलिए इसे आपके वॉलेट से हटा दिया गया है।",
+     "మీ <b>{a}</b> ఉచిత స్పిన్ బహుమతి సమయానికి కొనుగోలుకు వాడలేదు, కాబట్టి దాన్ని మీ వాలెట్ నుండి తొలగించాం.",
+     "உங்கள் <b>{a}</b> இலவச ஸ்பின் பரிசு உரிய நேரத்தில் வாங்குதலுக்குப் பயன்படுத்தப்படவில்லை, எனவே அது உங்கள் வாலட்டிலிருந்து நீக்கப்பட்டது.",
+     "നിങ്ങളുടെ <b>{a}</b> സൗജന്യ സ്പിൻ റിവാർഡ് സമയത്തിനുള്ളിൽ വാങ്ങലിന് ഉപയോഗിച്ചില്ല, അതിനാൽ അത് നിങ്ങളുടെ വാലറ്റിൽ നിന്ന് നീക്കി."),
+    ("💳 Wallet balance: {v}", "💳 वॉलेट बैलेंस: {v}", "💳 వాలెట్ బ్యాలెన్స్: {v}", "💳 வாலட் இருப்பு: {v}", "💳 വാലറ്റ് ബാലൻസ്: {v}"),
+    ("🎰 Spin again when your next free spin is ready — and buy a key before the timer ends!", "🎰 अगला फ्री स्पिन तैयार होने पर फिर स्पिन करें — और टाइमर खत्म होने से पहले की खरीदें!",
+     "🎰 మీ తదుపరి ఉచిత స్పిన్ సిద్ధమైనప్పుడు మళ్లీ స్పిన్ చేయండి — టైమర్ ముగిసేలోపు కీ కొనండి!", "🎰 அடுத்த இலவச ஸ்பின் தயாரானதும் மீண்டும் ஸ்பின் செய்யுங்கள் — டைமர் முடிவதற்குள் கீ வாங்குங்கள்!", "🎰 അടുത്ത സൗജന്യ സ്പിൻ തയ്യാറാകുമ്പോൾ വീണ്ടും സ്പിൻ ചെയ്യൂ — ടൈമർ തീരും മുൻപ് കീ വാങ്ങൂ!"),
+    # ---- referral / history / top sellers ----
+    ("🤝 <b>REFERRAL SYSTEM</b>", "🤝 <b>रेफरल सिस्टम</b>", "🤝 <b>రెఫరల్ సిస్టమ్</b>", "🤝 <b>பரிந்துரை அமைப்பு</b>", "🤝 <b>റഫറൽ സിസ്റ്റം</b>"),
+    ("🔗 Your Referral Link:", "🔗 आपका रेफरल लिंक:", "🔗 మీ రెఫరల్ లింక్:", "🔗 உங்கள் பரிந்துரை இணைப்பு:", "🔗 നിങ്ങളുടെ റഫറൽ ലിങ്ക്:"),
+    ("🤝 Total Referrals: <b>{n}</b>", "🤝 कुल रेफरल: <b>{n}</b>", "🤝 మొత్తం రెఫరల్స్: <b>{n}</b>", "🤝 மொத்த பரிந்துரைகள்: <b>{n}</b>", "🤝 ആകെ റഫറലുകൾ: <b>{n}</b>"),
+    ("💰 Total Earnings: <b>{v}</b>", "💰 कुल कमाई: <b>{v}</b>", "💰 మొత్తం సంపాదన: <b>{v}</b>", "💰 மொத்த வருமானம்: <b>{v}</b>", "💰 ആകെ വരുമാനം: <b>{v}</b>"),
+    ("💰 Invite your friends → Get a guaranteed bonus on their first purchase!", "💰 अपने दोस्तों को बुलाएँ → उनकी पहली खरीदारी पर पक्का बोनस पाएँ!",
+     "💰 మీ స్నేహితులను ఆహ్వానించండి → వారి మొదటి కొనుగోలుపై హామీగా బోనస్ పొందండి!", "💰 உங்கள் நண்பர்களை அழைக்கவும் → அவர்களின் முதல் வாங்குதலில் உறுதியான போனஸ் பெறுங்கள்!", "💰 നിങ്ങളുടെ സുഹൃത്തുക്കളെ ക്ഷണിക്കൂ → അവരുടെ ആദ്യ വാങ്ങലിൽ ഉറപ്പായ ബോണസ് നേടൂ!"),
+    ("🛒 ── <b>MY ORDERS</b> ── 🛒", "🛒 ── <b>मेरे ऑर्डर</b> ── 🛒", "🛒 ── <b>నా ఆర్డర్లు</b> ── 🛒", "🛒 ── <b>என் ஆர்டர்கள்</b> ── 🛒", "🛒 ── <b>എന്റെ ഓർഡറുകൾ</b> ── 🛒"),
+    ("🚫 <b>No orders yet!</b>", "🚫 <b>अभी तक कोई ऑर्डर नहीं!</b>", "🚫 <b>ఇంకా ఆర్డర్లు లేవు!</b>", "🚫 <b>இன்னும் ஆர்டர்கள் இல்லை!</b>", "🚫 <b>ഇതുവരെ ഓർഡറുകൾ ഇല്ല!</b>"),
+    ("🛒 Start shopping to see your orders here!", "🛒 अपने ऑर्डर यहाँ देखने के लिए खरीदारी शुरू करें!", "🛒 మీ ఆర్డర్లు ఇక్కడ చూడటానికి షాపింగ్ ప్రారంభించండి!", "🛒 உங்கள் ஆர்டர்களை இங்கே காண ஷாப்பிங்கைத் தொடங்குங்கள்!", "🛒 നിങ്ങളുടെ ഓർഡറുകൾ ഇവിടെ കാണാൻ ഷോപ്പിംഗ് തുടങ്ങൂ!"),
+    ("✈️ All your purchased keys will be saved here safely!", "✈️ आपकी खरीदी हुई सभी कीज़ यहाँ सुरक्षित रहेंगी!", "✈️ మీరు కొన్న అన్ని కీలు ఇక్కడ సురక్షితంగా ఉంటాయి!", "✈️ நீங்கள் வாங்கிய அனைத்து கீகளும் இங்கே பாதுகாப்பாக இருக்கும்!", "✈️ നിങ്ങൾ വാങ്ങിയ എല്ലാ കീകളും ഇവിടെ സുരക്ഷിതമായി സൂക്ഷിക്കും!"),
+    ("🔑 <b>MY ORDERS (last 20)</b>", "🔑 <b>मेरे ऑर्डर (पिछले 20)</b>", "🔑 <b>నా ఆర్డర్లు (చివరి 20)</b>", "🔑 <b>என் ஆர்டர்கள் (கடைசி 20)</b>", "🔑 <b>എന്റെ ഓർഡറുകൾ (അവസാന 20)</b>"),
+    ("💰 {a} • {s}", "💰 {a} • {s}", "💰 {a} • {s}", "💰 {a} • {s}", "💰 {a} • {s}"),
+    ("⏳ Pending delivery", "⏳ डिलीवरी लंबित", "⏳ డెలివరీ పెండింగ్", "⏳ டெலிவரி நிலுவையில்", "⏳ ഡെലിവറി തീർപ്പാക്കാനുണ്ട്"),
+    ("Completed", "पूर्ण", "పూర్తయింది", "முடிந்தது", "പൂർത്തിയായി"),
+    ("📅 {d} (IST)", "📅 {d} (IST)", "📅 {d} (IST)", "📅 {d} (IST)", "📅 {d} (IST)"),
+    ("👑 <b>TOP 5 SELLERS MONTHLY</b>", "👑 <b>मासिक टॉप 5 सेलर्स</b>", "👑 <b>నెలవారీ టాప్ 5 సెల్లర్లు</b>", "👑 <b>மாதாந்திர முதல் 5 விற்பனையாளர்கள்</b>", "👑 <b>പ്രതിമാസ ടോപ്പ് 5 സെല്ലർമാർ</b>"),
+    ("📅 <i>{m} — list resets automatically on the 1st of every month</i>", "📅 <i>{m} — सूची हर महीने की 1 तारीख को अपने आप रीसेट होती है</i>",
+     "📅 <i>{m} — జాబితా ప్రతి నెల 1వ తేదీన ఆటోమేటిక్‌గా రీసెట్ అవుతుంది</i>", "📅 <i>{m} — பட்டியல் ஒவ்வொரு மாதமும் 1ஆம் தேதி தானாக மீட்டமைக்கப்படும்</i>", "📅 <i>{m} — പട്ടിക എല്ലാ മാസവും 1-ാം തീയതി സ്വയം റീസെറ്റ് ആകും</i>"),
+    ("🚫 <b>No purchases yet this month!</b>", "🚫 <b>इस महीने अभी तक कोई खरीदारी नहीं!</b>", "🚫 <b>ఈ నెల ఇంకా కొనుగోళ్లు లేవు!</b>", "🚫 <b>இந்த மாதம் இன்னும் வாங்குதல்கள் இல்லை!</b>", "🚫 <b>ഈ മാസം ഇതുവരെ വാങ്ങലുകൾ ഇല്ല!</b>"),
+    ("🛒 Buy a key now and be the first on the leaderboard! 🔥", "🛒 अभी की खरीदें और लीडरबोर्ड पर सबसे पहले आएँ! 🔥", "🛒 ఇప్పుడే కీ కొని లీడర్‌బోర్డ్‌లో మొదటి వారు అవ్వండి! 🔥", "🛒 இப்போதே கீ வாங்கி லீடர்போர்டில் முதலாவதாக இருங்கள்! 🔥", "🛒 ഇപ്പോൾ കീ വാങ്ങി ലീഡർബോർഡിൽ ഒന്നാമനാകൂ! 🔥"),
+    ("👑 Role: {r}", "👑 भूमिका: {r}", "👑 పాత్ర: {r}", "👑 பங்கு: {r}", "👑 റോൾ: {r}"),
+    ("RESELLER", "रीसेलर", "రీసెల్లర్", "மறுவிற்பனையாளர்", "റീസെല്ലർ"),
+    ("USER", "यूज़र", "యూజర్", "பயனர்", "യൂസർ"),
+    ("🔑 Keys: {n}", "🔑 कीज़: {n}", "🔑 కీలు: {n}", "🔑 கீகள்: {n}", "🔑 കീകൾ: {n}"),
+    ("💰 Total Buy: {v}", "💰 कुल खरीद: {v}", "💰 మొత్తం కొనుగోలు: {v}", "💰 மொத்த வாங்குதல்: {v}", "💰 ആകെ വാങ്ങൽ: {v}"),
+    ("📍 <b>Your rank:</b> #{r} • 🔑 {k} keys • {v}", "📍 <b>आपकी रैंक:</b> #{r} • 🔑 {k} कीज़ • {v}", "📍 <b>మీ ర్యాంక్:</b> #{r} • 🔑 {k} కీలు • {v}", "📍 <b>உங்கள் தரவரிசை:</b> #{r} • 🔑 {k} கீகள் • {v}", "📍 <b>നിങ്ങളുടെ റാങ്ക്:</b> #{r} • 🔑 {k} കീകൾ • {v}"),
+    ("📍 <b>Your rank:</b> not ranked yet — buy a key to join the list!", "📍 <b>आपकी रैंक:</b> अभी रैंक नहीं — सूची में आने के लिए की खरीदें!", "📍 <b>మీ ర్యాంక్:</b> ఇంకా ర్యాంక్ లేదు — జాబితాలో చేరడానికి కీ కొనండి!",
+     "📍 <b>உங்கள் தரவரிசை:</b> இன்னும் தரவரிசை இல்லை — பட்டியலில் சேர கீ வாங்குங்கள்!", "📍 <b>നിങ്ങളുടെ റാങ്ക്:</b> ഇതുവരെ റാങ്ക് ഇല്ല — പട്ടികയിൽ ചേരാൻ കീ വാങ്ങൂ!"),
+    ("⏳ Resets in <b>{d}</b> day", "⏳ <b>{d}</b> दिन में रीसेट", "⏳ <b>{d}</b> రోజులో రీసెట్", "⏳ <b>{d}</b> நாளில் மீட்டமைப்பு", "⏳ <b>{d}</b> ദിവസത്തിൽ റീസെറ്റ്"),
+    ("⏳ Resets in <b>{d}</b> days", "⏳ <b>{d}</b> दिनों में रीसेट", "⏳ <b>{d}</b> రోజుల్లో రీసెట్", "⏳ <b>{d}</b> நாட்களில் மீட்டமைப்பு", "⏳ <b>{d}</b> ദിവസത്തിനുള്ളിൽ റീസെറ്റ്"),
+    # ---- ping ----
+    ("✅ Everything is running fast.", "✅ सब कुछ तेज़ चल रहा है।", "✅ అంతా వేగంగా నడుస్తోంది.", "✅ எல்லாம் வேகமாக இயங்குகிறது.", "✅ എല്ലാം വേഗത്തിൽ പ്രവർത്തിക്കുന്നു."),
+    ("⚠️ A little slow right now. Tap <b>🔄 Restart</b> to refresh your connection.", "⚠️ अभी थोड़ा धीमा है। कनेक्शन रीफ्रेश करने के लिए <b>🔄 Restart</b> दबाएँ।",
+     "⚠️ ప్రస్తుతం కొంచెం నెమ్మదిగా ఉంది. మీ కనెక్షన్‌ను రిఫ్రెష్ చేయడానికి <b>🔄 Restart</b> నొక్కండి.", "⚠️ இப்போது சற்று மெதுவாக உள்ளது. உங்கள் இணைப்பைப் புதுப்பிக்க <b>🔄 Restart</b> அழுத்தவும்.", "⚠️ ഇപ്പോൾ അൽപ്പം വേഗത കുറവാണ്. കണക്ഷൻ റിഫ്രഷ് ചെയ്യാൻ <b>🔄 Restart</b> അമർത്തുക."),
+    ("📡 <b>PING RESULT</b>", "📡 <b>पिंग परिणाम</b>", "📡 <b>పింగ్ ఫలితం</b>", "📡 <b>பிங் முடிவு</b>", "📡 <b>പിംഗ് ഫലം</b>"),
+    ("⚡ Total: <b>{t} ms</b>", "⚡ कुल: <b>{t} ms</b>", "⚡ మొత్తం: <b>{t} ms</b>", "⚡ மொத்தம்: <b>{t} ms</b>", "⚡ ആകെ: <b>{t} ms</b>"),
+    ("<i>Your own phone network adds a little on top of this.</i>", "<i>आपके फ़ोन का नेटवर्क इसमें थोड़ा और जोड़ता है।</i>", "<i>మీ ఫోన్ నెట్‌వర్క్ దీనికి కొంచెం అదనంగా కలుపుతుంది.</i>", "<i>உங்கள் தொலைபேசி நெட்வொர்க் இதற்குச் சற்று கூடுதலாகச் சேர்க்கும்.</i>", "<i>നിങ്ങളുടെ ഫോൺ നെറ്റ്‌വർക്ക് ഇതിൽ അൽപ്പം കൂടി ചേർക്കും.</i>"),
+    ("📡 <b>Ping testing...</b>", "📡 <b>पिंग टेस्ट हो रहा है...</b>", "📡 <b>పింగ్ పరీక్ష జరుగుతోంది...</b>", "📡 <b>பிங் சோதனை நடக்கிறது...</b>", "📡 <b>പിംഗ് ടെസ്റ്റ് നടക്കുന്നു...</b>"),
+    ("⏳ Measuring your speed live, please wait.", "⏳ आपकी स्पीड लाइव मापी जा रही है, कृपया प्रतीक्षा करें।", "⏳ మీ వేగాన్ని ప్రత్యక్షంగా కొలుస్తున్నాం, దయచేసి వేచి ఉండండి.", "⏳ உங்கள் வேகத்தை நேரடியாக அளவிடுகிறோம், காத்திருக்கவும்.", "⏳ നിങ്ങളുടെ വേഗത തത്സമയം അളക്കുന്നു, ദയവായി കാത്തിരിക്കുക."),
+    ("🟢 Fast", "🟢 तेज़", "🟢 వేగం", "🟢 வேகம்", "🟢 വേഗം"),
+    ("🔴 Slow", "🔴 धीमा", "🔴 నెమ్మది", "🔴 மெதுவு", "🔴 വേഗത കുറവ്"),
+    # ---- shop ----
+    ("🛒 <b>PRODUCT STORE — SHOP</b> 🛒", "🛒 <b>प्रोडक्ट स्टोर — शॉप</b> 🛒", "🛒 <b>ప్రొడక్ట్ స్టోర్ — షాప్</b> 🛒", "🛒 <b>தயாரிப்பு ஸ்டோர் — ஷாப்</b> 🛒", "🛒 <b>പ്രൊഡക്റ്റ് സ്റ്റോർ — ഷോപ്പ്</b> 🛒"),
+    ("🎮 Select your game:", "🎮 अपना गेम चुनें:", "🎮 మీ గేమ్‌ను ఎంచుకోండి:", "🎮 உங்கள் கேமைத் தேர்ந்தெடுக்கவும்:", "🎮 നിങ്ങളുടെ ഗെയിം തിരഞ്ഞെടുക്കുക:"),
+    ("🔥 <b>FREE FIRE — SHOP</b> 🔥", "🔥 <b>FREE FIRE — शॉप</b> 🔥", "🔥 <b>FREE FIRE — షాప్</b> 🔥", "🔥 <b>FREE FIRE — ஷாப்</b> 🔥", "🔥 <b>FREE FIRE — ഷോപ്പ്</b> 🔥"),
+    ("📱 Select your device type:", "📱 अपना डिवाइस प्रकार चुनें:", "📱 మీ డివైస్ రకాన్ని ఎంచుకోండి:", "📱 உங்கள் சாதன வகையைத் தேர்ந்தெடுக்கவும்:", "📱 നിങ്ങളുടെ ഡിവൈസ് തരം തിരഞ്ഞെടുക്കുക:"),
+    ("⚠️ No products available in this category yet. Admin will restock soon!", "⚠️ इस श्रेणी में अभी कोई प्रोडक्ट उपलब्ध नहीं है। एडमिन जल्द रीस्टॉक करेंगे!",
+     "⚠️ ఈ వర్గంలో ఇంకా ఉత్పత్తులు లేవు. అడ్మిన్ త్వరలో రీస్టాక్ చేస్తారు!", "⚠️ இந்த வகையில் இன்னும் தயாரிப்புகள் இல்லை. அட்மின் விரைவில் நிரப்புவார்!", "⚠️ ഈ വിഭാഗത്തിൽ ഇതുവരെ ഉൽപ്പന്നങ്ങൾ ഇല്ല. അഡ്മിൻ ഉടൻ റീസ്റ്റോക്ക് ചെയ്യും!"),
+    ("🔥 Choose a product:", "🔥 कोई प्रोडक्ट चुनें:", "🔥 ఒక ఉత్పత్తిని ఎంచుకోండి:", "🔥 ஒரு தயாரிப்பைத் தேர்ந்தெடுக்கவும்:", "🔥 ഒരു ഉൽപ്പന്നം തിരഞ്ഞെടുക്കുക:"),
+    ("Available | 🎱 {g}", "उपलब्ध | 🎱 {g}", "అందుబాటులో | 🎱 {g}", "கிடைக்கும் | 🎱 {g}", "ലഭ്യം | 🎱 {g}"),
+    ("Available | 🔴 {c} Only", "उपलब्ध | 🔴 सिर्फ़ {c}", "అందుబాటులో | 🔴 {c} మాత్రమే", "கிடைக்கும் | 🔴 {c} மட்டும்", "ലഭ്യം | 🔴 {c} മാത്രം"),
+    ("🔘 Silent Aim &amp; Headshot", "🔘 साइलेंट एम और हेडशॉट", "🔘 సైలెంట్ ఎయిమ్ & హెడ్‌షాట్", "🔘 சைலன்ட் எய்ம் & ஹெட்ஷாட்", "🔘 സൈലന്റ് എയിം & ഹെഡ്ഷോട്ട്"),
+    ("🔘 AimFov 360° Location", "🔘 AimFov 360° लोकेशन", "🔘 AimFov 360° లొకేషన్", "🔘 AimFov 360° இடம்", "🔘 AimFov 360° ലൊക്കേഷൻ"),
+    ("🔘 CS / BR Rank Working Safe", "🔘 CS / BR रैंक सुरक्षित रूप से काम करता है", "🔘 CS / BR ర్యాంక్ సురక్షితంగా పనిచేస్తుంది", "🔘 CS / BR ரேங்க் பாதுகாப்பாக வேலை செய்யும்", "🔘 CS / BR റാങ്ക് സുരക്ഷിതമായി പ്രവർത്തിക്കുന്നു"),
+    ("🔘 100% Anti-Ban Protection", "🔘 100% एंटी-बैन सुरक्षा", "🔘 100% యాంటీ-బ్యాన్ రక్షణ", "🔘 100% ஆன்டி-பேன் பாதுகாப்பு", "🔘 100% ആന്റി-ബാൻ സംരക്ഷണം"),
+    ("Current Tier: <b>{b}</b>", "वर्तमान टियर: <b>{b}</b>", "ప్రస్తుత టియర్: <b>{b}</b>", "தற்போதைய நிலை: <b>{b}</b>", "നിലവിലെ ടിയർ: <b>{b}</b>"),
+    ("Select Duration:", "अवधि चुनें:", "వ్యవధిని ఎంచుకోండి:", "காலத்தைத் தேர்ந்தெடுக்கவும்:", "കാലയളവ് തിരഞ്ഞെടുക്കുക:"),
+    ("👑 Reseller Price", "👑 रीसेलर कीमत", "👑 రీసెల్లర్ ధర", "👑 மறுவிற்பனையாளர் விலை", "👑 റീസെല്ലർ വില"),
+    ("👤 Regular Price", "👤 सामान्य कीमत", "👤 సాధారణ ధర", "👤 சாதாரண விலை", "👤 സാധാരണ വില"),
+    ("This product is currently under maintenance. Please check back later — sorry for the inconvenience!</blockquote>",
+     "यह प्रोडक्ट अभी मेंटेनेंस में है। कृपया बाद में देखें — असुविधा के लिए क्षमा करें!</blockquote>",
+     "ఈ ఉత్పత్తి ప్రస్తుతం మెయింటెనెన్స్‌లో ఉంది. దయచేసి తర్వాత చూడండి — అసౌకర్యానికి క్షమించండి!</blockquote>",
+     "இந்தத் தயாரிப்பு தற்போது பராமரிப்பில் உள்ளது. பிறகு பார்க்கவும் — சிரமத்திற்கு வருந்துகிறோம்!</blockquote>",
+     "ഈ ഉൽപ്പന്നം ഇപ്പോൾ മെയിന്റനൻസിലാണ്. പിന്നീട് നോക്കുക — അസൗകര്യത്തിൽ ക്ഷമിക്കുക!</blockquote>"),
+    ("⚠️ Product not available.", "⚠️ प्रोडक्ट उपलब्ध नहीं है।", "⚠️ ఉత్పత్తి అందుబాటులో లేదు.", "⚠️ தயாரிப்பு கிடைக்கவில்லை.", "⚠️ ഉൽപ്പന്നം ലഭ്യമല്ല."),
+    ("⏱️ Plan: {p}", "⏱️ प्लान: {p}", "⏱️ ప్లాన్: {p}", "⏱️ திட்டம்: {p}", "⏱️ പ്ലാൻ: {p}"),
+    ("💵 Price: {v}", "💵 कीमत: {v}", "💵 ధర: {v}", "💵 விலை: {v}", "💵 വില: {v}"),
+    ("🎟️ Coupon <code>{c}</code>: -{v}", "🎟️ कूपन <code>{c}</code>: -{v}", "🎟️ కూపన్ <code>{c}</code>: -{v}", "🎟️ கூப்பன் <code>{c}</code>: -{v}", "🎟️ കൂപ്പൺ <code>{c}</code>: -{v}"),
+    ("💳 Wallet Balance: {v}", "💳 वॉलेट बैलेंस: {v}", "💳 వాలెట్ బ్యాలెన్స్: {v}", "💳 வாலட் இருப்பு: {v}", "💳 വാലറ്റ് ബാലൻസ്: {v}"),
+    ("⚠️ <b>To pay now: {v}</b>", "⚠️ <b>अभी देना है: {v}</b>", "⚠️ <b>ఇప్పుడు చెల్లించాల్సింది: {v}</b>", "⚠️ <b>இப்போது செலுத்த வேண்டியது: {v}</b>", "⚠️ <b>ഇപ്പോൾ അടയ്ക്കേണ്ടത്: {v}</b>"),
+    ("⚠️ Session expired. Please select the product again.", "⚠️ सेशन समाप्त हो गया। कृपया प्रोडक्ट दोबारा चुनें।", "⚠️ సెషన్ ముగిసింది. దయచేసి ఉత్పత్తిని మళ్లీ ఎంచుకోండి.", "⚠️ அமர்வு முடிந்தது. தயாரிப்பை மீண்டும் தேர்ந்தெடுக்கவும்.", "⚠️ സെഷൻ കഴിഞ്ഞു. ഉൽപ്പന്നം വീണ്ടും തിരഞ്ഞെടുക്കുക."),
+    ("⚠️ This product is currently unavailable.", "⚠️ यह प्रोडक्ट अभी उपलब्ध नहीं है।", "⚠️ ఈ ఉత్పత్తి ప్రస్తుతం అందుబాటులో లేదు.", "⚠️ இந்தத் தயாரிப்பு தற்போது கிடைக்கவில்லை.", "⚠️ ഈ ഉൽപ്പന്നം ഇപ്പോൾ ലഭ്യമല്ല."),
+    ("⚠️ This product or plan is no longer available.", "⚠️ यह प्रोडक्ट या प्लान अब उपलब्ध नहीं है।", "⚠️ ఈ ఉత్పత్తి లేదా ప్లాన్ ఇకపై అందుబాటులో లేదు.", "⚠️ இந்தத் தயாரிப்பு அல்லது திட்டம் இனி கிடைக்காது.", "⚠️ ഈ ഉൽപ്പന്നമോ പ്ലാനോ ഇനി ലഭ്യമല്ല."),
+    ("⚠️ <b>Out of Stock!</b> Keys will be restocked shortly. You were not charged.", "⚠️ <b>स्टॉक खत्म!</b> कीज़ जल्द रीस्टॉक होंगी। आपसे कुछ नहीं काटा गया।",
+     "⚠️ <b>స్టాక్ లేదు!</b> కీలు త్వరలో రీస్టాక్ అవుతాయి. మీ నుండి ఏమీ తగ్గించబడలేదు.", "⚠️ <b>கையிருப்பு இல்லை!</b> கீகள் விரைவில் நிரப்பப்படும். உங்களிடமிருந்து எதுவும் கழிக்கப்படவில்லை.", "⚠️ <b>സ്റ്റോക്ക് തീർന്നു!</b> കീകൾ ഉടൻ റീസ്റ്റോക്ക് ചെയ്യും. നിങ്ങളിൽ നിന്ന് ഒന്നും കുറച്ചിട്ടില്ല."),
+    ("🎟️ <b>Send your coupon code</b> as a message now.", "🎟️ अब अपना <b>कूपन कोड</b> संदेश के रूप में भेजें।", "🎟️ ఇప్పుడు మీ <b>కూపన్ కోడ్</b>ను సందేశంగా పంపండి.", "🎟️ இப்போது உங்கள் <b>கூப்பன் குறியீட்டை</b> செய்தியாக அனுப்பவும்.", "🎟️ ഇപ്പോൾ നിങ്ങളുടെ <b>കൂപ്പൺ കോഡ്</b> സന്ദേശമായി അയയ്ക്കുക."),
+    ("❌ Invalid or expired coupon code.", "❌ कूपन कोड अमान्य या समाप्त है।", "❌ కూపన్ కోడ్ చెల్లదు లేదా గడువు ముగిసింది.", "❌ கூப்பன் குறியீடு தவறானது அல்லது காலாவதியானது.", "❌ കൂപ്പൺ കോഡ് അസാധുവാണ് അല്ലെങ്കിൽ കാലഹരണപ്പെട്ടു."),
+    ("✅ Coupon applied!", "✅ कूपन लागू हो गया!", "✅ కూపన్ వర్తించబడింది!", "✅ கூப்பன் பயன்படுத்தப்பட்டது!", "✅ കൂപ്പൺ പ്രയോഗിച്ചു!"),
+    ("💰 To pay: {v}", "💰 देना है: {v}", "💰 చెల్లించాల్సింది: {v}", "💰 செலுத்த வேண்டியது: {v}", "💰 അടയ്ക്കേണ്ടത്: {v}"),
+    ("After paying, tap <b>✅ I have paid</b>. Your key arrives as soon as the admin confirms.", "भुगतान के बाद <b>✅ I have paid</b> दबाएँ। एडमिन की पुष्टि होते ही आपकी की आ जाएगी।",
+     "చెల్లించిన తర్వాత <b>✅ I have paid</b> నొక్కండి. అడ్మిన్ నిర్ధారించిన వెంటనే మీ కీ వస్తుంది.", "பணம் செலுத்திய பின் <b>✅ I have paid</b> அழுத்தவும். அட்மின் உறுதிப்படுத்தியவுடன் உங்கள் கீ வரும்.", "പണമടച്ച ശേഷം <b>✅ I have paid</b> അമർത്തുക. അഡ്മിൻ സ്ഥിരീകരിച്ചാലുടൻ നിങ്ങളുടെ കീ എത്തും."),
+    ("🚀 Start the bot", "🚀 बॉट शुरू करें", "🚀 బాట్ ప్రారంభించండి", "🚀 பாட்டைத் தொடங்கவும்", "🚀 ബോട്ട് തുടങ്ങുക"),
+    ("📡 Check speed / fix slowness", "📡 स्पीड जाँचें / धीमापन ठीक करें", "📡 వేగం తనిఖీ / నెమ్మదితనం సరిచేయండి", "📡 வேகத்தைச் சரிபார்க்க / மெதுவை சரிசெய்ய", "📡 വേഗത പരിശോധിക്കുക / വേഗതക്കുറവ് പരിഹരിക്കുക"),
+    ("🌐 Language", "🌐 भाषा", "🌐 భాష", "🌐 மொழி", "🌐 ഭാഷ"),
+    # ---- durations (digits only, used inside other lines) ----
+    ("{num} minutes", "{num} मिनट", "{num} నిమిషాలు", "{num} நிமிடங்கள்", "{num} മിനിറ്റ്"),
+    ("{num} minute", "{num} मिनट", "{num} నిమిషం", "{num} நிமிடம்", "{num} മിനിറ്റ്"),
+    ("{num} hours", "{num} घंटे", "{num} గంటలు", "{num} மணி நேரம்", "{num} മണിക്കൂർ"),
+    ("{num} hour", "{num} घंटा", "{num} గంట", "{num} மணி நேரம்", "{num} മണിക്കൂർ"),
+]
+
+# ---- button labels (without the leading emoji; emoji stay as they are) ----
+_BUTTONS = [
+    ("Shop Key", "की शॉप", "కీ షాప్", "கீ ஷாப்", "കീ ഷോപ്പ്"),
+    ("My Profile", "मेरी प्रोफ़ाइल", "నా ప్రొఫైల్", "என் சுயவிவரம்", "എന്റെ പ്രൊഫൈൽ"),
+    ("Add Balance", "बैलेंस जोड़ें", "బ్యాలెన్స్ జోడించండి", "இருப்பு சேர்க்க", "ബാലൻസ് ചേർക്കുക"),
+    ("All History", "सारा इतिहास", "అన్ని చరిత్ర", "அனைத்து வரலாறு", "എല്ലാ ഹിസ്റ്ററി"),
+    ("Tutorial watch", "ट्यूटोरियल देखें", "ట్యుటోరియల్ చూడండి", "பயிற்சி பார்க்க", "ട്യൂട്ടോറിയൽ കാണുക"),
+    ("Reseller", "रीसेलर", "రీసెల్లర్", "மறுவிற்பனையாளர்", "റീസെല്ലർ"),
+    ("Selling Proof ↗️", "बिक्री का सबूत ↗️", "అమ్మకాల రుజువు ↗️", "விற்பனை ஆதாரம் ↗️", "വിൽപ്പന തെളിവ് ↗️"),
+    ("Support", "सपोर्ट", "సపోర్ట్", "ஆதரவு", "സപ്പോർട്ട്"),
+    ("Lucky Spin", "लकी स्पिन", "లక్కీ స్పిన్", "லக்கி ஸ்பின்", "ലക്കി സ്പിൻ"),
+    ("Referral", "रेफरल", "రెఫరల్", "பரிந்துரை", "റഫറൽ"),
+    ("Top 5 Sellers Monthly", "मासिक टॉप 5 सेलर", "నెలవారీ టాప్ 5 సెల్లర్లు", "மாதாந்திர சிறந்த 5 விற்பனையாளர்கள்", "പ്രതിമാസ ടോപ്പ് 5 സെല്ലർമാർ"),
+    ("Check All Updates", "सभी अपडेट देखें", "అన్ని అప్‌డేట్‌లు చూడండి", "அனைத்து புதுப்பிப்புகளையும் பார்க்க", "എല്ലാ അപ്‌ഡേറ്റുകളും കാണുക"),
+    ("Language", "भाषा", "భాష", "மொழி", "ഭാഷ"),
+    ("Contact Support", "सपोर्ट से संपर्क करें", "సపోర్ట్‌ను సంప్రదించండి", "ஆதரவைத் தொடர்பு கொள்ள", "സപ്പോർട്ടുമായി ബന്ധപ്പെടുക"),
+    ("Back", "वापस", "వెనుకకు", "பின்செல்", "തിരികെ"),
+    ("Back to Menu", "मेनू पर वापस", "మెనూకు తిరిగి", "மெனுவுக்குத் திரும்ப", "മെനുവിലേക്ക് മടങ്ങുക"),
+    ("Back to Plans", "प्लान पर वापस", "ప్లాన్‌లకు తిరిగి", "திட்டங்களுக்குத் திரும்ப", "പ്ലാനുകളിലേക്ക് മടങ്ങുക"),
+    ("Upgrade To Reseller", "रीसेलर बनें", "రీసెల్లర్‌గా అప్‌గ్రేడ్ చేయండి", "மறுவிற்பனையாளராக மேம்படுத்த", "റീസെല്ലർ ആയി അപ്‌ഗ്രേഡ് ചെയ്യുക"),
+    ("Buy Reseller Plan", "रीसेलर प्लान खरीदें", "రీసెల్లర్ ప్లాన్ కొనండి", "மறுவிற்பனையாளர் திட்டம் வாங்க", "റീസെല്ലർ പ്ലാൻ വാങ്ങുക"),
+    ("View Profile", "प्रोफ़ाइल देखें", "ప్రొఫైల్ చూడండి", "சுயவிவரம் பார்க்க", "പ്രൊഫൈൽ കാണുക"),
+    ("Custom Amount", "अपनी रकम", "మీ మొత్తం", "விருப்பத் தொகை", "സ്വന്തം തുക"),
+    ("Confirm", "पक्का करें", "నిర్ధారించండి", "உறுதிப்படுத்து", "സ്ഥിരീകരിക്കുക"),
+    ("Confirm {a}", "{a} पक्का करें", "{a} నిర్ధారించండి", "{a} உறுதிப்படுத்து", "{a} സ്ഥിരീകരിക്കുക"),
+    ("UPI Payment (QR Code)", "UPI पेमेंट (QR कोड)", "UPI చెల్లింపు (QR కోడ్)", "UPI கட்டணம் (QR குறியீடு)", "UPI പേയ്‌മെന്റ് (QR കോഡ്)"),
+    ("Binance USDT Payment", "Binance USDT पेमेंट", "Binance USDT చెల్లింపు", "Binance USDT கட்டணம்", "Binance USDT പേയ്‌മെന്റ്"),
+    ("I have paid", "मैंने भुगतान कर दिया", "నేను చెల్లించాను", "நான் செலுத்திவிட்டேன்", "ഞാൻ പണം അടച്ചു"),
+    ("Cancel Payment", "पेमेंट रद्द करें", "చెల్లింపు రద్దు చేయండి", "கட்டணத்தை ரத்து செய்", "പേയ്‌മെന്റ് റദ്ദാക്കുക"),
+    ("I paid but wasn't credited", "मैंने भुगतान किया पर क्रेडिट नहीं हुआ", "నేను చెల్లించాను కానీ జమ కాలేదు", "நான் செலுத்தினேன் ஆனால் வரவு வைக்கப்படவில்லை", "ഞാൻ പണം അടച്ചു പക്ഷേ ക്രെഡിറ്റ് ആയില്ല"),
+    ("Spin Now! (FREE)", "अभी स्पिन करें! (फ्री)", "ఇప్పుడే స్పిన్ చేయండి! (ఉచితం)", "இப்போது ஸ்பின் செய்! (இலவசம்)", "ഇപ്പോൾ സ്പിൻ ചെയ്യൂ! (ഫ്രീ)"),
+    ("Shop Now — Use {v}", "अभी खरीदें — {v} इस्तेमाल करें", "ఇప్పుడే కొనండి — {v} ఉపయోగించండి", "இப்போது வாங்கு — {v} பயன்படுத்து", "ഇപ്പോൾ വാങ്ങൂ — {v} ഉപയോഗിക്കൂ"),
+    ("Test Again", "फिर से जाँचें", "మళ్లీ పరీక్షించండి", "மீண்டும் சோதிக்க", "വീണ്ടും പരിശോധിക്കുക"),
+    ("Restart", "रीस्टार्ट", "రీస్టార్ట్", "மறுதொடக்கம்", "റീസ്റ്റാർട്ട്"),
+    ("Non-Root Mobile", "नॉन-रूट मोबाइल", "నాన్-రూట్ మొబైల్", "நான்-ரூட் மொபைல்", "നോൺ-റൂട്ട് മൊബൈൽ"),
+    ("Root Mobile", "रूट मोबाइल", "రూట్ మొబైల్", "ரூட் மொபைல்", "റൂട്ട് മൊബൈൽ"),
+    ("iOS Panels", "iOS पैनल", "iOS ప్యానెల్స్", "iOS பேனல்கள்", "iOS പാനലുകൾ"),
+    ("PC Panels", "PC पैनल", "PC ప్యానెల్స్", "PC பேனல்கள்", "PC പാനലുകൾ"),
+    ("8 Level ID", "8 लेवल आईडी", "8 లెవెల్ ఐడి", "8 லெவல் ஐடி", "8 ലെവൽ ഐഡി"),
+    ("Preview Video", "प्रीव्यू वीडियो", "ప్రివ్యూ వీడియో", "முன்னோட்ட வீடியோ", "പ്രിവ്യൂ വീഡിയോ"),
+    ("Check Update", "अपडेट देखें", "అప్‌డేట్ చూడండి", "புதுப்பிப்பைப் பார்க்க", "അപ്‌ഡേറ്റ് കാണുക"),
+    ("Apply Coupon Code", "कूपन कोड लगाएँ", "కూపన్ కోడ్ వర్తింపజేయండి", "கூப்பன் குறியீட்டைப் பயன்படுத்து", "കൂപ്പൺ കോഡ് പ്രയോഗിക്കുക"),
+    ("Open Shop", "शॉप खोलें", "షాప్ తెరవండి", "ஷாப்பைத் திற", "ഷോപ്പ് തുറക്കുക"),
+    ("Update File ↗️", "अपडेट फ़ाइल ↗️", "అప్‌డేట్ ఫైల్ ↗️", "புதுப்பிப்பு கோப்பு ↗️", "അപ്‌ഡേറ്റ് ഫയൽ ↗️"),
+]
+
+
+def _i18n_compile(rows):
+    """rows -> ({english: {lang: text}}, [(prefix, regex, {lang: text})])"""
+    exact, templates = {}, []
+    for row in rows:
+        en, translated = row[0], dict(zip(_I18N_ORDER, row[1:]))
+        if _I18N_PH.search(en):
+            parts = _I18N_PH.split(en)
+            pattern = "".join(re.escape(p) if i % 2 == 0 else "(?P<%s>.*?)" % p for i, p in enumerate(parts))
+            templates.append((parts[0], re.compile("^" + pattern + "$", re.S), translated))
+        else:
+            exact[en] = translated
+    return exact, templates
+
+_LINE_EXACT, _LINE_TEMPL = _i18n_compile(_LINES)
+_BTN_EXACT, _BTN_TEMPL = _i18n_compile(_BUTTONS)
+
+def _i18n_fill(template, values):
+    return _I18N_PH.sub(lambda m: values.get(m.group(1), m.group(0)), template)
+
+def _i18n_lookup(core, lang, exact, templates, depth=0):
+    """Translate one stripped line. None = not in the table."""
+    hit = exact.get(core)
+    if hit is not None:
+        return hit.get(lang)
+    for prefix, rx, translated in templates:
+        if prefix and not core.startswith(prefix):
+            continue
+        m = rx.match(core)
+        if not m:
+            continue
+        text = translated.get(lang)
+        if text is None:
+            return None
+        values = m.groupdict()
+        if depth < 2:                       # the changing parts too ("5 minutes", "RESELLER" ...)
+            for key, val in values.items():
+                inner = _i18n_lookup(val.strip(), lang, exact, templates, depth + 1) if val.strip() else None
+                if inner is not None:
+                    values[key] = inner
+        return _i18n_fill(text, values)
+    return None
+
+def translate_text(text, lang):
+    """Translate a whole message (HTML) line by line. Lines that are not in the table stay as they are."""
+    if not text or lang == "en" or lang not in I18N_LANGS or not isinstance(text, str):
+        return text
+    out = []
+    for line in text.split("\n"):
+        core = line.strip()
+        done = _i18n_lookup(core, lang, _LINE_EXACT, _LINE_TEMPL) if core else None
+        if done is None:
+            out.append(line)
+        else:
+            out.append(line[: len(line) - len(line.lstrip())] + done + line[len(line.rstrip()):])
+    return "\n".join(out)
+
+_BTN_SPLIT = re.compile(r"^([^\w]*)(.*)$", re.S)
+
+def translate_button(text, lang):
+    """Translate a button label; leading emoji / symbols stay exactly as they are."""
+    if not text or lang == "en" or lang not in I18N_LANGS or not isinstance(text, str):
+        return text
+    m = _BTN_SPLIT.match(text)
+    pre, body = (m.group(1), m.group(2).strip()) if m else ("", text.strip())
+    done = _i18n_lookup(body, lang, _BTN_EXACT, _BTN_TEMPL) if body else None
+    return text if done is None else pre + done
+
+def i18n_selftest():
+    """Returns a list of problems (empty = all tables are consistent). Not run at start-up."""
+    problems = []
+    for name, rows in (("lines", _LINES), ("buttons", _BUTTONS)):
+        seen = set()
+        for row in rows:
+            if len(row) != 5:
+                problems.append(f"{name}: row needs 5 columns: {row[0][:40]!r}")
+                continue
+            if row[0] in seen:
+                problems.append(f"{name}: duplicate English row {row[0][:40]!r}")
+            seen.add(row[0])
+            ph, tags = sorted(_I18N_PH.findall(row[0])), sorted(_I18N_TAG.findall(row[0]))
+            for lang, tr in zip(_I18N_ORDER, row[1:]):
+                if not tr.strip():
+                    problems.append(f"{name}/{lang}: empty translation of {row[0][:40]!r}")
+                if sorted(_I18N_PH.findall(tr)) != ph:
+                    problems.append(f"{name}/{lang}: placeholders differ in {row[0][:40]!r}")
+                if sorted(_I18N_TAG.findall(tr)) != tags:
+                    problems.append(f"{name}/{lang}: HTML tags differ in {row[0][:40]!r}")
+    return problems
+
+def lang_of(chat_id):
+    """Language of the customer in a chat ('en' when unknown, or when the Language switch is off)."""
+    if ui_get("lang_on", "1") == "0":
+        return "en"
+    try:
+        return db.get_user_lang(chat_id)
+    except Exception:
+        return "en"
+
+_ICON_KEY = "icon_custom_emoji_id"
+_OTHER_BUTTON_FIELDS = ("web_app", "login_url", "switch_inline_query", "switch_inline_query_current_chat",
+                        "switch_inline_query_chosen_chat", "callback_game", "pay", "copy_text")
+
+def _clone_button(b, text=None, drop_icon=False):
+    """Copy of an inline button with other text and/or without its premium emoji icon."""
+    if any(getattr(b, f, None) for f in _OTHER_BUTTON_FIELDS):
+        return b
+    extra = dict(getattr(b, "api_kwargs", None) or {})
+    if drop_icon:
+        extra.pop(_ICON_KEY, None)
+    kwargs = {f: getattr(b, f) for f in ("url", "callback_data") if getattr(b, f, None) is not None}
+    if extra:
+        kwargs["api_kwargs"] = extra
+    return InlineKeyboardButton(b.text if text is None else text, **kwargs)
+
+def _map_markup(markup, fn):
+    rows, changed = [], False
+    for row in markup.inline_keyboard:
+        new_row = []
+        for b in row:
+            nb = fn(b)
+            changed = changed or nb is not b
+            new_row.append(nb)
+        rows.append(new_row)
+    return InlineKeyboardMarkup(rows) if changed else markup
+
+def _markup_has_icons(markup):
+    try:
+        return any(_ICON_KEY in (getattr(b, "api_kwargs", None) or {}) for row in markup.inline_keyboard for b in row)
+    except Exception:
+        return False
+
+def _strip_markup_icons(markup):
+    if not isinstance(markup, InlineKeyboardMarkup) or not _markup_has_icons(markup):
+        return markup
+    return _map_markup(markup, lambda b: _clone_button(b, drop_icon=True) if _ICON_KEY in (getattr(b, "api_kwargs", None) or {}) else b)
+
+def _localize_markup(markup, lang):
+    if lang == "en" or not isinstance(markup, InlineKeyboardMarkup):
+        return markup
+    def one(b):
+        new = translate_button(b.text, lang)
+        return _clone_button(b, new) if new != b.text else b
+    return _map_markup(markup, one)
+
+_ICON_ERR_WORDS = ("emoji", "icon", "premium", "button")
+
+def install_i18n():
+    """Wrap the send / edit methods of telegram.Bot: every text and button is translated for its reader,
+    and a premium-emoji icon that Telegram refuses is dropped (the message is re-sent without it)."""
+    Bot = telegram.Bot
+    if getattr(Bot, "_i18n_installed", False):
+        return
+
+    def wrap(name, text_fields):
+        orig = getattr(Bot, name, None)
+        if orig is None:
+            return
+        sig = inspect.signature(orig)
+
+        @functools.wraps(orig)
+        async def wrapper(self, *args, **kwargs):
+            try:
+                bound = sig.bind(self, *args, **kwargs)
+                ar = bound.arguments
+                if name == "answer_callback_query" or ar.get("chat_id") is None:
+                    lang = lang_of(_CUR_USER.get())
+                else:
+                    lang = lang_of(ar.get("chat_id"))
+                if lang != "en":
+                    for field in text_fields:
+                        if isinstance(ar.get(field), str):
+                            ar[field] = translate_text(ar[field], lang)
+                    if ar.get("reply_markup") is not None:
+                        ar["reply_markup"] = _localize_markup(ar["reply_markup"], lang)
+            except Exception:
+                logger.exception("Translation step failed - sending the original text")
+                return await orig(self, *args, **kwargs)
+            try:
+                return await orig(*bound.args, **bound.kwargs)
+            except Exception as exc:
+                markup = bound.arguments.get("reply_markup")
+                if (type(exc).__name__ == "BadRequest" and _markup_has_icons(markup)
+                        and any(w in str(exc).lower() for w in _ICON_ERR_WORDS)):
+                    bound.arguments["reply_markup"] = _strip_markup_icons(markup)
+                    result = await orig(*bound.args, **bound.kwargs)     # still failing -> the real error is raised
+                    pause_icons()
+                    return result
+                raise
+
+        setattr(Bot, name, wrapper)
+
+    wrap("send_message", ("text",))
+    wrap("send_photo", ("caption",))
+    wrap("edit_message_text", ("text",))
+    wrap("edit_message_caption", ("caption",))
+    wrap("edit_message_reply_markup", ())
+    wrap("answer_callback_query", ("text",))
+    Bot._i18n_installed = True
+
+try:
+    install_i18n()
+except Exception:
+    logger.exception("Language support could not start - the bot continues in English")
+
+def _localize_payload(method, payload):
+    """Same translation for the plain-HTTP sends (tg_call), by the customer's chat id."""
+    try:
+        if method not in ("sendMessage", "sendPhoto", "editMessageText", "editMessageCaption", "editMessageReplyMarkup"):
+            return payload
+        lang = lang_of(payload.get("chat_id"))
+        if lang == "en":
+            return payload
+        out = dict(payload)
+        for field in ("text", "caption"):
+            if isinstance(out.get(field), str):
+                out[field] = translate_text(out[field], lang)
+        markup = out.get("reply_markup")
+        if isinstance(markup, dict) and markup.get("inline_keyboard"):
+            out["reply_markup"] = {"inline_keyboard": [
+                [dict(b, text=translate_button(b.get("text", ""), lang)) for b in row] for row in markup["inline_keyboard"]]}
+        return out
+    except Exception:
+        logger.exception("Translation of a plain message failed - sending the original text")
+        return payload
+
+def _payload_has_icons(payload):
+    markup = payload.get("reply_markup") if isinstance(payload, dict) else None
+    return isinstance(markup, dict) and any(_ICON_KEY in b for row in markup.get("inline_keyboard", []) for b in row)
+
+def _strip_payload_icons(payload):
+    out = dict(payload)
+    out["reply_markup"] = {"inline_keyboard": [[{k: v for k, v in b.items() if k != _ICON_KEY} for b in row]
+                                               for row in payload["reply_markup"]["inline_keyboard"]]}
+    return out
+
+
+# ==========================================
+# 🚨 ERROR ALERTS: every error of the bot / payments / web admin reaches the owner on Telegram
+# Switch and target chat are set in the admin panel (alert_on, alert_chat). The same error is sent at most
+# once per 10 minutes (with a count of repeats), at most 8 alerts per 10 minutes, and normal events such as
+# "user blocked the bot" or short network hiccups are not reported.
+# ==========================================
+import threading
+import traceback
+import urllib.error
+from collections import deque
+
+_alert_state = {"sent": {}, "times": deque(), "lock": threading.Lock(), "transient": {}}
+_alert_local = threading.local()
+_ALERT_IGNORE_LOGGERS = ("httpx", "httpcore", "urllib3", "hpack")
+_ALERT_IGNORE_TEXT = ("blocked by the user", "chat not found", "user is deactivated", "message is not modified",
+                      "message to delete not found", "bot was kicked", "query is too old", "http error 403",
+                      "message can't be deleted", "message to edit not found")
+_ALERT_TRANSIENT = ("NetworkError", "TimedOut", "RetryAfter", "ConnectError", "ReadError", "ReadTimeout",
+                    "ConnectTimeout", "RemoteProtocolError", "ConnectionResetError", "ProtocolError", "TimeoutError", "ConnectionError")
+
+def _alert_chat():
+    chat = str(ui_get("alert_chat", "")).strip()
+    return int(chat) if chat.isdigit() else ADMIN_ID
+
+def _alert_post(text):
+    """Send one alert (plain HTTP, no translation, no icons). True if Telegram accepted it."""
+    _alert_local.busy = True
+    try:
+        data = json.dumps({"chat_id": _alert_chat(), "text": text[:4000], "parse_mode": "HTML",
+                           "disable_web_page_preview": True}).encode()
+        req = urllib.request.Request(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", data=data,
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return bool(json.loads(resp.read().decode()).get("ok"))
+    except Exception:
+        return False
+    finally:
+        _alert_local.busy = False
+
+def send_test_alert():
+    """Used by the 'Send test alert' button of the admin panel."""
+    return _alert_post("🧪 <b>Test alert</b>\nIf you can read this, error alerts reach you correctly.\n"
+                       f"🕒 {get_ist_time()}")
+
+class _AlertHandler(logging.Handler):
+    def emit(self, record):
+        try:
+            if record.levelno < logging.ERROR or getattr(_alert_local, "busy", False):
+                return
+            if record.name.startswith(_ALERT_IGNORE_LOGGERS):
+                return
+            _alert_local.busy = True
+            try:
+                if str(ui_get("alert_on", "1")) == "0":
+                    return
+                message = record.getMessage()
+                exc_name = record.exc_info[0].__name__ if record.exc_info and record.exc_info[0] else ""
+                blob = (message + " " + (str(record.exc_info[1]) if record.exc_info else "")).lower()
+                if any(t in blob for t in _ALERT_IGNORE_TEXT):
+                    return
+                sig = (record.name, message.split("\n")[0][:120], exc_name)
+                now = time.time()
+                with _alert_state["lock"]:
+                    if exc_name in _ALERT_TRANSIENT:             # short network problems: only if they keep coming
+                        hits = [t for t in _alert_state["transient"].get(sig, []) if now - t < 600] + [now]
+                        _alert_state["transient"][sig] = hits
+                        if len(hits) < 5:
+                            return
+                    last, skipped = _alert_state["sent"].get(sig, (0.0, 0))
+                    if now - last < 600:
+                        _alert_state["sent"][sig] = (last, skipped + 1)
+                        return
+                    times = _alert_state["times"]
+                    while times and now - times[0] > 600:
+                        times.popleft()
+                    if len(times) >= 8:
+                        return
+                    times.append(now)
+                    _alert_state["sent"][sig] = (now, 0)
+                    if len(_alert_state["sent"]) > 500:
+                        _alert_state["sent"].clear()
+                tb = ""
+                if record.exc_info and record.exc_info[0]:
+                    lines = "".join(traceback.format_exception(*record.exc_info)).strip().splitlines()
+                    tb = "\n".join(lines[-7:])
+                text = ("🚨 <b>BOT ERROR</b>\n"
+                        f"🕒 {get_ist_time()}\n"
+                        f"📍 <code>{html.escape(record.name)}</code>\n"
+                        f"💬 {html.escape(message[:600])}"
+                        + (f"\n<pre>{html.escape(tb[-1800:])}</pre>" if tb else "")
+                        + (f"\n🔁 Same error was also seen {skipped} more time(s) since the last alert." if skipped else ""))
+                threading.Thread(target=_alert_post, args=(text,), daemon=True).start()
+            finally:
+                _alert_local.busy = False
+        except Exception:
+            pass
+
+def _hook_uncaught():
+    """Errors that would otherwise only appear in the Render log are sent to the same alert channel."""
+    old_hook = sys.excepthook
+    def _sys_hook(exc_type, exc, tb):
+        logger.error("Uncaught exception", exc_info=(exc_type, exc, tb))
+        old_hook(exc_type, exc, tb)
+    sys.excepthook = _sys_hook
+    def _thread_hook(args):
+        logger.error("Uncaught exception in thread %s", getattr(args.thread, "name", "?"),
+                     exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
+    threading.excepthook = _thread_hook
+
+def _loop_exception_handler(loop, context):
+    logger.error("Asyncio error: %s", context.get("message", ""), exc_info=context.get("exception"))
+
+try:
+    import sys
+    logging.getLogger().addHandler(_AlertHandler())
+    _hook_uncaught()
+except Exception:
+    logger.exception("Error alerts could not start")
+
+# the web admin uses these two (test-alert button, translation of messages it sends to customers)
+web_admin.send_test_alert = send_test_alert
+web_admin.translate_hook = translate_text
 
 # Initialize the persistent PostgreSQL schema before the bot starts.
 init_db()
@@ -1261,6 +2093,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🚀 Tap Shop Now to Start!"
     )
 
+    custom = ui_get("welcome_text", "").strip()
+    if custom:      # welcome text written in the admin panel ({name} {user_id} {balance} {shop_name})
+        text = _safe_html(_fill_text(custom, name=html.escape(user.first_name or "there"), user_id=user.id,
+                                     balance=f"{balance:,.2f}", shop_name=html.escape(cfg["shop_name"])))
+
     tutorial_link = cfg.get("how_to_use_link")
     if not valid_url(tutorial_link):
         tutorial_link = "https://t.me/chatelitehackers"
@@ -1279,16 +2116,82 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if valid_url(cfg.get("update_link")):
         keyboard.append([styled_button("📢 Check All Updates", "check_updates", url=cfg["update_link"])])
 
+    if ui_get("lang_on", "1") != "0":
+        keyboard.append([styled_button("🌐 Language", "language", callback_data="language_menu")])
+
     if user.id == ADMIN_ID:
         r_url = os.environ.get("RENDER_EXTERNAL_URL", "http://localhost:8080")
         keyboard.append([styled_button("👑 Web Admin Panel", "web_admin", url=r_url)])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
+    await _send_menu(update, context, text, reply_markup)
 
+async def _send_menu(update, context, text, markup):
+    """The main menu. With the welcome picture (set in the admin panel) when it is switched on."""
+    image = ui_get("welcome_image", "").strip()
+    if image and ui_get("welcome_image_on", "0") == "1" and update.effective_chat:
+        chat_id = update.effective_chat.id
+        query = update.callback_query
+        if query is not None and query.message is not None:
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
+        try:
+            if len(text) <= 1024:
+                await context.bot.send_photo(chat_id=chat_id, photo=image, caption=text, parse_mode="HTML", reply_markup=markup)
+            else:
+                await context.bot.send_photo(chat_id=chat_id, photo=image)
+                await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=markup)
+        except Exception:
+            logger.warning("Welcome picture could not be sent - sending the text only", exc_info=True)
+            await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=markup)
+        return
     if update.message:
-        await update.message.reply_text(text, parse_mode="HTML", reply_markup=reply_markup)
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=markup)
     elif update.callback_query:
-        await replace_callback_message(update.callback_query, context, text, reply_markup)
+        await replace_callback_message(update.callback_query, context, text, markup)
+
+# ==========================================
+# 🌐 LANGUAGE MENU
+# ==========================================
+async def track_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Remember who is being served, so pop-up alerts are translated for the right person."""
+    user = update.effective_user
+    if user:
+        _CUR_USER.set(user.id)
+
+async def language_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    current = db.get_user_lang(user.id) if user else "en"
+    text = "🌐 <b>Choose your language</b>\n\nTap a language below. The whole bot will switch to it."
+    rows = [[styled_button(("✅ " if code == current else "") + name, "lang_option", callback_data=f"setlang_{code}")]
+            for code, name in I18N_LANGS.items()]
+    rows.append([styled_button("🔜 Back", "back", callback_data="main_menu")])
+    markup = InlineKeyboardMarkup(rows)
+    if update.callback_query:
+        ack(update.callback_query)
+        await replace_callback_message(update.callback_query, context, text, markup)
+    elif update.message:
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=markup)
+
+async def set_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    code = (query.data or "").replace("setlang_", "", 1)
+    if code not in I18N_LANGS:
+        ack(query)
+        return
+    try:
+        db.set_user_lang(update.effective_user.id, code)
+    except Exception:
+        logger.exception("Could not save the language")
+        ack(query)
+        return
+    try:
+        await query.answer("✅ Language updated")
+    except Exception:
+        pass
+    await start_command(update, context)
 
 # ==========================================
 # 💬 SUPPORT
@@ -1370,8 +2273,9 @@ async def reseller_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await replace_callback_message(query, context, msg, back_to_menu_markup())
         return
 
-    text = _fill(cfg["reseller_text"], min_balance=cfg["min_balance"], fee=cfg["fee"],
-                 rest=max(0.0, cfg["min_balance"] - cfg["fee"]))
+    text = (_safe_html(_fill(cfg["reseller_text"], min_balance=cfg["min_balance"], fee=cfg["fee"],
+                             rest=max(0.0, cfg["min_balance"] - cfg["fee"])))
+            if cfg["reseller_text"].strip() else "👑 <b>Reseller Plan</b>")
     keyboard = [
         [styled_button(cfg["reseller_buy_label"] or "Buy Reseller Plan", "reseller_buy", callback_data="buy_reseller_action")],
         [styled_button("🔜 Back", "back", callback_data="main_menu")]
@@ -1391,14 +2295,33 @@ async def buy_reseller_action(update: Update, context: ContextTypes.DEFAULT_TYPE
                                        else "⚠️ The reseller plan is not available right now.", back_to_menu_markup())
         return
 
-    if balance >= cfg["min_balance"] and db.try_deduct(user.id, cfg["fee"]) is not None:
-        db_set_reseller(user.id)
-        text = _fill(cfg["reseller_success_text"], fee=cfg["fee"], rest=max(0.0, cfg["min_balance"] - cfg["fee"]),
-                     min_balance=cfg["min_balance"])
+    try:
+        status, balance = db.activate_reseller(user.id, cfg["min_balance"], cfg["fee"])
+    except Exception:
+        logger.exception("Reseller activation failed")
+        await replace_callback_message(query, context, "⚠️ Please try again — could not activate right now.", back_to_menu_markup())
+        return
+    rest = max(0.0, cfg["min_balance"] - cfg["fee"])
+    if status == "already":
+        await replace_callback_message(query, context, "👑 <b>You are already a VIP Reseller!</b>\n\nYour reseller plan is already active — nothing was charged.", back_to_menu_markup())
+    elif status == "ok":
+        _settings_cache["v"] = None
+        if cfg["reseller_success_text"].strip():
+            text = _safe_html(_fill(cfg["reseller_success_text"], fee=cfg["fee"], rest=rest, min_balance=cfg["min_balance"]))
+        else:
+            text = ("🎉 <b>CONGRATULATIONS!</b>\n\nYou are now officially a <b>👑 VIP Reseller!</b>\n\n"
+                    f"💸 Activation fee deducted: <b>₹{fmt_amount(cfg['fee'])}</b>\n"
+                    f"💰 Wallet balance now: <b>₹{fmt_amount(balance)}</b>")
         keyboard = [[styled_button("👤 View Profile", "view_profile", callback_data="my_profile")]]
         await replace_callback_message(query, context, text, InlineKeyboardMarkup(keyboard))
     else:
-        text = _fill(cfg["reseller_lowbal_text"], min_balance=cfg["min_balance"], balance=balance, fee=cfg["fee"])
+        if cfg["reseller_lowbal_text"].strip():
+            text = _safe_html(_fill(cfg["reseller_lowbal_text"], min_balance=cfg["min_balance"], balance=balance, fee=cfg["fee"]))
+        else:
+            text = ("⚠️ <b>Insufficient Balance!</b>\n\n"
+                    f"💰 Required: <b>₹{fmt_amount(max(cfg['min_balance'], cfg['fee']))}</b>\n"
+                    f"💸 Your Balance: <b>₹{fmt_amount(balance)}</b>\n\n"
+                    "Please add balance to your wallet to activate the VIP Reseller Plan.")
         keyboard = [
             [styled_button("💰 Add Balance", "reseller_add_balance", callback_data="add_balance")],
             [styled_button("🔜 Back", "back", callback_data="reseller_plan")]
@@ -2774,11 +3697,20 @@ async def post_init(app):
     try:
         await app.bot.set_my_commands([
             BotCommand("start", "🚀 Start the bot"),
+            BotCommand("language", "🌐 Change language"),
             BotCommand("ping", "📡 Check speed / fix slowness"),
         ])
         await app.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
     except Exception:
         logger.exception("Could not set the bot command menu")
+    try:        # text shown before /start ("What can this bot do?"): set in the admin panel
+        desc, short = ui_get("bot_description", "").strip(), ui_get("bot_short_description", "").strip()
+        if desc:
+            await app.bot.set_my_description(description=desc[:512])
+        if short:
+            await app.bot.set_my_short_description(short_description=short[:120])
+    except Exception:
+        logger.warning("Could not sync the bot description", exc_info=True)
     spawn(spin_expiry_loop(app))
 
 # ==========================================
@@ -2912,7 +3844,11 @@ def start_bot():
     Thread(target=_hook_watcher, daemon=True).start()
     app = Application.builder().token(BOT_TOKEN).concurrent_updates(False).post_init(post_init).build()
 
+    app.add_handler(TypeHandler(Update, track_user), group=-1)
     app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("language", language_menu))
+    app.add_handler(CallbackQueryHandler(language_menu, pattern="^language_menu$"))
+    app.add_handler(CallbackQueryHandler(set_language, pattern="^setlang_"))
     app.add_handler(CallbackQueryHandler(start_command, pattern="^main_menu$"))
     app.add_handler(CallbackQueryHandler(profile_handler, pattern="^my_profile$"))
     app.add_handler(CallbackQueryHandler(reseller_handler, pattern="^reseller_plan$"))
@@ -2954,6 +3890,10 @@ def start_bot():
     app.add_handler(CommandHandler("apiunmap", api_unmap_cmd))
     app.add_error_handler(error_handler)
 
+    try:
+        asyncio.get_event_loop().set_exception_handler(_loop_exception_handler)
+    except Exception:
+        pass
     print("🤖 Telegram Bot Engine Running...")
     app.run_polling(drop_pending_updates=True)
 
@@ -2974,5 +3914,5 @@ if __name__ == "__main__":
             start_bot()
         except Exception as e:
             print(f"Bot crash prevented: {e}. Auto-restarting in 1s...")
+            logger.error("Bot crashed and is restarting: %s", e, exc_info=True)
         time.sleep(1)
-
