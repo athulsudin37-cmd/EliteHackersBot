@@ -49,7 +49,11 @@ BUTTON_GROUPS = [
         ("reseller", "👑 Reseller", "success"),
         ("support", "💬 Support", "success"),
         ("check_updates", "📢 Check All Updates", "primary"),
+        ("language", "🌐 Language", "primary"),
         ("web_admin", "👑 Web Admin Panel (owner only)", "success"),
+    ]),
+    ("🌐 Language Screen", [
+        ("lang_option", "Language choices (English / हिन्दी / తెలుగు / தமிழ் / മലയാളം)", ""),
     ]),
     ("🛒 Shop & Products", [
         ("game_ff", "🔥 FREE FIRE", "primary"),
@@ -485,6 +489,8 @@ class Database:
                 style TEXT NOT NULL DEFAULT ''
             )
             """,
+            "ALTER TABLE button_styles ADD COLUMN IF NOT EXISTS emoji_id TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS lang TEXT NOT NULL DEFAULT 'en'",
             # --- Admin panel upgrades: store settings, spin-reward expiry, session control ---
             "ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS shop_name TEXT",
             "ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS tagline TEXT",
@@ -676,6 +682,58 @@ class Database:
             "UPDATE users SET account_type = 'Reseller' WHERE user_id = %s",
             (user_id,),
         )
+
+    def activate_reseller(self, user_id, min_balance, fee):
+        """Make the user a Reseller and take the fee in ONE transaction (row locked), so tapping the
+        button twice - or at the same time - can never charge twice.
+        Returns (status, balance): 'ok' | 'already' | 'low' | 'no_user'."""
+        required = max(float(min_balance), float(fee))
+        with self.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT account_type, wallet_balance FROM users WHERE user_id = %s FOR UPDATE", (user_id,))
+                row = cur.fetchone()
+                if not row:
+                    return "no_user", 0.0
+                balance = float(row["wallet_balance"] or 0)
+                if row["account_type"] == "Reseller":
+                    return "already", balance
+                if balance < required:
+                    return "low", balance
+                cur.execute(
+                    "UPDATE users SET wallet_balance = wallet_balance - %s, account_type = 'Reseller' "
+                    "WHERE user_id = %s RETURNING wallet_balance", (float(fee), user_id))
+                return "ok", float(cur.fetchone()["wallet_balance"])
+
+    _lang_cache = {}
+    LANGS = ("en", "hi", "te", "ta", "ml")
+
+    def get_user_lang(self, user_id):
+        """'en' | 'hi' | 'te' | 'ta' | 'ml' (cached; 'en' when unknown or on any error)."""
+        try:
+            uid = int(user_id)
+        except (TypeError, ValueError):
+            return "en"
+        if uid <= 0:
+            return "en"
+        lang = self._lang_cache.get(uid)
+        if lang is None:
+            try:
+                row = self.fetchone("SELECT lang FROM users WHERE user_id = %s", (uid,))
+                lang = (row or {}).get("lang") or "en"
+            except Exception:
+                return "en"
+            if lang not in self.LANGS:
+                lang = "en"
+            if len(self._lang_cache) > 50000:
+                self._lang_cache.clear()
+            self._lang_cache[uid] = lang
+        return lang
+
+    def set_user_lang(self, user_id, lang):
+        if lang not in self.LANGS:
+            raise ValueError("Unknown language")
+        self.execute("UPDATE users SET lang = %s WHERE user_id = %s", (lang, int(user_id)))
+        self._lang_cache[int(user_id)] = lang
 
     def set_account_type(self, user_id, role):
         if role not in ("Regular", "Reseller"):
@@ -961,6 +1019,23 @@ class Database:
         """{btn_key: style} where style is 'primary' | 'success' | 'danger' | 'none'."""
         rows = self.fetchall("SELECT btn_key, style FROM button_styles")
         return {r["btn_key"]: r["style"] for r in rows}
+
+    def get_button_looks(self):
+        """{btn_key: (style, emoji_id)} - color and premium (custom) emoji chosen in the admin panel."""
+        rows = self.fetchall("SELECT btn_key, style, emoji_id FROM button_styles")
+        return {r["btn_key"]: (r["style"] or "", r["emoji_id"] or "") for r in rows}
+
+    def set_button_look(self, btn_key, style=None, emoji_id=None):
+        """Save color and/or premium emoji id of one button (None = keep what is saved)."""
+        self.execute(
+            """
+            INSERT INTO button_styles (btn_key, style, emoji_id) VALUES (%s, COALESCE(%s, ''), COALESCE(%s, ''))
+            ON CONFLICT (btn_key) DO UPDATE SET
+                style = COALESCE(%s, button_styles.style),
+                emoji_id = COALESCE(%s, button_styles.emoji_id)
+            """,
+            (btn_key, style, emoji_id, style, emoji_id),
+        )
 
     def set_button_style(self, btn_key, style):
         self.execute(
@@ -2171,6 +2246,7 @@ _X_JS = r'''(function () {
 _patch_telegram()
 _patch_flask()
 _x_start()
+
 
 
 
